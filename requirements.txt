@@ -1,0 +1,5 @@
+easyocr
+deep-translator
+Pillow
+opencv-python
+keyboard
