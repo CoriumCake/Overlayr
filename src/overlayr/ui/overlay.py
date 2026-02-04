@@ -77,79 +77,169 @@ class ResultOverlay:
         
         if not results: return
         
+        import math
+        
         for item in results:
             bbox = item['bbox'] # [left, top, right, bottom]
             text = item['translated']
-            bg = item['bg_color'] # Original background color
+            if not text: continue
             
-            # Use a slightly more transparent and "glassy" version of the detected background
-            # Or use a sleek dark glass theme if background is erratic
-            glass_bg = "#1a1a1a" # Dark slate
+            # Use average line height from OCR as base font size
+            # Fallback to heuristic if not available
+            line_height = item.get('line_height', 0)
             
-            # Map coordinates
-            x1 = bbox[0]
-            y1 = bbox[1]
-            x2 = bbox[2]
-            y2 = bbox[3]
+            box_w = bbox[2] - bbox[0]
+            box_h = bbox[3] - bbox[1]
             
-            # Calculate font size from box height (aiming for 1:1 match)
-            box_height = y2 - y1
-            # 0.95 or 1.0 multiplier for true 1:1 feel on Segoe UI
-            font_size = max(12, int(box_height * 0.95))
+            if line_height > 0:
+                # User requested: Font size equal to size of letters to be translated
+                # Set font size slightly smaller than line height for padding
+                font_size = int(line_height * 0.9)
+                font_size = max(10, min(80, font_size)) # Relaxed limits
+            else:
+                # Fallback heuristic
+                max_h_size = box_h * 0.8
+                char_aspect = 0.6
+                max_w_size = box_w / (max(1, len(text)) * char_aspect)
+                font_size = int(min(max_h_size, max_w_size * 2))
+                font_size = max(10, min(60, font_size))
+
             font = ("Segoe UI Semibold", font_size)
-            
-            # Foreground color (white with better contrast)
+            glass_bg = "#1a1a1a"
             fg_color = "#ffffff"
             
-            # Draw semi-transparent background with rounded effect
-            padding_x = 10
-            padding_y = 6
+            # Draw text FIRST to measure it
+            # Position: align top-left with original box for now, can center later
+            # x1, y1 = bbox[0] + offset_x, bbox[1] + offset_y
             
-            # Create text centered vertically in the box
+            # Better strategy: Center text in original box's center? 
+            # Or assume text replaces original.
+            # Let's align top-left but wrap at original box width?
+            # User wants "background gray color according to size of text result"
+            
+            cx = bbox[0] + offset_x + box_w/2
+            cy = bbox[1] + offset_y + box_h/2
+            
+            # Draw text centered
+            # Width constraint: Let's set width to box_w * 1.5 to allow some expansion but wrap eventually
+            # Or just set width=box_w to keep layout clean? 
+            # User said "Result text overflow", so maybe allow wider?
+            # Let's try width=box_w first.
+            
             text_id = self.canvas.create_text(
-                x1 + padding_x, y1 + (box_height / 2),
+                cx, cy,
                 text=text,
-                anchor="w", 
+                anchor="center",
                 fill=fg_color,
                 font=font,
-                width=x2 - x1 + 300,
+                width=box_w, # Wrap at original width
                 tags="result"
             )
             
+            # Get actual bounding box of the drawn text
             t_bbox = self.canvas.bbox(text_id)
             if not t_bbox: continue
             
-            # Draw "Glass" background behind text
+            padding_x = 8
+            padding_y = 4
+            
+            # Draw background behind text using text's actual bbox
             bg_rect_id = self.canvas.create_rectangle(
-                t_bbox[0] - padding_x/2, t_bbox[1] - padding_y/2,
-                t_bbox[2] + padding_x/2, t_bbox[3] + padding_y/2,
+                t_bbox[0] - padding_x, t_bbox[1] - padding_y,
+                t_bbox[2] + padding_x, t_bbox[3] + padding_y,
                 fill=glass_bg,
                 outline="#333333",
                 width=1,
                 tags="result"
             )
             
-            # Glow effect (stacking a blurred version or just offset shadows)
-            # For simplicity and performance, we'll just use a subtle highlight line
+            # Lower background behind text
+            self.canvas.tag_lower(bg_rect_id, text_id)
+            
+            # Glow/Highlight on text box
             self.canvas.create_line(
-                t_bbox[0] - padding_x, t_bbox[1] - 2,
-                t_bbox[2] + padding_x, t_bbox[1] - 2,
+                t_bbox[0] - padding_x, t_bbox[3] + padding_y,
+                t_bbox[2] + padding_x, t_bbox[3] + padding_y,
                 fill="#444444", width=1,
                 tags="result"
             )
-            
-            self.canvas.tag_lower(bg_rect_id, text_id)
 
     def set_geometry(self, geometry):
         # Prevent jumpy movement by only updating if changed significantly or just setting directly
         self.top.geometry(geometry)
 
+    def show_boxes(self, boxes: list, offset_x: int, offset_y: int, color="cyan"):
+        """Draw debug boxes (e.g. for merged text blocks)"""
+        self.top.deiconify()
+        # Clear only previous boxes
+        self.canvas.delete("debug_box")
+        
+        for bbox in boxes:
+            # bbox is [left, top, right, bottom]
+            x1 = bbox[0] + offset_x
+            y1 = bbox[1] + offset_y
+            x2 = bbox[2] + offset_x
+            y2 = bbox[3] + offset_y
+            
+            self.canvas.create_rectangle(
+                x1, y1, x2, y2,
+                outline=color,
+                width=2,
+                tags="debug_box"
+            )
+            # Add label
+            self.canvas.create_text(
+                x1, y1-10,
+                text="Group", 
+                fill=color,
+                anchor="sw",
+                font=("Consolas", 10),
+                tags="debug_box"
+            )
+
+    
+    def clear_boxes(self):
+        """Explicitly clear debug boxes"""
+        self.canvas.delete("debug_box")
+
+    def hide_for_capture(self):
+        """
+        Temporarily hides the window using Win32 API directly.
+        Safe to call from background capture thread on Windows.
+        """
+        # Clear debug boxes on new capture cycle
+        self.canvas.delete("debug_box")
+        
+        if platform.system() == "Windows":
+            try:
+                import ctypes
+                hwnd = self.top.winfo_id()
+                # SW_HIDE = 0
+                ctypes.windll.user32.ShowWindow(hwnd, 0)
+            except:
+                pass
+
+    def restore_after_capture(self):
+        """
+        Restores window visibility.
+        """
+        if platform.system() == "Windows":
+            try:
+                import ctypes
+                hwnd = self.top.winfo_id()
+                # SW_SHOWNOACTIVATE = 4 (Shows window without stealing focus)
+                ctypes.windll.user32.ShowWindow(hwnd, 4)
+            except:
+                pass
+    
     def show_debug(self, raw_text: str):
-        self.canvas.itemconfig(self.debug_text_id, text=f"OCR RAW: {raw_text}")
-        self.canvas.tag_raise(self.debug_text_id)
+        # self.canvas.itemconfig(self.debug_text_id, text=f"OCR RAW: {raw_text}")
+        # self.canvas.tag_raise(self.debug_text_id)
+        pass
 
     def hide(self) -> None:
         self.canvas.delete("result")
+        self.canvas.delete("debug_box")
         self.canvas.itemconfig(self.debug_text_id, text="")
         self.top.withdraw()
 

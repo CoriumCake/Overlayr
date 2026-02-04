@@ -399,10 +399,40 @@ class MainWindow(ctk.CTk):
         last_bounds = None
         
         while self.is_streaming:
+            # Check if previous processing is active
+            if pending_future is not None:
+                if not pending_future.done():
+                    # Processing is busy (e.g. waiting 5s display). 
+                    # Do not capture/hide. Just track window position.
+                    if last_bounds:
+                         self.after(0, lambda b=last_bounds: self.overlay.set_geometry(
+                             f"{b['width']}x{b['height']}+{b['left']}+{b['top']}"
+                         ))
+                    time.sleep(0.05)
+                    continue
+                else:
+                    pending_future = None
+
             start_time = time.time()
             try:
-                # Capture - now returns (image, bounds)
-                result = self.capture_engine.capture()
+                # DEBUG: Step 1 - Ready to hide
+                # self.after(0, lambda: self.overlay.show_debug("STEP 1: Hiding..."))
+                
+                # Hide overlay
+                self.overlay.hide_for_capture()
+                # print("STEP 2: Hidden.", flush=True)
+                time.sleep(0.05) # Tiny delay for compositor
+                
+                # Capture
+                try:
+                    result = self.capture_engine.capture()
+                    # print("STEP 3: Captured.", flush=True)
+                finally:
+                    # Restore overlay
+                    self.overlay.restore_after_capture()
+                    
+                # self.after(0, lambda: self.overlay.show_debug("STEP 4: Restored. Processing..."))
+                
                 image, bounds = result if result else (None, None)
                 
                 if image and bounds:
@@ -421,26 +451,16 @@ class MainWindow(ctk.CTk):
 
                     if not is_active:
                         self.after(0, self.overlay.hide)
-                        # We still loop but skip heavy processing
                         time.sleep(0.1)
                         continue
                     
-                    # Check if previous processing is done
-                    if pending_future is not None:
-                        if pending_future.done():
-                            pending_future = None
-                    
-                    # Only start new processing if not already processing
-                    if pending_future is None:
-                        pending_future = asyncio.run_coroutine_threadsafe(
-                            self.process_image(image, bounds), 
-                            self.loop
-                        )
-                    else:
-                        # Just update overlay geometry to track window
-                        self.after(0, lambda b=bounds: self.overlay.set_geometry(
-                            f"{b['width']}x{b['height']}+{b['left']}+{b['top']}"
-                        ))
+                    # Start new processing
+                    pending_future = asyncio.run_coroutine_threadsafe(
+                        self.process_image(image, bounds), 
+                        self.loop
+                    )
+
+
                 
             except Exception as e:
                 print(f"Stream error: {e}")
@@ -457,8 +477,44 @@ class MainWindow(ctk.CTk):
 
     async def process_image(self, image, bounds):
         if not self.async_engine: return
+        
+        # Define callback to handle "Slow Motion" steps inside the engine
+        async def step_callback(stage, data):
+            if stage == "OCR":
+                # Step 2: OCR Done (Windows OCR) -> No Delay
+                # print("DEBUG: Step 2 - OCR Done. Waiting 2s...", flush=True)
+                raw_text = f"Found {len(data)} text blocks"
+                self.after(0, lambda: self.overlay.show_debug(f"STEP 2: OCR Done ({raw_text})"))
+                # await asyncio.sleep(2)
+                
+            elif stage == "MERGED":
+                # Step 3: Merge Text Blocks (Show Blue Boxes) -> NO DELAY
+                # print("DEBUG: Step 3 - Merged. Showing boxes. Waiting 2s...", flush=True)
+                
+                # Extract boxes for display
+                boxes = [item['bbox'] for item in data]
+                offset_x = bounds['left']
+                offset_y = bounds['top']
+                geometry = f"{bounds['width']}x{bounds['height']}+{bounds['left']}+{bounds['top']}"
+                
+                self.after(0, lambda: self.overlay.set_geometry(geometry))
+                self.after(0, lambda: self.overlay.show_boxes(boxes, offset_x, offset_y, color="#00ffff")) # Cyan/Blue
+                self.after(0, lambda: self.overlay.show_debug("STEP 3: Text Merged (Blue Boxes)"))
+                
+                # Flow: Merge -> Immediate
+                # await asyncio.sleep(2)
+                
+            elif stage == "TRANSLATED":
+                pass # Skip delay here, we move straight to display
+
         try:
-            results, raw_text = await self.async_engine.process_image(image)
+            # Pass the callback to the engine, skip translation enabled (Original Text)
+            results, raw_text = await self.async_engine.process_image(image, step_callback=step_callback, skip_translation=True)
+            
+            # Step 5: Draw Overlay Lines (Display Original Text) -> 2s Delay
+            
+            # print("DEBUG: Step 5 - Draw Overlay. Waiting 2s...", flush=True)
+            self.after(0, lambda: self.overlay.show_debug("STEP 5: Result (Original Text)"))
             
             # Use bounds directly from capture (always current)
             offset_x = bounds['left']
@@ -467,6 +523,12 @@ class MainWindow(ctk.CTk):
 
             if self.is_streaming:
                 self.after(0, lambda: self._update_overlay_safe(results, raw_text, offset_x, offset_y, geometry))
+                
+            # Wait 2 seconds before next loop iteration
+            await asyncio.sleep(2)
+            
+            # Request: Blue frame AND Text disappear after 2s delay
+            self.after(0, self.overlay.hide)
 
         except Exception as e:
             print(f"Proc Error: {e}")

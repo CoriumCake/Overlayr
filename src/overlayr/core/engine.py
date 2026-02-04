@@ -59,23 +59,26 @@ class AsyncEngine(metaclass=SingletonMeta):
         self.source = source_code
         self.target = target_code
 
-    async def process_image(self, image: Image.Image) -> Tuple[List[Dict[str, Any]], str]:
+    async def process_image(self, image: Image.Image, step_callback: Optional[Callable] = None, skip_translation: bool = False) -> Tuple[List[Dict[str, Any]], str]:
         """
         Runs OCR and translates text using fast Windows+Google APIs.
+        Supports step_callback(stage_name, data) for debugging flow.
         """
         import time
         t0 = time.time()
         
         # Preprocessing: Convert to grayscale and enhance contrast for better OCR
         processed = image.convert("L")
-        # Reduced from 2.0 to 1.5 to avoid "hard" edges that create noise
         processed = ImageEnhance.Contrast(processed).enhance(1.5)
-        # Sharpening can sometimes amplify artifacts, keeping it subtle
         processed = processed.filter(ImageFilter.SHARPEN)
         
         # Windows OCR works better with some contrast
         results = await self.ocr_service.extract_text(processed)
         t1 = time.time()
+        
+        # DEBUG CALLBACK: OCR DONE
+        if step_callback:
+            await step_callback("OCR", results)
         
         if not results:
             return [], ""
@@ -127,10 +130,21 @@ class AsyncEngine(metaclass=SingletonMeta):
         # Merge spatially close blocks
         merged_metadata = self._merge_text_blocks(metadata)
         
+        # DEBUG CALLBACK: MERGE DONE
+        if step_callback:
+            await step_callback("MERGED", merged_metadata)
+        
         texts_to_translate = [m["original"] for m in merged_metadata]
 
-        # Batch Translate via Google
-        translated_texts = await self.translator_service.translate(texts_to_translate)
+        # Batch Translate via Google (or skip)
+        if skip_translation:
+             translated_texts = texts_to_translate
+        else:
+             translated_texts = await self.translator_service.translate(texts_to_translate)
+        
+        # DEBUG CALLBACK: TRANSLATE DONE
+        if step_callback:
+            await step_callback("TRANSLATED", translated_texts)
         
         # Recombine
         final_results = []
@@ -149,6 +163,7 @@ class AsyncEngine(metaclass=SingletonMeta):
         """
         Merges text boxes that are physically close together into single blocks.
         Helps translate full sentences instead of fragments.
+        Improved to handle multi-line paragraphs.
         """
         if not elements: return []
         
@@ -158,8 +173,14 @@ class AsyncEngine(metaclass=SingletonMeta):
         merged = []
         visited = [False] * len(elements)
         
-        x_threshold = 100 # pixels horizontally
-        y_threshold = 40  # pixels vertically (line height)
+        # Thresholds
+        x_threshold = 100 # Horizontal gap allowed
+        y_line_threshold = 20 # Vertical alignment tolerance for "same line"
+        
+        # Vertical gap threshold for "next line in paragraph"
+        # Should be relative to line height, but static for now
+        # If gap between bottom of B1 and top of B2 is small
+        vertical_gap_threshold = 60 
         
         for i in range(len(elements)):
             if visited[i]: continue
@@ -175,27 +196,38 @@ class AsyncEngine(metaclass=SingletonMeta):
                 for j in range(len(elements)):
                     if visited[j]: continue
                     
-                    # Check if elements[j] is close to ANY element currently in group
+                    # Check against ANY element currently in group
                     is_close = False
                     for existing in group:
                         b1 = existing["bbox"]
                         b2 = elements[j]["bbox"]
                         
-                        # Vertical distance between centers or edges
-                        v_dist = abs(b1[1] - b2[1]) 
-                        # Horizontal distance between right edge of one and left of other
-                        h_dist = min(abs(b1[2] - b2[0]), abs(b2[2] - b1[0]))
+                        # b1 = [L, T, R, B]
                         
-                        # If same line (ish) and close horizontally
-                        if v_dist < y_threshold and h_dist < x_threshold:
-                            is_close = True
-                            break
+                        # 1. Check if on same line (horizontal merge)
+                        v_center_dist = abs((b1[1]+b1[3])/2 - (b2[1]+b2[3])/2)
+                        h_gap = max(0, min(abs(b1[2]-b2[0]), abs(b2[2]-b1[0]))) # Gap between edges
                         
-                        # Or if they overlap vertically (multiline block)
-                        y_overlap = min(b1[3], b2[3]) - max(b1[1], b2[1])
-                        if y_overlap > 0 and h_dist < x_threshold:
+                        if v_center_dist < y_line_threshold and h_gap < x_threshold:
                             is_close = True
-                            break
+                            
+                        # 2. Check if one is above/below the other (vertical merge / paragraph)
+                        # Vertical gap: distance between Bottom of Top and Top of Bottom
+                        if b1[1] < b2[1]: # b1 is above b2
+                            v_gap = b2[1] - b1[3]
+                        else: # b2 is above b1
+                            v_gap = b1[1] - b2[3]
+                            
+                        # Horizontal overlap for alignment check
+                        # They should be roughly aligned left or center to be same paragraph
+                        h_overlap = min(b1[2], b2[2]) - max(b1[0], b2[0])
+                        
+                        # Or if close horizontally (start of new line might be far left of end of previous line)
+                        # Just ensure they are "in same column" roughly
+                        is_vertically_aligned = (h_overlap > -50) # Allow small negative overlap (indent)
+                        
+                        if v_gap < vertical_gap_threshold and v_gap > -30 and is_vertically_aligned:
+                            is_close = True
                             
                     if is_close:
                         group.append(elements[j])
@@ -203,9 +235,14 @@ class AsyncEngine(metaclass=SingletonMeta):
                         changed = True
             
             # Merge the group
-            group.sort(key=lambda x: (x["bbox"][1], x["bbox"][0])) # Sort top-to-bottom, left-to-right
+            # Sort top-to-bottom, then left-to-right for reading order
+            group.sort(key=lambda x: (x["bbox"][1], x["bbox"][0]))
             
             all_text = " ".join(item["original"] for item in group)
+            
+            # Calculate average line height to determine font size
+            total_height = sum(item["bbox"][3] - item["bbox"][1] for item in group)
+            avg_line_height = total_height / len(group)
             
             # New bounding box
             min_l = min(item["bbox"][0] for item in group)
@@ -216,7 +253,8 @@ class AsyncEngine(metaclass=SingletonMeta):
             merged.append({
                 "bbox": [min_l, min_t, max_r, max_b],
                 "original": all_text,
-                "bg_color": group[0]["bg_color"] # Take from first item
+                "bg_color": group[0]["bg_color"], # Take from first item
+                "line_height": avg_line_height
             })
             
         return merged

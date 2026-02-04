@@ -8,3 +8,5 @@ deep-translator
 Pillow
 opencv-python
 keyboard
+winocr
+langdetect

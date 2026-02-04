@@ -21,6 +21,21 @@ class ValidationService:
     ]
 
     @staticmethod
+    def _has_asiatic_chars(text: str) -> bool:
+        """Checks for Thai, CJK, etc."""
+        for c in text:
+            code = ord(c)
+            # Thai
+            if 0x0E00 <= code <= 0x0E7F: return True
+            # CJK
+            if 0x4E00 <= code <= 0x9FFF: return True
+            # Hiragana/Katakana
+            if 0x3040 <= code <= 0x30FF: return True
+            # Hangul
+            if 0xAC00 <= code <= 0xD7AF: return True
+        return False
+
+    @staticmethod
     def is_valid_text(text: str, source_lang: str) -> bool:
         """
         Determines if a piece of text is likely real content rather than noise.
@@ -53,21 +68,38 @@ class ValidationService:
             
         # 2. Source-Specific Logic
         if source_lang == 'en':
-            # Check for non-ASCII characters in English source
-            # Subtitles rarely have them, noise often does (like « or random accents)
-            non_standard = sum(1 for c in text if ord(c) > 127 and c not in "“”‘’\"")
-            if non_standard >= 1: # Even one non-standard char is suspicious in simple English OCR
+            # English should NOT contain Asiatic characters (Thai, CJK)
+            if ValidationService._has_asiatic_chars(text):
                 return False
-                
-            # English Vowel check (noise usually lacks vowels)
+            
+            # Check for non-ASCII characters (Stricter)
+            # Allow widely used latin supplements but reject others
+            non_standard = sum(1 for c in text if ord(c) > 383 and c not in "“”‘’\"…")
+            if non_standard > 0:
+                return False
+
+            # Existing vowels check
             if letter_count > 0:
                 vowel_count = sum(1 for c in text if c in ValidationService.VOWELS)
                 if vowel_count == 0 and length > 2:
                     return False
-                
-                # Minimum alpha ratio for English - subtitles should be mostly letters
                 if letter_count < length * 0.6 and length > 5:
                     return False
+            
+            # Use langdetect for longer text to be sure
+            if length > 20:
+                try:
+                    from langdetect import detect
+                    lang = detect(text)
+                    # If detected as Thai/CJK/etc, reject. 
+                    if lang in ['th', 'ja', 'ko', 'zh-cn', 'zh-tw', 'vi']:
+                        return False
+                except: pass
+
+        elif source_lang == 'th':
+            # Thai MUST contain some Thai characters
+            if not ValidationService._has_asiatic_chars(text):
+                return False
 
         # 3. Mixed Gibberish Improved
         if letter_count > 0 and (digit_count > 0 or symbol_count > 0):
