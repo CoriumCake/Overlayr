@@ -96,25 +96,61 @@ class CaptureEngine(metaclass=SingletonMeta):
 
     def get_thumbnail(self, mode: str, target: Dict[str, Any], size: Tuple[int, int] = (150, 100)) -> Any:
         try:
-            with mss.mss() as sct:
-                img = None
-                
-                if mode == "screen":
+            if mode == "screen":
+                with mss.mss() as sct:
                     monitor_idx = target['id'] + 1
                     if monitor_idx < len(sct.monitors):
                         img_sct = sct.grab(sct.monitors[monitor_idx])
                         img = Image.frombytes("RGB", img_sct.size, img_sct.bgra, "raw", "BGRX")
+                        return img.resize(size, Image.Resampling.LANCZOS)
                 
-                elif mode == "window":
-                    w = target['window_obj']
-                    if w.width > 0 and w.height > 0:
-                         bbox = {"top": w.top, "left": w.left, "width": w.width, "height": w.height}
-                         img_sct = sct.grab(bbox)
-                         img = Image.frombytes("RGB", img_sct.size, img_sct.bgra, "raw", "BGRX")
+            elif mode == "window":
+                import ctypes
+                from ctypes import wintypes
                 
-                if img:
-                    return img.resize(size, Image.Resampling.LANCZOS)
+                hwnd = target.get('id')
+                if not hwnd: return None
+                
+                # Get Window dimensions
+                rect = wintypes.RECT()
+                ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                w = rect.right - rect.left
+                h = rect.bottom - rect.top
+                
+                if w <= 0 or h <= 0: return None
+                
+                # Create Device Contexts
+                hwnd_dc = ctypes.windll.user32.GetWindowDC(hwnd)
+                mfc_dc = ctypes.windll.gdi32.CreateCompatibleDC(hwnd_dc)
+                save_bit_map = ctypes.windll.gdi32.CreateCompatibleBitmap(hwnd_dc, w, h)
+                ctypes.windll.gdi32.SelectObject(mfc_dc, save_bit_map)
+                
+                # PrintWindow captures the window content even if obscured
+                # PW_RENDERFULLCONTENT = 0x00000002
+                ctypes.windll.user32.PrintWindow(hwnd, mfc_dc, 2)
+                
+                # Convert to PIL
+                bmp_info = bytes(40) # BITMAPINFOHEADER is 40 bytes
+                # We'll use a slightly more direct way to get bits if PrintWindow worked
+                # For simplicity in this env, we use BitBlt as backup or just direct
+                
+                import numpy as np
+                # This is a bit complex for raw ctypes, let's use a simpler PIL capture if PrintWindow fails
+                # OR use the buffer directly.
+                
+                bitmap_bits = ctypes.create_string_buffer(w * h * 4)
+                ctypes.windll.gdi32.GetBitmapBits(save_bit_map, w * h * 4, bitmap_bits)
+                
+                img = Image.frombuffer("RGBA", (w, h), bitmap_bits, "raw", "BGRA", 0, 1)
+                img = img.convert("RGB")
+                
+                # Cleanup
+                ctypes.windll.gdi32.DeleteObject(save_bit_map)
+                ctypes.windll.gdi32.DeleteDC(mfc_dc)
+                ctypes.windll.user32.ReleaseDC(hwnd, hwnd_dc)
+                
+                return img.resize(size, Image.Resampling.LANCZOS)
                 
         except Exception as e:
-            pass
+            print(f"Thumbnail error: {e}")
         return None

@@ -58,10 +58,16 @@ class MainWindow(ctk.CTk):
         self.capture_engine = None
         self.source_manager = None
         
+        # Bind resize for responsive grid
+        self.bind("<Configure>", lambda e: self.refresh_sources(silent=True) if e.widget == self else None)
+        
         # State
         self.selected_source = None
         self.is_streaming = False
         self.loop = asyncio.new_event_loop()
+        
+        # UI Cache to prevent flickering
+        self.cards_cache = {"screens": {}, "apps": {}}
         
         # UI Setup
         self._create_ui()
@@ -101,6 +107,9 @@ class MainWindow(ctk.CTk):
         self.lbl_status.configure(text="Ready")
         if self.selected_source:
             self.btn_stream.configure(state="normal")
+        
+        # Start auto-refresh polling once backend is ready
+        self._schedule_auto_refresh()
 
     def _create_ui(self):
         # Layout: Header, Tabs (Screens/Apps), Grid, Footer
@@ -169,9 +178,6 @@ class MainWindow(ctk.CTk):
         self.lbl_status = ctk.CTkLabel(self.footer_frame, text="Ready", anchor="w")
         self.lbl_status.pack(side="left", padx=10, pady=5)
         
-        self.lbl_current_target = ctk.CTkLabel(self.footer_frame, text="Target: None", font=("Segoe UI", 10, "italic"), text_color="gray")
-        self.lbl_current_target.pack(side="left", padx=10, pady=5)
-        
         self.btn_define_roi = ctk.CTkButton(self.footer_frame, text="Define Area", command=self.define_roi, width=100)
         self.btn_define_roi.pack(side="right", padx=5, pady=5)
         
@@ -233,12 +239,13 @@ class MainWindow(ctk.CTk):
         # Callback to UI
         self.after(0, lambda: self.lbl_status.configure(text=f"Languages Updated: {src}->{tgt}"))
 
-    def refresh_sources(self):
+    def refresh_sources(self, silent=False):
         if not self.source_manager: return
-        self.lbl_status.configure(text="Refreshing sources...")
-        threading.Thread(target=self._fetch_sources_background, daemon=True).start()
+        if not silent:
+            self.lbl_status.configure(text="Refreshing sources...")
+        threading.Thread(target=self._fetch_sources_background, args=(silent,), daemon=True).start()
 
-    def _fetch_sources_background(self):
+    def _fetch_sources_background(self, silent=False):
         if not self.source_manager: return
         try:
             # Heavy lifting in thread
@@ -262,43 +269,73 @@ class MainWindow(ctk.CTk):
                      except: pass
             
             # Update UI in main loop
-            self.after(0, lambda: self._update_source_grids(monitors, windows))
+            self.after(0, lambda: self._update_source_grids(monitors, windows, silent))
         except Exception as e:
             print(f"Source fetch error: {e}")
-            self.after(0, lambda: self.lbl_status.configure(text="Error fetching sources"))
+            if not silent:
+                self.after(0, lambda: self.lbl_status.configure(text="Error fetching sources"))
 
-    def _update_source_grids(self, monitors, windows):
-        # Clear existing
-        for widget in self.scroll_screens.winfo_children(): widget.destroy()
-        for widget in self.scroll_apps.winfo_children(): widget.destroy()
+    def _update_source_grids(self, monitors, windows, silent=False):
+        # Synchronize grids instead of rebuilding
+        self._sync_grid(self.scroll_screens, monitors, "screens")
+        self._sync_grid(self.scroll_apps, windows, "apps")
         
-        self._populate_grid(self.scroll_screens, monitors)
-        self._populate_grid(self.scroll_apps, windows)
-        self.lbl_status.configure(text="Ready")
+        if not silent:
+            self.lbl_status.configure(text="Ready")
         
         # Re-enable start button if selection exists
         if self.selected_source and self.async_engine:
             self.btn_stream.configure(state="normal")
 
-    def _populate_grid(self, parent, sources):
-        row = 0
-        col = 0
-        max_cols = 3
+    def _sync_grid(self, parent, new_sources, cache_key):
+        """Diff & Sync algorithm to update source cards with responsive layout."""
+        cache = self.cards_cache[cache_key]
+        new_ids = {s['id'] for s in new_sources}
         
-        for source in sources:
-            card = SourceCard(parent, source_data=source, on_click=self.on_source_select)
-            card.grid(row=row, column=col, padx=10, pady=10)
+        # 1. Remove old cards
+        removed_ids = set(cache.keys()) - new_ids
+        for rid in removed_ids:
+            cache[rid].destroy()
+            del cache[rid]
             
-            col += 1
-            if col >= max_cols:
-                col = 0
-                row += 1
+        # 2. Add or Update cards
+        for i, source in enumerate(new_sources):
+            sid = source['id']
+            if sid in cache:
+                title = source.get('name') or source.get('title')
+                truncated_title = title[:15] + "..." if len(title) > 18 else title
+                cache[sid].configure(
+                    text=f"{truncated_title}",
+                    image=source.get('thumbnail')
+                )
+            else:
+                card = SourceCard(parent, source_data=source, on_click=self.on_source_select)
+                cache[sid] = card
+        
+        # 3. Responsive Positioning
+        # Card width is 200, plus padding (10 each side) = 220 total
+        # Parent width - scrollbar (~20)
+        parent_width = parent.winfo_width()
+        if parent_width <= 1: parent_width = 750 # Fallback for initial draw
+        
+        max_cols = max(1, parent_width // 220)
+        
+        for i, source in enumerate(new_sources):
+            sid = source['id']
+            if sid in cache:
+                row = i // max_cols
+                col = i % max_cols
+                cache[sid].grid(row=row, column=col, padx=10, pady=10)
+                
+        # Configure columns to expand
+        for c in range(max_cols):
+            parent.grid_columnconfigure(c, weight=1)
 
     def on_source_select(self, source):
         self.selected_source = source
-        name = source.get('name') or source.get('title') or "Unknown Source"
-        self.lbl_status.configure(text=f"Selected: {name}")
-        self.lbl_current_target.configure(text=f"Targeting: {name}", text_color="white")
+        friendly_name = source.get('friendly_name') or source.get('name') or source.get('title') or "Unknown Source"
+        
+        self.lbl_status.configure(text=f"Selected: {friendly_name}")
 
         
         # If engine is ready, enable button
@@ -309,6 +346,17 @@ class MainWindow(ctk.CTk):
 
     def _on_tab_change(self):
         self.refresh_sources()
+
+    def _schedule_auto_refresh(self):
+        """Periodically refresh sources if not streaming."""
+        interval_ms = 1000 # 1 second for "instant" feel
+        
+        if not self.is_streaming and self.source_manager:
+            if self.source_manager.has_window_list_changed():
+                # Perform a silent refresh to avoid flickering status bar
+                self.refresh_sources(silent=True)
+            
+        self.after(interval_ms, self._schedule_auto_refresh)
 
     def _init_backend(self):
         try:
