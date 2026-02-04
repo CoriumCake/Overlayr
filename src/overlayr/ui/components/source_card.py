@@ -8,12 +8,23 @@ class SourceCard(ctk.CTkButton):
         
         # Determine icon/text
         is_screen = source_data.get('type') == 'screen'
-        title = source_data.get('name') if is_screen else source_data.get('title')
-        if len(title) > 20: title = title[:17] + "..."
+    def _truncate(self, text: str, length: int) -> str:
+        if len(text) > length:
+            return text[:length-3] + "..."
+        return text
+
+    def __init__(self, master, source_data: dict, on_click: Callable[[dict], None], **kwargs):
+        self.source_data = source_data
+        self.on_click_callback = on_click
         
-        details = source_data.get('details', 'Window')
+        # Determine icon/text
+        is_screen = source_data.get('type') == 'screen'
+        raw_title = source_data.get('name') if is_screen else source_data.get('title')
+        title = self._truncate(raw_title, 18)
         
-        text = f"{title}\n{details}"
+        details = self._truncate(source_data.get('details', 'Window'), 20)
+        
+        text = title
         
         super().__init__(
             master, 
@@ -21,8 +32,8 @@ class SourceCard(ctk.CTkButton):
             image=source_data.get('thumbnail'),
             compound="top",
             command=self._on_click, 
-            height=120, 
-            width=160,
+            height=150, 
+            width=200,
             corner_radius=10,
             fg_color="#2B2B2B",
             hover_color="#3A3A3A",
