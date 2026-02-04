@@ -1,4 +1,9 @@
-easyocr
+mss
+pygetwindow
+screeninfo
+pywin32
+customtkinter
+aiohttp
 deep-translator
 Pillow
 opencv-python
