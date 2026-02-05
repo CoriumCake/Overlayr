@@ -64,7 +64,9 @@ class MainWindow(ctk.CTk):
         # State
         self.selected_source = None
         self.is_streaming = False
+        self.is_streaming = False
         self.loop = asyncio.new_event_loop()
+        self.current_merge_mode = "paragraph" # Default to Manga mode
         
         # UI Cache to prevent flickering
         self.cards_cache = {"screens": {}, "apps": {}}
@@ -91,6 +93,9 @@ class MainWindow(ctk.CTk):
             if hasattr(self, 'loop') and self.loop:
                 self.async_engine.set_loop(self.loop)
             
+            # Connect status callback
+            self.async_engine.set_status_callback(lambda msg: self.after(0, lambda: self.lbl_status.configure(text=msg)))
+            
             # Warmup translator in background to avoid delay later
             self.async_engine.warmup()
             
@@ -101,7 +106,7 @@ class MainWindow(ctk.CTk):
             
         except Exception as e:
             print(f"Service Init Error: {e}", flush=True)
-            self.after(0, lambda: self.lbl_status.configure(text=f"Init Error: {e}"))
+            self.after(0, lambda err=e: self.lbl_status.configure(text=f"Init Error: {err}"))
 
     def _on_backend_ready(self):
         self.lbl_status.configure(text="Ready")
@@ -155,6 +160,18 @@ class MainWindow(ctk.CTk):
         )
         self.opt_target_lang.pack(side="left", padx=5)
         
+        # Grouping Mode
+        ctk.CTkLabel(self.header_frame, text="Mode", font=("Roboto Medium", 16)).pack(side="left", padx=(20, 5))
+        self.var_grouping_mode = ctk.StringVar(value="Group (Manga)")
+        self.opt_grouping_mode = ctk.CTkOptionMenu(
+            self.header_frame,
+            values=["Group (Manga)", "Document (Lines)"],
+            variable=self.var_grouping_mode,
+            command=self._update_merge_mode,
+            width=140
+        )
+        self.opt_grouping_mode.pack(side="left", padx=5)
+        
         self.switch_compact = ctk.CTkSwitch(self.header_frame, text="Compact", command=self.toggle_compact)
         self.switch_compact.pack(side="right", padx=10)
         
@@ -185,6 +202,13 @@ class MainWindow(ctk.CTk):
         self.btn_stream.pack(side="right", padx=10, pady=5)
         
 
+
+    def _update_merge_mode(self, choice):
+        if "Document" in choice:
+            self.current_merge_mode = "line"
+        else:
+            self.current_merge_mode = "paragraph"
+        print(f"Merge mode detected: {self.current_merge_mode}")
 
     def _on_language_change(self, choice):
         if not self.async_engine: return
@@ -509,7 +533,13 @@ class MainWindow(ctk.CTk):
 
         try:
             # Pass the callback to the engine, skip translation enabled (Original Text)
-            results, raw_text = await self.async_engine.process_image(image, step_callback=step_callback, skip_translation=True)
+            # Use current_merge_mode (thread-safe string)
+            results, raw_text = await self.async_engine.process_image(
+                image, 
+                step_callback=step_callback, 
+                skip_translation=True,
+                merge_mode=self.current_merge_mode
+            )
             
             # Step 5: Draw Overlay Lines (Display Original Text) -> 2s Delay
             
@@ -524,10 +554,10 @@ class MainWindow(ctk.CTk):
             if self.is_streaming:
                 self.after(0, lambda: self._update_overlay_safe(results, raw_text, offset_x, offset_y, geometry))
                 
-            # Wait 2 seconds before next loop iteration
-            await asyncio.sleep(2)
+            # Wait 5 seconds before next loop iteration
+            await asyncio.sleep(5)
             
-            # Request: Blue frame AND Text disappear after 2s delay
+            # Request: Blue frame AND Text disappear after 5s delay
             self.after(0, self.overlay.hide)
 
         except Exception as e:

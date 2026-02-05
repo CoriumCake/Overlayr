@@ -11,7 +11,12 @@ class WindowsOCREngine:
     
     def __init__(self):
         self._language = "en"
+        self._status_callback = None
         print("WindowsOCREngine initialized.")
+
+    def set_callback(self, callback):
+        self._status_callback = callback
+        if self._status_callback: self._status_callback("Windows OCR Ready")
     
     def set_language(self, lang_code: str) -> None:
         """Set OCR language. Common codes: en, ja, ko, zh, th"""

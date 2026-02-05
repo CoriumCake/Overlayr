@@ -14,8 +14,10 @@ class GoogleTranslateService:
         self.target = target
         self._cache = {}
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
-        print(f"GoogleTranslateService initialized: {source} -> {target}")
-    
+    def warmup(self):
+        """Warmup stub."""
+        pass
+
     async def load_model(self, src: str, tgt: str) -> None:
         """Update source/target languages."""
         if src != self.source or tgt != self.target:

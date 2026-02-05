@@ -11,7 +11,7 @@ from PIL import ImageEnhance, ImageFilter
 class AsyncEngine(metaclass=SingletonMeta):
     """
     Orchestrates OCR and Translation asynchronously.
-    Now using Windows OCR + Google Translate for maximum speed.
+    Pipeline: Resize (2x) -> Grayscale -> Contrast -> Sharpen -> Windows OCR.
     """
     def __init__(self) -> None:
         print("AsyncEngine: Init start...", flush=True)
@@ -21,15 +21,19 @@ class AsyncEngine(metaclass=SingletonMeta):
         print("AsyncEngine: Google Translate initialized.", flush=True)
         self._is_running = False
         self._loop_task: Optional[asyncio.Task] = None
+
+    def set_status_callback(self, callback):
+        """Pass UI status callback to services."""
+        if hasattr(self.ocr_service, 'set_callback'):
+            # WindowsOCR might not support this yet, but safe to call if it exists
+            self.ocr_service.set_callback(callback)
         
         # Current language state
         self.source = "en"
         self.target = "th"
-        
-        print("AsyncEngine: Init done.", flush=True)
 
-    def set_loop(self, loop: asyncio.AbstractEventLoop):
-        self.loop = loop
+    def set_loop(self, loop):
+        self._loop = loop
 
     def _handle_task_result(self, future):
         try:
@@ -38,43 +42,60 @@ class AsyncEngine(metaclass=SingletonMeta):
             print(f"Async Task Error: {e}", flush=True)
 
     def warmup(self):
-        """Pre-warm the OCR engine."""
+        # Trigger model load / connection
         self.ocr_service.warmup()
+        self.translator_service.warmup()
+        print("AsyncEngine: Warmup complete.", flush=True)
 
-    def update_languages(self, source_code: str, target_code: str):
-        # Update Translator
-        if hasattr(self, 'loop') and self.loop.is_running():
-             future = asyncio.run_coroutine_threadsafe(
-                self.translator_service.load_model(source_code, target_code),
-                self.loop
-             )
-             future.add_done_callback(self._handle_task_result)
-        else:
-             print("AsyncEngine: Loop not ready for language update.", flush=True)
+    async def update_languages(self, source: str, target: str):
+        self.source = source
+        self.target = target
+        
+        # Update translator (async)
+        await self.translator_service.load_model(source, target)
         
         # Update OCR language
-        self.ocr_service.set_language(source_code)
+        self.ocr_service.set_language(source)
         
         # Store for internal use (noise filtering logic)
-        self.source = source_code
-        self.target = target_code
+        self.source = source
+        self.target = target
 
-    async def process_image(self, image: Image.Image, step_callback: Optional[Callable] = None, skip_translation: bool = False) -> Tuple[List[Dict[str, Any]], str]:
+    async def process_image(self, image: Image.Image, step_callback: Optional[Callable] = None, skip_translation: bool = False, merge_mode: str = "paragraph") -> Tuple[List[Dict[str, Any]], str]:
         """
         Runs OCR and translates text using fast Windows+Google APIs.
         Supports step_callback(stage_name, data) for debugging flow.
+        merge_mode: 'paragraph' (group lines) or 'line' (separate lines)
         """
         import time
         t0 = time.time()
         
-        # Preprocessing: Convert to grayscale and enhance contrast for better OCR
-        processed = image.convert("L")
+        # Preprocessing: Resize -> Grayscale -> Image Enhancement -> SHARPEN
+        scale_factor = 2.0
+        new_width = int(image.width * scale_factor)
+        new_height = int(image.height * scale_factor)
+        
+        processed = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        processed = processed.convert("L")
         processed = ImageEnhance.Contrast(processed).enhance(1.5)
         processed = processed.filter(ImageFilter.SHARPEN)
+        
+
         
         # Windows OCR works better with some contrast
         results = await self.ocr_service.extract_text(processed)
         t1 = time.time()
+        
+        # Scale back coordinates
+        scaled_results = []
+        for bbox_points, text, conf in results:
+            # bbox_points is [[x1,y1], [x2,y2]...]
+            scaled_bbox = []
+            for point in bbox_points:
+                scaled_bbox.append([int(point[0] / scale_factor), int(point[1] / scale_factor)])
+            scaled_results.append((scaled_bbox, text, conf))
+            
+        results = scaled_results
         
         # DEBUG CALLBACK: OCR DONE
         if step_callback:
@@ -89,8 +110,10 @@ class AsyncEngine(metaclass=SingletonMeta):
         # Capture all raw text before filtering for debugging
         raw_parts = [t for _, t, _ in results]
         raw_text = f"[{len(results)} raw items] {' | '.join(raw_parts)}"[:500] 
-
+        
         # Prepare batch
+        w, h = image.size # Original size
+        
         for bbox_points, text, conf in results:
             if conf < 0.35: continue 
             
@@ -103,7 +126,6 @@ class AsyncEngine(metaclass=SingletonMeta):
             right = int(np.max(pts[:, 0]))
             bottom = int(np.max(pts[:, 1]))
             
-            w, h = image.size
             left = max(0, left); top = max(0, top)
             right = min(w, right); bottom = min(h, bottom)
 
@@ -128,7 +150,9 @@ class AsyncEngine(metaclass=SingletonMeta):
             return [], raw_text
 
         # Merge spatially close blocks
-        merged_metadata = self._merge_text_blocks(metadata)
+        merged_metadata = self._merge_text_blocks(metadata, mode=merge_mode)
+        
+
         
         # DEBUG CALLBACK: MERGE DONE
         if step_callback:
@@ -159,105 +183,184 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         return final_results, raw_text
 
-    def _merge_text_blocks(self, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _merge_text_blocks(self, elements: List[Dict[str, Any]], mode: str = "paragraph") -> List[Dict[str, Any]]:
         """
-        Merges text boxes that are physically close together into single blocks.
-        Helps translate full sentences instead of fragments.
-        Improved to handle multi-line paragraphs.
+        Merges text boxes using clustering logic adapted from WindowsOCRTool.
+        mode='paragraph': Groups vertically adjacent lines (Manga/Comic style).
+        mode='line': Merges only horizontal fragments, strict on vertical.
         """
         if not elements: return []
         
-        # Sort by vertical position first
+        # Helper to get bbox values
+        def get_vals(el):
+            b = el["bbox"]
+            # b = [L, T, R, B]
+            w = b[2] - b[0]
+            h = b[3] - b[1]
+            return b[0], b[1], w, h
+
+        # Helper to merge a list of elements into one metadata dict
+        def merge_cluster(cluster_items):
+            # Sort by Y to maintain reading order within block
+            cluster_items.sort(key=lambda x: x["bbox"][1])
+            
+            # Combine text
+            full_text = " ".join([item["original"] for item in cluster_items])
+            
+            # Combine bbox
+            all_l = [i["bbox"][0] for i in cluster_items]
+            all_t = [i["bbox"][1] for i in cluster_items]
+            all_r = [i["bbox"][2] for i in cluster_items]
+            all_b = [i["bbox"][3] for i in cluster_items]
+            
+            new_bbox = [min(all_l), min(all_t), max(all_r), max(all_b)]
+            
+            # Use background color of the first item (topmost)
+            bg_color = cluster_items[0]["bg_color"]
+            
+            return {
+                "bbox": new_bbox,
+                "original": full_text,
+                "bg_color": bg_color
+            }
+
+        if mode == "line":
+            # Improved Line Merging
+            # 1. Sort by Y
+            elements.sort(key=lambda x: x["bbox"][1])
+            
+            merged = []
+            visited = [False] * len(elements)
+            
+            for i in range(len(elements)):
+                if visited[i]: continue
+                group = [elements[i]]
+                visited[i] = True
+                
+                # Look for horizontal neighbors
+                changed = True
+                while changed:
+                    changed = False
+                    for j in range(len(elements)):
+                         if visited[j]: continue
+                         
+                         # Check against any item in group
+                         is_close = False
+                         for existing in group:
+                             b1 = existing["bbox"]
+                             b2 = elements[j]["bbox"]
+                             
+                             # Strict vertical alignment check (Must be same "line")
+                             # Centers must represent the same physical line
+                             cy1 = (b1[1]+b1[3])/2
+                             cy2 = (b2[1]+b2[3])/2
+                             
+                             # If vertical center diff is small (< 15px)
+                             if abs(cy1 - cy2) < 15:
+                                 # And horizontal gap is not too wide (e.g. < 200px)
+                                 # This handles spaces between words, giving a full sentence
+                                 h_gap = max(0, min(abs(b1[2]-b2[0]), abs(b2[2]-b1[0])))
+                                 
+                                 # Or check overlap if they are badly segmented
+                                 overlap_w = max(0, min(b1[2], b2[2]) - max(b1[0], b2[0]))
+                                 
+                                 if h_gap < 150 or overlap_w > 0:
+                                     is_close = True
+                                     break
+                         
+                         if is_close:
+                             group.append(elements[j])
+                             visited[j] = True
+                             changed = True
+                
+                merged.append(merge_cluster(group))
+            return merged
+
+        # ---- PARAGRAPH / MANGA MODE (Clustering) ----
+        # 1. Sort by Y initially
         elements.sort(key=lambda x: x["bbox"][1])
         
-        merged = []
-        visited = [False] * len(elements)
+        clusters = []
         
-        # Thresholds
-        x_threshold = 100 # Horizontal gap allowed
-        y_line_threshold = 20 # Vertical alignment tolerance for "same line"
-        
-        # Vertical gap threshold for "next line in paragraph"
-        # Should be relative to line height, but static for now
-        # If gap between bottom of B1 and top of B2 is small
-        vertical_gap_threshold = 60 
-        
-        for i in range(len(elements)):
-            if visited[i]: continue
+        for item in elements:
+            x, y, w, h = get_vals(item)
+            added = False
             
-            # Start a new group
-            group = [elements[i]]
-            visited[i] = True
-            
-            # Look for others to add to this group
-            changed = True
-            while changed:
-                changed = False
-                for j in range(len(elements)):
-                    if visited[j]: continue
+            for cluster in clusters:
+                # Calculate cluster bbox
+                cl = [i["bbox"][0] for i in cluster]
+                ct = [i["bbox"][1] for i in cluster]
+                cr = [i["bbox"][2] for i in cluster]
+                cb = [i["bbox"][3] for i in cluster] # Bottom of each item
+                
+                c_min_x = min(cl); c_max_x = max(cr)
+                c_min_y = min(ct); c_max_y = max(cb) # Max bottom
+                
+                # Check horizontal overlap
+                # item x range: [x, x+w]
+                # cluster x range: [c_min_x, c_max_x]
+                item_r = x + w
+                
+                overlap_w = max(0, min(item_r, c_max_x) - max(x, c_min_x))
+                
+                # Significant X overlap (> 0 is basically enough for bubbles)
+                if overlap_w > 0:
+                    # Check vertical distance
+                    # Dist from bottom of cluster to top of item
+                    # We need the bottom-most point of the cluster effectively
                     
-                    # Check against ANY element currently in group
-                    is_close = False
-                    for existing in group:
-                        b1 = existing["bbox"]
-                        b2 = elements[j]["bbox"]
+                    v_dist = max(0, y - c_max_y)
+                    
+                    # Heuristic: If v_dist is small relative to line height
+                    # item height: h
+                    if v_dist < h * 2.0:
+                        cluster.append(item)
+                        added = True
+                        break
+            
+            if not added:
+                clusters.append([item])
+                
+        # 2. Sort Clusters (Row-Column Sort)
+        # Helper to get top-left of cluster
+        def get_cluster_pos(c):
+            ts = [i["bbox"][1] for i in c]
+            ls = [i["bbox"][0] for i in c]
+            return min(ls), min(ts)
+
+        # Sort by Y first
+        clusters.sort(key=lambda c: get_cluster_pos(c)[1])
+        
+        sorted_clusters = []
+        row_threshold = 100 # If Y diff < 100, treat as same row (Matched WindowsOCRTool)
+        
+        while clusters:
+            current = clusters.pop(0)
+            cx, cy = get_cluster_pos(current)
+            
+            row = [current]
+            others = []
+            
+            for other in clusters:
+                ox, oy = get_cluster_pos(other)
+                if abs(oy - cy) < row_threshold:
+                    row.append(other)
+                else:
+                    others.append(other)
+            
+            # Sort row by X
+            row.sort(key=lambda c: get_cluster_pos(c)[0])
+            sorted_clusters.extend(row)
+            clusters = others
+            
+        # 3. Final Merge
+        final_results = []
+        for cluster in sorted_clusters:
+            final_results.append(merge_cluster(cluster))
+            
+        return final_results
                         
-                        # b1 = [L, T, R, B]
-                        
-                        # 1. Check if on same line (horizontal merge)
-                        v_center_dist = abs((b1[1]+b1[3])/2 - (b2[1]+b2[3])/2)
-                        h_gap = max(0, min(abs(b1[2]-b2[0]), abs(b2[2]-b1[0]))) # Gap between edges
-                        
-                        if v_center_dist < y_line_threshold and h_gap < x_threshold:
-                            is_close = True
-                            
-                        # 2. Check if one is above/below the other (vertical merge / paragraph)
-                        # Vertical gap: distance between Bottom of Top and Top of Bottom
-                        if b1[1] < b2[1]: # b1 is above b2
-                            v_gap = b2[1] - b1[3]
-                        else: # b2 is above b1
-                            v_gap = b1[1] - b2[3]
-                            
-                        # Horizontal overlap for alignment check
-                        # They should be roughly aligned left or center to be same paragraph
-                        h_overlap = min(b1[2], b2[2]) - max(b1[0], b2[0])
-                        
-                        # Or if close horizontally (start of new line might be far left of end of previous line)
-                        # Just ensure they are "in same column" roughly
-                        is_vertically_aligned = (h_overlap > -50) # Allow small negative overlap (indent)
-                        
-                        if v_gap < vertical_gap_threshold and v_gap > -30 and is_vertically_aligned:
-                            is_close = True
-                            
-                    if is_close:
-                        group.append(elements[j])
-                        visited[j] = True
-                        changed = True
-            
-            # Merge the group
-            # Sort top-to-bottom, then left-to-right for reading order
-            group.sort(key=lambda x: (x["bbox"][1], x["bbox"][0]))
-            
-            all_text = " ".join(item["original"] for item in group)
-            
-            # Calculate average line height to determine font size
-            total_height = sum(item["bbox"][3] - item["bbox"][1] for item in group)
-            avg_line_height = total_height / len(group)
-            
-            # New bounding box
-            min_l = min(item["bbox"][0] for item in group)
-            min_t = min(item["bbox"][1] for item in group)
-            max_r = max(item["bbox"][2] for item in group)
-            max_b = max(item["bbox"][3] for item in group)
-            
-            merged.append({
-                "bbox": [min_l, min_t, max_r, max_b],
-                "original": all_text,
-                "bg_color": group[0]["bg_color"], # Take from first item
-                "line_height": avg_line_height
-            })
-            
-        return merged
+
 
     def stop(self) -> None:
         self._is_running = False
