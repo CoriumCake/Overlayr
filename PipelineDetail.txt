@@ -12,13 +12,30 @@ Overlayr ใช้ไลบรารี `mss` เป็นแกนหลัก�
 2. Preprocessing (การเตรียมภาพ)
 ------------------------------------------------------
 เป้าหมาย: แปลงภาพให้เป็น "ขาว-ดำ" (Binary) ที่คมชัดที่สุด เพื่อให้ Windows OCR อ่านได้แม่นยำ
-ลำดับขั้นตอน (Pipeline Order):
-1. **[Upscale 2.5x]** ขยายภาพ 2.5 เท่าด้วย Bicubic Interpolation เพื่อให้ตัวอักษรเล็กๆ มีรายละเอียดชัดเจน
-2. **[Grayscale & CLAHE]** แปลงเป็นภาพขาวดำและใช้ CLAHE (Adaptive Histogram Eq.) เพื่อปรับแสงให้สม่ำเสมอและเร่งคอนทราสต์
-3. **[Denoise]** ใช้ Median Blur ลบจุดรบกวน (Noise)
-4. **[Adaptive Threshold]** ตัดขอบตัวอักษรออกจากพื้นหลังอย่างเด็ดขาด (Binary Image)
-5. **[Clean Noise (CCA)]** ใช้ Connected Component Analysis ลบจุดดำเล็กๆ ที่ไม่ใช่ตัวอักษร (Noise blotches)
-6. **[Finalize]** Invert สี (ตัวอักษรดำ พื้นขาว) และเติมขอบ (Padding) 50px
+ลำดับขั้นตอน (Pipeline Order & Parameters):
+1. **[Upscale 2.0x]**
+   - **Scale:** 2.0 เท่า
+   - **Interpolation:** Bicubic (`cv2.INTER_CUBIC`)
+   - *เหตุผล:* ขยายเพื่อให้เส้นตัวอักษรเล็กๆ (Small fonts) มีความหนาเพียงพอให้ OCR จับได้
+2. **[Grayscale & CLAHE]**
+   - **ClipLimit:** 2.0 (ค่าน้อยคือปรับคอนทราสต์เบาลง เพื่อไม่ให้ Noise เยอะเกินไป)
+   - **TileGridSize:** (8,8) (ขนาดตารางที่ใช้คำนวณ)
+   - *เหตุผล:* ปรับแสงให้เท่ากันทั้งภาพ (Equalization) ทำให้ตัวอักษรเด่นชัดขึ้น
+3. **[Denoise (Median Blur)]**
+   - **Kernel Size:** 5 (รัศมี 5 พิกเซล)
+   - *เหตุผล:* ลบจุดรบกวน (Salt-and-pepper noise) ที่มักเกิดขึ้นหลังจากเร่งคอนทราสต์
+4. **[Adaptive Threshold]**
+   - **Method:** Gaussian C
+   - **Block Size:** 11
+   - **C (Constant):** 12 (ลดจาก 15 เพื่อเก็บรายละเอียดตัวอักษรบางที่อาจจะจาง)
+   - *เหตุผล:* ตัดขอบตัวอักษรออกจากพื้นหลัง
+5. **[Morphological Closing]**
+   - **Kernel:** Rect (2,2)
+   - *เหตุผล:* เชื่อมต่อเส้นตัวอักษรที่ขาดออกจากกัน (Repair broken fonts)
+6. **[Clean Noise (CCA)]**
+   - **Min Area:** 10 pixels
+   - *เหตุผล:* ลบจุดดำเล็กๆ ที่ไม่ใช่ตัวอักษร
+7. **[Finalize]** Invert สี (ตัวอักษรดำ พื้นขาว) และเติมขอบ (Padding) 50px 50px
 
 3. OCR (การอ่านข้อความ)
 ------------------------------------------------------
