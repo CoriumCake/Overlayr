@@ -472,23 +472,11 @@ class MainWindow(ctk.CTk):
 
             start_time = time.time()
             try:
-                # DEBUG: Step 1 - Ready to hide
-                # self.after(0, lambda: self.overlay.show_debug("STEP 1: Hiding..."))
+                # Optimized Capture:
+                # We use SetWindowDisplayAffinity in overlay.py to make it invisible to capture.
+                # So we NO LONGER need to hide/restore it manually.
                 
-                # Hide overlay
-                self.overlay.hide_for_capture()
-                # print("STEP 2: Hidden.", flush=True)
-                time.sleep(0.05) # Tiny delay for compositor
-                
-                # Capture
-                try:
-                    result = self.capture_engine.capture()
-                    # print("STEP 3: Captured.", flush=True)
-                finally:
-                    # Restore overlay
-                    self.overlay.restore_after_capture()
-                    
-                # self.after(0, lambda: self.overlay.show_debug("STEP 4: Restored. Processing..."))
+                result = self.capture_engine.capture()
                 
                 image, bounds = result if result else (None, None)
                 
@@ -555,8 +543,8 @@ class MainWindow(ctk.CTk):
                 geometry = f"{bounds['width']}x{bounds['height']}+{bounds['left']}+{bounds['top']}"
                 
                 self.after(0, lambda: self.overlay.set_geometry(geometry))
-                self.after(0, lambda: self.overlay.show_boxes(boxes, offset_x, offset_y, color="#00ffff")) # Cyan/Blue
-                self.after(0, lambda: self.overlay.show_debug("STEP 3: Text Merged (Blue Boxes)"))
+                # self.after(0, lambda: self.overlay.show_boxes(boxes, offset_x, offset_y, color="#00ffff")) # Cyan/Blue
+                # self.after(0, lambda: self.overlay.show_debug("STEP 3: Text Merged (Blue Boxes)"))
                 
                 # Flow: Merge -> Immediate
                 # await asyncio.sleep(2)
@@ -570,14 +558,14 @@ class MainWindow(ctk.CTk):
             results, raw_text = await self.async_engine.process_image(
                 image, 
                 step_callback=step_callback, 
-                skip_translation=True,
+                skip_translation=False,
                 merge_mode=self.current_merge_mode
             )
             
-            # Step 5: Draw Overlay Lines (Display Original Text) -> 2s Delay
+            # Step 5: Draw Overlay Lines (Display Translated Result) -> Delay
             
-            # print("DEBUG: Step 5 - Draw Overlay. Waiting 2s...", flush=True)
-            self.after(0, lambda: self.overlay.show_debug("STEP 5: Result (Original Text)"))
+            # print("DEBUG: Step 5 - Draw Overlay. Waiting...", flush=True)
+            self.after(0, lambda: self.overlay.show_debug("STEP 5: Result (Translated)"))
             
             # Use bounds directly from capture (always current)
             offset_x = bounds['left']
@@ -587,11 +575,12 @@ class MainWindow(ctk.CTk):
             if self.is_streaming:
                 self.after(0, lambda: self._update_overlay_safe(results, raw_text, offset_x, offset_y, geometry))
                 
-            # Wait 5 seconds before next loop iteration
-            await asyncio.sleep(5)
+            # Wait 0 seconds (Immediate Yield) for max performance
+            await asyncio.sleep(0)
             
             # Request: Blue frame AND Text disappear after 5s delay
-            self.after(0, self.overlay.hide)
+            # User Change (1621): Keep overlay until next result replaces it.
+            # self.after(0, self.overlay.hide)
 
         except Exception as e:
             print(f"Proc Error: {e}")

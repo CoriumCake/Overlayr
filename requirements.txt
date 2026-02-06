@@ -14,4 +14,9 @@ easyocr
 fuzzywuzzy
 python-Levenshtein
 symspellpy
+<<<<<<< Updated upstream
 requests
+=======
+winsdk
+
+>>>>>>> Stashed changes

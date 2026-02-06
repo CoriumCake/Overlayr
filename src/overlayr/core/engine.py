@@ -98,8 +98,9 @@ class AsyncEngine(metaclass=SingletonMeta):
         if not os.path.exists(debug_dir): os.makedirs(debug_dir)
         timestamp = int(time.time() * 1000)
         
-        # TOGGLE: Set to False to disable debug image saving
-        SAVE_DEBUG_IMAGES = False
+        # TOGGLE: Debug Image Saving
+        SAVE_INTERMEDIATE_DEBUG = False
+        SAVE_FINAL_DEBUG = False
 
         def log_and_save(name, img_cv, suffix):
             nonlocal last_time
@@ -108,7 +109,7 @@ class AsyncEngine(metaclass=SingletonMeta):
             last_time = now
             
             # Save debug image
-            if SAVE_DEBUG_IMAGES:
+            if SAVE_INTERMEDIATE_DEBUG:
                 try:
                     fname = f"step_{suffix}_{timestamp}.png"
                     # cv2.imwrite expects BGR or Grayscale.
@@ -314,7 +315,7 @@ class AsyncEngine(metaclass=SingletonMeta):
             timestamp = int(time.time() * 1000)
             save_path = os.path.join(debug_dir, f"proc_grouped_{timestamp}.png")
             
-            if SAVE_DEBUG_IMAGES:
+            if SAVE_FINAL_DEBUG:
                 debug_img.save(save_path)
                 print(f"[DEBUG] Saved debug image to: {save_path}", flush=True)
             

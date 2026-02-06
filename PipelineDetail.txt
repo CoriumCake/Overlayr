@@ -1,70 +1,50 @@
-Sequence Diagram of Overlayr Workflow (Current Version)
+Sequence Diagram of Overlayr Workflow (Final Version)
 ======================================================
-*Updated: 2026-02-06*
+*Updated: 2026-02-06 (Latest Architecture)*
 
-1. Image Capture (การจับภาพ)
+1. Capture Mechanism (การจับภาพ)
 ------------------------------------------------------
-- โปรแกรมจับภาพหน้าจอตามพื้นที่ที่ระบุ
-- ส่งภาพเข้าสู่กระบวนการ Preprocessing
+Overlayr ใช้ไลบรารี `mss` เป็นแกนหลัก (High-performance screen shot)
+[เทคนิคสำคัญ: Invisible Overlay]
+- เราใช้ `SetWindowDisplayAffinity` (Windows API) เพื่อทำให้หน้าต่าง Overlay "ล่องหน" ในสายตาของโปรแกรมจับภาพ
+- ผลลัพธ์: เราสามารถจับภาพหน้าจอได้ตลอดเวลาโดยไม่ต้องซ่อน/แสดง Overlay ไปมา (No flickering) และ OCR จะไม่เผลออ่านข้อความแปลของตัวเอง
 
-2. Preprocessing (การเตรียมภาพก่อนอ่าน)
+2. Preprocessing (การเตรียมภาพ)
 ------------------------------------------------------
-เป้าหมาย: ทำภาพให้ "ขาว-ดำ" ชัดเจนที่สุด เพื่อให้ OCR อ่านง่าย
-ลำดับขั้นตอน (Order of Operations):
-
-[Step 1] Upscale 250% (ขยายภาพ 2.5 เท่า)
-   - ใช้เทคนิค Bicubic Interpolation
-   - เหตุผล: ขยายตัวอักษรเล็กๆ ให้ใหญ่ขึ้น เพื่อให้ OCR มองเห็นรายละเอียดเส้นชัดเจนขึ้น *ก่อน* ที่จะไปทำขั้นตอนอื่น
-
-[Step 2] Grayscale & CLAHE (ปรับแสงและคอนทราสต์)
-   - แปลงภาพเป็นขาวดำ
-   - ใช้ CLAHE (Contrast Limited Adaptive Histogram Equalization)
-   - เหตุผล: ปรับแสงให้เท่ากันทั้งภาพ และเร่งความเข้มของตัวอักษรให้ตัดกับพื้นหลัง
-
-[Step 3] Denoise (Median Blur)
-   - เหตุผล: ลบจุดรบกวน (Noise) เล็กๆ น้อยๆ ที่อาจถูกขยายขึ้นมา หรือเกิดขึ้นจากขั้นตอน CLAHE
-
-[Step 4] Adaptive Threshold (แปลงเป็นขาว-ดำ)
-   - เปลี่ยนภาพโทนเทาให้เป็น ขาว (ตัวอักษร) และ ดำ (พื้นหลัง) อย่างเด็ดขาด (Binary Image)
-
-[Step 5] Clean Noise (CCA + LUT)
-   - ใช้รากฐาน Connected Component Analysis (CCA)
-   - ใช้ตาราง Lookup Table (LUT) คัดกรองจุดดำเล็กๆ ที่ไม่ใช่ตัวอักษรออกไป (Filter blobs)
-   - เหตุผล: กำจัด "ฝุ่น" ที่เหลือรอดมาจากขั้นตอนก่อนหน้า
-
-[Step 6] Finalize (เตรียมส่ง OCR)
-   - Invert Image: กลับสีเป็น "ตัวอักษรสีดำ บนพื้นขาว" (เพราะ Windows OCR ชอบแบบนี้)
-   - Padding: เติมขอบขาวรอบภาพ เพื่อไม่ให้ตัวอักษรชิดขอบเกินไป
+เป้าหมาย: ทำภาพให้ "ขาว-ดำ" ชัดเจนที่สุด เพื่อให้ OCR อ่านง่าย (Optimized for Windows OCR)
+ลำดับขั้นตอน (Pipeline Order):
+1. [Upscale 2.5x] ขยายภาพ 2.5 เท่าด้วย Bicubic Interpolation เพื่อให้ตัวอักษรเล็กๆ มีรายละเอียดเส้นชัดเจน
+2. [Grayscale & CLAHE] แปลงขาวดำและปรับ Equalization เพื่อเร่งคอนทราสต์ตัวอักษร
+3. [Denoise] Median Blur เพื่อลบจุดรบกวน (Noise)
+4. [Adaptive Threshold] แปลงเป็นภาพขาว-ดำ (Binary) ตัดพื้นหลังออก
+5. [Clean Noise (CCA)] ใช้ Connected Component Analysis ลบฝุ่นจุดดำเล็กๆ ที่ไม่ใช่ตัวอักษร
+6. [Finalize] Invert สี (ตัวอักษรดำ พื้นขาว) และเติมขอบ (Padding)
 
 3. OCR (การอ่านข้อความ)
 ------------------------------------------------------
-- Engine: **Windows OCR** (รวดเร็ว, ไม่ต้องใช้เน็ต)
-- Input: ภาพจาก Step 6
+- Engine: **Windows Dictionary-based OCR** (รวดเร็ว, ไม่ต้องใช้เน็ต)
+- Input: ภาพจากขั้นตอนที่ 2
 - Output: ข้อความดิบ (Raw Text) และ ตำแหน่ง (Bounding Boxes)
 
-4. Post-Processing (การประมวลผลหลังอ่าน)
+4. Post-Processing (การประมวลผลก่อนแปล)
 ------------------------------------------------------
-ลำดับการทำงานที่สำคัญ (Critical Order):
+1. [Spell Check & Correction]
+   - ทำ **ก่อน** Validation เพื่อกู้คืนคำที่อ่านผิด
+   - ตัวอย่าง: `th1s` -> `this`
+2. [Validation]
+   - กรองข้อความขยะทิ้ง (Gibberish Filter)
+   - กฎเกณฑ์ผ่อนปรน (Relaxed Rules): ยอมรับสัญลักษณ์ได้ 50% ของความยาว เพื่อไม่ให้ตัดคำที่มีเครื่องหมายตกใจหรือจุดทิ้ง
 
-[Step 4.1] Text Cleaning & Spell Check (การแก้คำผิด)
-   - **ทำก่อนตรวจสอบความถูกต้อง (Before Validation)**
-   - นำข้อความดิบมาผ่าน Dictionary หรือ Logic การแก้คำ
-   - ตัวอย่าง: แก้ `th1s` -> `this`, `...HE WAS A` -> `...HE WAS A`
-   - เหตุผล: เพื่อกู้คืนข้อความที่ OCR อาจอ่านผิดพลาดเล็กน้อย ให้กลายเป็นคำที่มีความหมาย
-
-[Step 4.2] Validation (การตรวจสอบและคัดกรอง)
-   - **ทำหลังแก้คำผิด (After Spell Check)**
-   - ตรวจสอบว่าข้อความนี้ "น่าเชื่อถือ" หรือไม่
-   - กฎเกณฑ์ (Relaxed Rules):
-     - อนุญาตให้มีสัญลักษณ์ได้ถึง 50% ของความยาว (เช่น `...Text` ผ่าน)
-     - อนุญาตข้อความสั้นๆ ที่ผสมตัวเลข (เช่น `A-1` ผ่าน)
-   - ผลลัพธ์: ถ้าผ่าน -> ไปต่อ, ถ้าไม่ผ่าน -> ทิ้ง (Filtered Out)
-
-[Step 4.3] Coordinate Scaling (การแปลงตำแหน่ง)
-   - คำนวณตำแหน่งจากภาพที่ขยาย 250% กลับมาเป็นพิกัดหน้าจอจริง
-   - ลบขอบ Padding ออก
-
-5. Display (การแสดงผล)
+5. Translation (การแปลภาษา)
 ------------------------------------------------------
-- แสดง Overlay กรอบสีน้ำเงินทับตำแหน่งข้อความบนหน้าจอ
-- (Debug: ถ้าเปิดโหมด SAVE_DEBUG_IMAGES) บันทึกภาพลงโฟลเดอร์ `ProcessingImge`
+- Engine: **Google Translate (Async)**
+- Input: ข้อความภาษาอังกฤษ (หรือญี่ปุ่น/เกาหลี) ที่ผ่านการกรองแล้ว
+- Output: ข้อความภาษาไทย
+
+6. Display (การแสดงผล)
+------------------------------------------------------
+- Technology: **Tkinter Transparent Window** (Click-Through)
+- การแสดงผล:
+  - วาดข้อความผลลัพธ์ (Translated Text) ทับตำแหน่งเดิมบนหน้าจอ
+  - มีพื้นหลังสีเข้มโปร่งแสง (Semi-transparent background) เพื่อให้อ่านง่าย
+  - **Performance:** Loop Delay = 0 วินาที (Real-time updates) เพื่อความลื่นไหลสูงสุด

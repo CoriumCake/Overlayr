@@ -45,29 +45,37 @@ class ResultOverlay:
         # Make the overlay "Invisible to Screen Capture" on Windows
         # This prevents the OCR from reading our own translated text!
         if platform.system() == "Windows":
-            try:
-                import ctypes
-                from ctypes import wintypes
+             self._apply_affinity()
                 
-                # Get window handle
+    def _apply_affinity(self):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            
+            # Ensure window is partially mapped so it has an HWND
+            self.top.update_idletasks()
+            
+            # Get window handle
+            hwnd = ctypes.windll.user32.GetParent(self.top.winfo_id())
+            if not hwnd:
                 hwnd = self.top.winfo_id()
                 
-                # WDA_EXCLUDEFROMCAPTURE = 0x00000011 (Windows 10 2004+)
-                # WDA_MONITOR = 0x00000001 (Prevents capture, shows black)
-                # We use 0x11 to just EXCLUDE it completely so computer sees through it
-                WDA_EXCLUDEFROMCAPTURE = 0x00000011
+            # WDA_EXCLUDEFROMCAPTURE = 0x00000011 (Windows 10 2004+)
+            WDA_EXCLUDEFROMCAPTURE = 0x00000011
+            
+            user32 = ctypes.windll.user32
+            user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+            user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+            
+            success = user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+            if success:
+                print(f"Overlay Invisibility: ENABLED (HWND: {hwnd})", flush=True)
+            else:
+                err = ctypes.GetLastError()
+                print(f"Overlay Invisibility: FAILED (HWND: {hwnd}, Error: {err})", flush=True)
                 
-                user32 = ctypes.windll.user32
-                user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
-                user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
-                
-                success = user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
-                if success:
-                    print("Overlay Invisibility: ENABLED (Computer sees through translation)")
-                else:
-                    print("Overlay Invisibility: FAILED to apply affinity.")
-            except Exception as e:
-                print(f"Overlay Invisibility: Error setting affinity: {e}")
+        except Exception as e:
+            print(f"Overlay Invisibility: Error setting affinity: {e}", flush=True)
         
     def show_results(self, results: list, offset_x: int, offset_y: int):
         self.top.deiconify()
