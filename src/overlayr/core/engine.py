@@ -94,13 +94,17 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         # Helper to log time and save debug images
         last_time = time.perf_counter()
-        debug_dir = r"d:\NotWork\NewWork\Overlayr\ProcessingImge"
-        if not os.path.exists(debug_dir): os.makedirs(debug_dir)
+        debug_dir = os.path.join(os.getcwd(), "debug_images")
+        # if not os.path.exists(debug_dir): os.makedirs(debug_dir) # Only create if needed
         timestamp = int(time.time() * 1000)
         
         # TOGGLE: Debug Image Saving
         SAVE_INTERMEDIATE_DEBUG = False
         SAVE_FINAL_DEBUG = False
+
+        if SAVE_INTERMEDIATE_DEBUG or SAVE_FINAL_DEBUG:
+            if not os.path.exists(debug_dir):
+                os.makedirs(debug_dir, exist_ok=True)
 
         def log_and_save(name, img_cv, suffix):
             nonlocal last_time
@@ -309,8 +313,9 @@ class AsyncEngine(metaclass=SingletonMeta):
                 except:
                    pass
             
-            debug_dir = r"d:\NotWork\NewWork\Overlayr\ProcessingImge"
-            if not os.path.exists(debug_dir): os.makedirs(debug_dir)
+            debug_dir = os.path.join(os.getcwd(), "debug_images")
+            if SAVE_FINAL_DEBUG and not os.path.exists(debug_dir): 
+                os.makedirs(debug_dir, exist_ok=True)
             
             timestamp = int(time.time() * 1000)
             save_path = os.path.join(debug_dir, f"proc_grouped_{timestamp}.png")
