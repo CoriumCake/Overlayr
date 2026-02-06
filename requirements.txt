@@ -14,4 +14,4 @@ easyocr
 fuzzywuzzy
 python-Levenshtein
 symspellpy
-
+requests

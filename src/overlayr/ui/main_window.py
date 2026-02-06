@@ -41,8 +41,8 @@ class ROISelector(ctk.CTkToplevel):
         self.destroy()
 
 class MainWindow(ctk.CTk):
-    def __init__(self):
-        print("Initializing MainWindow...")
+    def __init__(self, auth_service=None):
+        print("Initializing MainWindow with Auth...")
         super().__init__()
         print("Super init done.")
 
@@ -54,6 +54,7 @@ class MainWindow(ctk.CTk):
         self.geometry("800x600")
         
         # Engines
+        self.auth_service = auth_service
         self.async_engine: Optional[AsyncEngine] = None
         self.capture_engine = None
         self.source_manager = None
@@ -124,6 +125,10 @@ class MainWindow(ctk.CTk):
         # 1. Header
         self.header_frame = ctk.CTkFrame(self)
         self.header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+
+        # Login / Status Button (Right Side)
+        self.btn_login = ctk.CTkButton(self.header_frame, text="Login", width=80, command=self.login_flow)
+        self.btn_login.pack(side="right", padx=5)
         
         # Language Selection UI
         ctk.CTkLabel(self.header_frame, text="Translate", font=("Roboto Medium", 16)).pack(side="left", padx=5)
@@ -201,7 +206,35 @@ class MainWindow(ctk.CTk):
         self.btn_stream = ctk.CTkButton(self.footer_frame, text="Start", command=self.toggle_stream, state="disabled", fg_color="green", width=100)
         self.btn_stream.pack(side="right", padx=10, pady=5)
         
+        # 4. Auth Check
+        self._update_auth_ui()
 
+    def login_flow(self):
+        """Opens the login page in browser."""
+        import webbrowser
+        # Using a fixed URL for now, will match the Astro page
+        login_url = "https://overlayr.catcode.tech/login?callback=desktop"
+        webbrowser.open(login_url)
+        self.lbl_status.configure(text="Waiting for login...", text_color="yellow")
+
+    def _update_auth_ui(self):
+        if not self.auth_service: return
+        
+        status, days = self.auth_service.get_subscription_status()
+        
+        if status == 'pro':
+            self.title("Overlayr - Pro Version")
+            self.btn_login.configure(text="PRO", fg_color="gold", text_color="black", state="disabled")
+        elif status == 'trial':
+            self.title(f"Overlayr - Trial ({days} days left)")
+            self.btn_login.configure(text=f"Trial: {days}d", fg_color="orange")
+        elif status == 'expired':
+            self.title("Overlayr - Trial Expired")
+            self.btn_login.configure(text="Buy Now", fg_color="red", command=self.login_flow)
+            # Disable functionality
+            self.btn_stream.configure(state="disabled")
+            self.scroll_screens.pack_forget() # Hide sources to annoy?
+            # Ideally block start button logic more robustly
 
     def _update_merge_mode(self, choice):
         if "Document" in choice:
