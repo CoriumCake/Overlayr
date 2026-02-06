@@ -66,11 +66,37 @@ class TextPostProcessor:
         
         return cleaned.strip()
 
+    def _apply_custom_rules(self, text: str) -> str:
+        """
+        Hardcoded rules for common misreadings.
+        """
+        # Z0 -> 30 (Start of string or word boundary)
+        text = re.sub(r'(?i)\bZ[0O]\b', '30', text)  # Z0, z0, ZO, zo -> 30
+        text = re.sub(r'(?i)\bZ[0O]-', '30-', text)  # Z0-YEAR -> 30-YEAR
+        
+        # OlD -> OLD (Handle 0LD, O1D, etc.)
+        # Use lookbehind for word boundary OR hyphen
+        text = re.sub(r'(?i)(?<=[\s\b-])[0O][l1I]D\b', 'OLD', text)
+        text = re.sub(r'(?i)\bY[E3][A4]R\b', 'YEAR', text) # Y3AR -> YEAR
+        
+        # FIX: "OH...I" read backwards as "I"""HO"
+        text = re.sub(r'(?i)I"+HO', "OH...I", text)
+
+        # L00K -> LOOK (L00K, l00k, LO0K, etc.)
+        text = re.sub(r'(?i)\bL[0O]{2}K\b', 'LOOK', text)
+        
+        return text
+
     def correct_text(self, text: str) -> str:
         """
         Apply SymSpell correction then Fuzzy fallback.
         """
-        if not text or not self.sym_spell:
+        if not text: return text
+        
+        # 0. Custom Rules (Pre-correction)
+        text = self._apply_custom_rules(text)
+        
+        if not self.sym_spell:
             return text
 
         # Split into words for SymSpell? 
