@@ -1,0 +1,280 @@
+---
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout title="Your Profile - Overlayr">
+    <div class="profile-section">
+        <div class="container">
+            <div class="profile-card">
+                <div class="header">
+                    <img
+                        id="avatar"
+                        src="https://www.svgrepo.com/show/446533/avatar.svg"
+                        alt="Profile"
+                        class="avatar"
+                        width="80"
+                        height="80"
+                    />
+                    <div class="user-info">
+                        <h1 id="user-name" class="name">Loading...</h1>
+                        <p id="user-email" class="email">...</p>
+                    </div>
+                </div>
+
+                <div class="divider"></div>
+
+                <div class="subscription-status">
+                    <h2>Subscription Status</h2>
+                    <div id="loading-spinner" class="spinner"></div>
+
+                    <div id="plan-details" class="details hidden">
+                        <div class="status-row">
+                            <span class="label">Current Plan:</span>
+                            <span id="plan-name" class="value badge"
+                                >Checking...</span
+                            >
+                        </div>
+                        <div class="status-row">
+                            <span class="label">Status:</span>
+                            <span id="sub-status" class="value">Active</span>
+                        </div>
+                        <div class="status-row">
+                            <span class="label">Expires:</span>
+                            <span id="expiry-date" class="value">-</span>
+                        </div>
+                    </div>
+
+                    <div id="no-plan" class="details hidden">
+                        <p>
+                            You are currently on the <strong>Free Tier</strong>.
+                        </p>
+                        <a href="/#pricing" class="upgrade-btn"
+                            >Upgrade to Pro</a
+                        >
+                    </div>
+                </div>
+
+                <div class="actions">
+                    <button id="btn-logout" class="logout-btn">Sign Out</button>
+                    <!-- <button id="btn-manage" class="manage-btn hidden">Manage Subscription</button> -->
+                </div>
+            </div>
+        </div>
+    </div>
+</Layout>
+
+<style>
+    .profile-section {
+        min-height: 80vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem;
+        background-color: var(--color-bg);
+    }
+
+    .container {
+        width: 100%;
+        max-width: 600px;
+    }
+
+    .profile-card {
+        background-color: rgba(31, 41, 55, 0.5);
+        border: 1px solid var(--glass-border);
+        border-radius: 1.5rem;
+        padding: 2.5rem;
+        backdrop-filter: blur(10px);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+    }
+
+    .header {
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+        margin-bottom: 2rem;
+    }
+
+    .avatar {
+        border-radius: 50%;
+        border: 3px solid #ec4899; /* Pink-500 */
+    }
+
+    .name {
+        font-size: 1.75rem;
+        font-weight: 700;
+        color: var(--color-text-heading);
+        margin: 0;
+    }
+
+    .email {
+        color: var(--color-text-muted);
+        margin: 0;
+    }
+
+    .divider {
+        height: 1px;
+        background-color: var(--glass-border);
+        margin-block: 2rem;
+    }
+
+    .subscription-status h2 {
+        font-size: 1.25rem;
+        margin-bottom: 1.5rem;
+        color: var(--color-text-heading);
+    }
+
+    .status-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-block: 0.75rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .status-row:last-child {
+        border-bottom: none;
+    }
+
+    .label {
+        color: var(--color-text-muted);
+    }
+
+    .value {
+        font-weight: 600;
+        color: var(--color-text-main);
+    }
+
+    .badge {
+        background-color: rgba(236, 72, 153, 0.1);
+        color: #f472b6;
+        padding: 0.25rem 0.75rem;
+        border-radius: 999px;
+        font-size: 0.875rem;
+    }
+
+    .actions {
+        margin-top: 2.5rem;
+        display: flex;
+        gap: 1rem;
+    }
+
+    .logout-btn,
+    .upgrade-btn {
+        padding: 0.75rem 1.5rem;
+        border-radius: 0.5rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        text-decoration: none;
+        display: inline-block;
+        border: none;
+    }
+
+    .logout-btn {
+        background-color: rgba(255, 255, 255, 0.1);
+        color: var(--color-text-main);
+    }
+
+    .logout-btn:hover {
+        background-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .upgrade-btn {
+        background: linear-gradient(to right, #ec4899, #8b5cf6);
+        color: white;
+        text-align: center;
+    }
+
+    .upgrade-btn:hover {
+        transform: scale(1.05);
+    }
+
+    .hidden {
+        display: none;
+    }
+
+    .spinner {
+        width: 30px;
+        height: 30px;
+        border: 3px solid rgba(255, 255, 255, 0.1);
+        border-radius: 50%;
+        border-top-color: #ec4899;
+        animation: spin 1s ease-in-out infinite;
+        margin: 0 auto;
+    }
+
+    @keyframes spin {
+        to {
+            transform: rotate(360deg);
+        }
+    }
+</style>
+
+<script>
+    import { auth, db } from "../lib/firebase";
+    import { onAuthStateChanged, signOut } from "firebase/auth";
+    import { doc, getDoc } from "firebase/firestore";
+
+    const els = {
+        name: document.getElementById("user-name"),
+        email: document.getElementById("user-email"),
+        avatar: document.getElementById("avatar") as HTMLImageElement,
+        spinner: document.getElementById("loading-spinner"),
+        planDetails: document.getElementById("plan-details"),
+        noPlan: document.getElementById("no-plan"),
+        planName: document.getElementById("plan-name"),
+        expiry: document.getElementById("expiry-date"),
+        logoutBtn: document.getElementById("btn-logout"),
+    };
+
+    onAuthStateChanged(auth, async (user) => {
+        if (!user) {
+            window.location.href = "/login?callback=web";
+            return;
+        }
+
+        // 1. Show Basic Info
+        if (els.name) els.name.innerText = user.displayName || "User";
+        if (els.email) els.email.innerText = user.email || "";
+        if (els.avatar && user.photoURL) els.avatar.src = user.photoURL;
+
+        // 2. Fetch Firestore Data
+        try {
+            const docRef = doc(db, "users", user.uid);
+            const docSnap = await getDoc(docRef);
+
+            if (els.spinner) els.spinner.classList.add("hidden");
+
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                const isPro = data.isPro || false;
+
+                if (isPro) {
+                    if (els.planDetails)
+                        els.planDetails.classList.remove("hidden");
+                    if (els.planName)
+                        els.planName.innerText = (
+                            data.plan || "Pro"
+                        ).toUpperCase();
+
+                    if (data.expiryDate && els.expiry) {
+                        const date = new Date(data.expiryDate); // Ensure your webhook stores ISO string or Timestamp
+                        els.expiry.innerText = date.toLocaleDateString();
+                    }
+                } else {
+                    if (els.noPlan) els.noPlan.classList.remove("hidden");
+                }
+            } else {
+                // No doc = Free Tier
+                if (els.noPlan) els.noPlan.classList.remove("hidden");
+            }
+        } catch (e) {
+            console.error("Error fetching profile:", e);
+            if (els.spinner) els.spinner.classList.add("hidden");
+        }
+    });
+
+    els.logoutBtn?.addEventListener("click", () => {
+        signOut(auth).then(() => (window.location.href = "/"));
+    });
+</script>

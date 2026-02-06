@@ -1,0 +1,125 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import { SITE } from "../../config";
+import { useTranslations } from "../../i18n/ui";
+
+interface Props {
+    lang: "en" | "ja" | "es";
+}
+const { lang } = Astro.props;
+const t = useTranslations(lang);
+---
+
+<Layout title={`${t("footer.privacy")} - ${SITE.title}`}>
+    <section class="legal-page">
+        <div class="container">
+            <h1>{t("footer.privacy")}</h1>
+            <div class="glass-panel content">
+                <p class="last-updated">Last updated: October 24, 2025</p>
+
+                <h2>1. Data Collection</h2>
+                <p>
+                    Overlayr prioritizes your privacy. We strictly limit data
+                    collection to the minimum necessary for the Application's
+                    function.
+                </p>
+                <ul>
+                    <li>
+                        <strong>Local Processing:</strong> All OCR and translation
+                        are performed locally on your device or via direct connections
+                        to translation APIs you configure. We do not intercept your
+                        screen content.
+                    </li>
+                    <li>
+                        <strong>Update Checks:</strong> The Application may contact
+                        our servers solely to check for available updates.
+                    </li>
+                </ul>
+
+                <h2>2. Third-Party Services</h2>
+                <p>
+                    If you configure Overlayr to use third-party translation
+                    services (e.g., DeepL, Google), your text data is subject to
+                    their respective privacy policies.
+                </p>
+
+                <h2>3. Data Storage</h2>
+                <p>
+                    Overlayr stores configuration files locally on your machine.
+                    We do not store your personal data on our servers.
+                </p>
+
+                <h2>4. Changes to This Policy</h2>
+                <p>
+                    We may update this Privacy Policy from time to time. We will
+                    notify users of any changes by updating the "Last updated"
+                    date on this page.
+                </p>
+
+                <h2>5. Contact Us</h2>
+                <p>
+                    If you have any questions about this Privacy Policy, please
+                    contact us at <a href={`mailto:${SITE.email}`}
+                        >{SITE.email}</a
+                    >.
+                </p>
+            </div>
+        </div>
+    </section>
+</Layout>
+
+<style>
+    .legal-page {
+        padding-top: calc(var(--header-height) + var(--space-lg));
+        padding-bottom: var(--space-xl);
+    }
+
+    h1 {
+        text-align: center;
+        font-size: var(--text-h1);
+        margin-bottom: var(--space-md);
+    }
+
+    .content {
+        padding: var(--space-lg);
+        max-width: 800px;
+        margin-inline: auto;
+    }
+
+    .last-updated {
+        color: var(--color-text-muted);
+        margin-bottom: var(--space-md);
+        font-style: italic;
+    }
+
+    h2 {
+        color: var(--color-primary-glow);
+        margin-top: var(--space-md);
+        font-size: var(--text-h3);
+    }
+
+    p,
+    ul {
+        color: var(--color-text-muted);
+        margin-bottom: 1rem;
+        font-size: 1.05rem;
+    }
+
+    ul {
+        padding-left: 1.5rem;
+        list-style: circle;
+    }
+
+    li {
+        margin-bottom: 0.5rem;
+    }
+
+    strong {
+        color: var(--color-text-main);
+    }
+
+    a {
+        color: var(--color-primary);
+        text-decoration: underline;
+    }
+</style>

@@ -1,0 +1,91 @@
+---
+import Layout from "../layouts/Layout.astro";
+import DownloadButton from "../components/DownloadButton.astro";
+---
+
+<Layout title="404 - Page Not Found">
+    <section class="error-page">
+        <div class="container content">
+            <h1 class="error-code">404</h1>
+            <h2 class="title">Lost in the Overlay?</h2>
+            <p class="description">
+                The page you're looking for seems to have been disabled or moved
+                to another layer.
+            </p>
+
+            <div class="actions">
+                <a href="/" class="home-link">Return to Home</a>
+                <div class="or-divider">or</div>
+                <div class="download-wrapper">
+                    <DownloadButton version="2.0.0" checksum="a1b2c3..." />
+                </div>
+            </div>
+        </div>
+    </section>
+</Layout>
+
+<style>
+    .error-page {
+        min-height: 80vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding-top: var(--header-height);
+    }
+
+    .error-code {
+        font-size: clamp(6rem, 15vw, 12rem);
+        font-weight: 900;
+        line-height: 1;
+        background: linear-gradient(
+            135deg,
+            var(--color-primary),
+            var(--color-accent)
+        );
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        opacity: 0.5;
+        margin-bottom: var(--space-sm);
+    }
+
+    .title {
+        font-size: var(--text-h2);
+        margin-bottom: var(--space-md);
+    }
+
+    .description {
+        color: var(--color-text-muted);
+        font-size: var(--text-body);
+        max-width: 600px;
+        margin-inline: auto;
+        margin-bottom: var(--space-lg);
+    }
+
+    .actions {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1.5rem;
+    }
+
+    .home-link {
+        color: var(--color-text-main);
+        font-weight: 600;
+        text-decoration: underline;
+        text-decoration-thickness: 2px;
+        text-underline-offset: 4px;
+        transition: color 0.2s;
+    }
+
+    .home-link:hover {
+        color: var(--color-primary);
+    }
+
+    .or-divider {
+        color: var(--color-text-muted);
+        font-size: var(--text-small);
+        text-transform: uppercase;
+        letter-spacing: 2px;
+    }
+</style>

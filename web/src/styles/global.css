@@ -1,0 +1,188 @@
+/* Global CSS & Design Tokens */
+
+/* 1. Imports */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Outfit:wght@400;700;900&display=swap');
+
+:root {
+  /* 2. Color Tokens (HSL for easy manipulation) */
+  --hue-primary: 185;
+  /* Cyan/Turquoise */
+  --hue-accent: 210;
+  /* Royal Blue */
+
+  /* Default Dark Mode */
+  --color-bg: hsl(215, 40%, 6%);
+  --color-surface: hsl(215, 30%, 10%);
+  --color-primary: hsl(var(--hue-primary), 100%, 50%);
+  --color-primary-glow: hsl(var(--hue-primary), 100%, 60%);
+  --color-accent: hsl(var(--hue-accent), 90%, 60%);
+  --color-text-main: hsl(0, 0%, 100%);
+  --color-text-muted: hsl(215, 20%, 75%);
+
+  /* Acrylic / Glassmorphism Tokens */
+  --noise-url: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.07'/%3E%3C/svg%3E");
+
+  --glass-bg: rgba(255, 255, 255, 0.05);
+  --glass-bg-hover: rgba(255, 255, 255, 0.1);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+
+  --acrylic-bg: rgba(255, 255, 255, 0.03);
+  --acrylic-blur: 24px;
+  --acrylic-saturate: 180%;
+  --acrylic-border: linear-gradient(135deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.05) 100%);
+
+  --backdrop-blur: 24px;
+
+  /* 4. Typography Tokens */
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-heading: 'Outfit', system-ui, sans-serif;
+
+  --text-h1: clamp(2.5rem, 5vw + 1rem, 4.5rem);
+  --text-h2: clamp(2rem, 4vw + 1rem, 3.5rem);
+  --text-h3: clamp(1.5rem, 3vw + 1rem, 2.5rem);
+  --text-body: 1.125rem;
+  --text-small: 0.875rem;
+
+  /* 5. Spacing Tokens */
+  --space-sm: clamp(0.5rem, 1vw, 1rem);
+  --space-md: clamp(1rem, 2vw, 2rem);
+  --space-lg: clamp(2rem, 4vw, 4rem);
+  --space-xl: clamp(4rem, 8vw, 8rem);
+
+  /* 6. Layout */
+  --container-width: 1400px;
+  --header-height: 80px;
+}
+
+[data-theme="light"] {
+  --color-bg: hsl(215, 20%, 95%);
+  /* Very light blue-grey instead of pure white */
+  --color-surface: hsl(215, 20%, 90%);
+
+  --color-primary: hsl(var(--hue-primary), 90%, 45%);
+  /* Darker cyan for readability */
+  --color-accent: hsl(var(--hue-accent), 90%, 55%);
+
+  --color-text-main: hsl(215, 40%, 10%);
+  --color-text-muted: hsl(215, 20%, 40%);
+
+  /* Light Acrylic */
+  --glass-bg: rgba(255, 255, 255, 0.4);
+  --glass-border: rgba(255, 255, 255, 0.6);
+  --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.05);
+
+  --acrylic-bg: rgba(255, 255, 255, 0.5);
+  --acrylic-border: linear-gradient(135deg, rgba(255, 255, 255, 0.8) 0%, rgba(255, 255, 255, 0.2) 100%);
+}
+
+/* 7. Reset & Base Styles */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-family: var(--font-body);
+  background-color: var(--color-bg);
+  color: var(--color-text-main);
+  scroll-behavior: smooth;
+  color-scheme: dark;
+}
+
+body {
+  min-height: 100vh;
+  line-height: 1.6;
+  overflow-x: hidden;
+  /* Add global noise */
+  background-image: var(--noise-url);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-heading);
+  line-height: 1.1;
+  font-weight: 700;
+  margin-bottom: var(--space-sm);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* 8. Utilities */
+.container {
+  width: 100%;
+  max-width: var(--container-width);
+  margin-inline: auto;
+  padding-inline: var(--space-md);
+}
+
+.glass-panel,
+.acrylic-panel {
+  background: var(--acrylic-bg);
+  backdrop-filter: blur(var(--acrylic-blur)) saturate(var(--acrylic-saturate));
+  -webkit-backdrop-filter: blur(var(--acrylic-blur)) saturate(var(--acrylic-saturate));
+  border-radius: 1rem;
+  border: 1px solid transparent;
+  background-clip: padding-box, border-box;
+  background-origin: padding-box, border-box;
+  /* Simulating gradient border */
+  position: relative;
+  box-shadow: var(--glass-shadow);
+}
+
+/* Fallback for gradient border simulation or simple border */
+.glass-panel::before,
+.acrylic-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 1rem;
+  padding: 1px;
+  background: var(--acrylic-border);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, var(--color-primary), var(--color-accent));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 9. Animations */
+@keyframes pulse-glow {
+
+  0%,
+  100% {
+    box-shadow: 0 0 10px var(--color-primary), 0 0 20px rgba(var(--hue-primary), 100%, 50%, 0.3);
+  }
+
+  50% {
+    box-shadow: 0 0 20px var(--color-primary), 0 0 40px rgba(var(--hue-primary), 100%, 50%, 0.5);
+  }
+}

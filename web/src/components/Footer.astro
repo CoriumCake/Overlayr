@@ -1,0 +1,53 @@
+---
+const currentYear = new Date().getFullYear();
+---
+
+<footer>
+    <div class="container footer-content">
+        <div class="copyright">
+            &copy; {currentYear} Overlayr. All rights reserved.
+        </div>
+        <div class="links">
+            <a href="/privacy">Privacy Policy</a>
+            <a href="/terms">Terms of Service</a>
+            <a href="/contact">Contact</a>
+        </div>
+    </div>
+</footer>
+
+<style>
+    footer {
+        padding-block: var(--space-lg);
+        border-top: 1px solid var(--glass-border);
+        background: rgba(0, 0, 0, 0.2);
+        margin-top: var(--space-xl);
+    }
+
+    .footer-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1rem;
+    }
+
+    .copyright {
+        color: var(--color-text-muted);
+        font-size: var(--text-small);
+    }
+
+    .links {
+        display: flex;
+        gap: var(--space-md);
+    }
+
+    .links a {
+        color: var(--color-text-muted);
+        font-size: var(--text-small);
+        transition: color 0.2s;
+    }
+
+    .links a:hover {
+        color: var(--color-primary);
+    }
+</style>

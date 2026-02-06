@@ -1,0 +1,195 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import DownloadButton from "../../components/DownloadButton.astro";
+import { SITE } from "../../config";
+import { useTranslations } from "../../i18n/ui";
+
+interface Props {
+    lang: "en" | "ja" | "es";
+}
+const { lang } = Astro.props;
+const t = useTranslations(lang);
+
+// This data could be fetched from GitHub API at build time
+// For now, we manually list releases or mock it
+const releases = [
+    {
+        version: "2.0.0",
+        date: "2025-10-24",
+        checksum: "a1b2c3d4e5f6...",
+        isLatest: true,
+        changes: [
+            "Introduced DirectX 12 overlay support",
+            "Added real-time OCR engine V2",
+            "Reduced memory footprint by 40%",
+        ],
+    },
+    {
+        version: "1.5.2",
+        date: "2025-09-15",
+        checksum: "f6e5d4c3b2a1...",
+        isLatest: false,
+        changes: [
+            "Fixed Vulcan crash on AMD drivers",
+            "Improved subtitle font rendering",
+        ],
+    },
+];
+---
+
+<Layout title={`${t("downloads.title")} - ${SITE.title}`}>
+    <section class="downloads-page">
+        <div class="container">
+            <h1>{t("downloads.title")}</h1>
+            <p class="subtitle">{t("downloads.subtitle")}</p>
+
+            <div class="releases-list">
+                {
+                    releases.map((release) => (
+                        <article
+                            class={`glass-panel release-card ${release.isLatest ? "latest" : ""}`}
+                        >
+                            <div class="release-header">
+                                <div class="version-info">
+                                    <h2>v{release.version}</h2>
+                                    <span class="release-date">
+                                        {t("downloads.released")} {release.date}
+                                    </span>
+                                    {release.isLatest && (
+                                        <span class="badge">
+                                            {t("downloads.latest")}
+                                        </span>
+                                    )}
+                                </div>
+                                <div class="release-action">
+                                    <DownloadButton
+                                        href={
+                                            release.isLatest
+                                                ? undefined
+                                                : `https://github.com/YOUR_GITHUB_USER/Overlayr/releases/download/v${release.version}/Overlayr.exe`
+                                        }
+                                        version={release.version}
+                                        checksum={release.checksum}
+                                    />
+                                </div>
+                            </div>
+
+                            <div class="changes">
+                                <h3>{t("downloads.changes")}</h3>
+                                <ul>
+                                    {release.changes.map((change) => (
+                                        <li>{change}</li>
+                                    ))}
+                                </ul>
+                            </div>
+                        </article>
+                    ))
+                }
+            </div>
+        </div>
+    </section>
+</Layout>
+
+<style>
+    .downloads-page {
+        padding-top: calc(var(--header-height) + var(--space-lg));
+        padding-bottom: var(--space-xl);
+    }
+
+    h1 {
+        text-align: center;
+        font-size: var(--text-h1);
+        margin-bottom: var(--space-sm);
+    }
+
+    .subtitle {
+        text-align: center;
+        color: var(--color-text-muted);
+        margin-bottom: var(--space-xl);
+        font-size: var(--text-h3);
+    }
+
+    .releases-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-lg);
+        max-width: 800px;
+        margin-inline: auto;
+    }
+
+    .release-card {
+        padding: var(--space-lg);
+        position: relative;
+        overflow: hidden;
+    }
+
+    .release-card.latest {
+        border-color: var(--color-primary);
+        box-shadow: 0 0 30px rgba(var(--color-primary-rgb), 0.1);
+    }
+
+    .release-card.latest::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 4px;
+        height: 100%;
+        background: var(--color-primary);
+    }
+
+    .release-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--space-md);
+        margin-bottom: var(--space-lg);
+        padding-bottom: var(--space-md);
+        border-bottom: 1px solid var(--glass-border);
+    }
+
+    .version-info {
+        display: flex;
+        align-items: baseline;
+        gap: var(--space-md);
+    }
+
+    .version-info h2 {
+        font-size: 2rem;
+        margin: 0;
+        line-height: 1;
+    }
+
+    .release-date {
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+    }
+
+    .badge {
+        background: var(--color-primary);
+        color: white;
+        padding: 0.25rem 0.75rem;
+        border-radius: 99px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .changes h3 {
+        font-size: 1.1rem;
+        margin-bottom: var(--space-sm);
+        color: var(--color-text-main);
+    }
+
+    .changes ul {
+        list-style: disc;
+        padding-left: 1.5rem;
+        color: var(--color-text-muted);
+    }
+
+    .changes li {
+        margin-bottom: 0.5rem;
+    }
+</style>

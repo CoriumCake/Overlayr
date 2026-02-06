@@ -1,0 +1,24 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import Hero from "../../components/Hero.astro";
+import FeatureGrid from "../../components/FeatureGrid.astro";
+import Support from "../../components/sections/Support.astro";
+import Contact from "../../components/sections/Contact.astro";
+import Pricing from "../../components/Pricing.astro";
+import { useTranslations } from "../../i18n/ui";
+
+interface Props {
+    lang: "en" | "ja" | "es";
+}
+
+const { lang } = Astro.props;
+const t = useTranslations(lang);
+---
+
+<Layout title="Overlayr - High Performance Overlay Tool">
+    <Hero lang={lang} />
+    <FeatureGrid lang={lang} />
+    <Pricing lang={lang} />
+    <Support lang={lang} />
+    <Contact lang={lang} />
+</Layout>

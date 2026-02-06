@@ -1,0 +1,15 @@
+---
+import SupportTemplate from "../../components/templates/Support.astro";
+import { languages } from "../../i18n/ui";
+
+export function getStaticPaths() {
+    const keys = Object.keys(languages);
+    return keys
+        .filter((lang) => lang !== "en")
+        .map((lang) => ({ params: { lang } }));
+}
+
+const { lang } = Astro.params;
+---
+
+<SupportTemplate lang={lang as "ja" | "es"} />

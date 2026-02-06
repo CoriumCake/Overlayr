@@ -1,0 +1,318 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { getLangFromUrl, useTranslations } from "../i18n/ui";
+
+const lang = getLangFromUrl(Astro.url);
+const t = useTranslations(lang);
+
+// Server-side: We just render the skeleton. Logic moves to client.
+---
+
+<Layout title="Checkout - Overlayr">
+  <div class="checkout-container container">
+    <div id="checkout-content" class="checkout-grid" style="display: none;">
+      <!-- Order Summary -->
+      <div class="summary-card">
+        <h2>Order Summary</h2>
+        <div class="plan-details">
+          <span id="summary-plan-name" class="plan-name">Loading...</span>
+          <span id="summary-plan-price" class="plan-price">...</span>
+        </div>
+        <div class="divider"></div>
+        <div class="total-row">
+          <span>Total</span>
+          <span id="summary-total-price" class="total-price">...</span>
+        </div>
+      </div>
+
+      <!-- Payment Methods -->
+      <div class="payment-card">
+        <h2>Select Payment Method</h2>
+        <div class="payment-options">
+          <!-- Stripe / Credit Card -->
+          <a id="stripe-option" href="#" class="payment-option stripe-option">
+            <span class="option-icon">
+              {/* Using local Stripe.svg from public folder */}
+              <img src="/Stripe.svg" alt="Stripe" class="stripe-logo-img" />
+            </span>
+            <div class="option-details">
+              <span class="option-title">Credit / Debit Card</span>
+              <span class="option-sub">Powered by Stripe</span>
+            </div>
+            <span class="arrow">→</span>
+          </a>
+
+          <!-- Thai QR / PromptPay -->
+          <a id="promptpay-option" href="#" class="payment-option">
+            <span class="option-icon">🏦</span>
+            <div class="option-details">
+              <span class="option-title">Bank Transfer</span>
+              <span class="option-sub">Thai QR / PromptPay</span>
+            </div>
+            <span class="arrow">→</span>
+          </a>
+
+          <!-- Placeholder for future methods -->
+          <button class="payment-option disabled" disabled>
+            <span class="option-icon">₿</span>
+            <div class="option-details">
+              <span class="option-title">Crypto (Coming Soon)</span>
+              <span class="option-sub">USDT / BTC</span>
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="error-state" class="error-state" style="display: none;">
+      <h2>No plan selected</h2>
+      <p>Please select a plan from the pricing page.</p>
+      <a href="/#pricing" class="btn-primary">View Pricing</a>
+    </div>
+  </div>
+</Layout>
+
+<script>
+  import { auth } from "../lib/firebase";
+  import { onAuthStateChanged } from "firebase/auth";
+
+  import { STRIPE_LINKS } from "../config";
+
+  // Configuration for plans
+  const PLANS = {
+    pro: {
+      name: "Pro",
+      price: "฿199",
+      link_card: STRIPE_LINKS.pro,
+      link_qr: STRIPE_LINKS.pro_qr,
+    },
+    plus: {
+      name: "Plus",
+      price: "฿499",
+      link_card: STRIPE_LINKS.plus,
+      link_qr: STRIPE_LINKS.plus_qr,
+    },
+    ultimate: {
+      name: "Ultimate",
+      price: "฿999",
+      link_card: STRIPE_LINKS.ultimate,
+      link_qr: STRIPE_LINKS.ultimate_qr,
+    },
+  };
+
+  // Client-side Logic
+  const urlParams = new URLSearchParams(window.location.search);
+  const planId = urlParams.get("plan");
+
+  // @ts-ignore
+  const selectedPlan = planId && PLANS[planId] ? PLANS[planId] : null;
+
+  const contentDiv = document.getElementById("checkout-content");
+  const errorDiv = document.getElementById("error-state");
+
+  if (selectedPlan) {
+    // Populate Data
+    const nameEl = document.getElementById("summary-plan-name");
+    const priceEl = document.getElementById("summary-plan-price");
+    const totalEl = document.getElementById("summary-total-price");
+    const stripeLink = document.getElementById("stripe-option");
+    const promptpayLink = document.getElementById("promptpay-option");
+
+    if (nameEl) nameEl.textContent = selectedPlan.name + " Plan";
+    if (priceEl) priceEl.textContent = selectedPlan.price + " / month";
+    if (totalEl) totalEl.textContent = selectedPlan.price;
+    if (stripeLink) stripeLink.setAttribute("href", selectedPlan.link_card);
+    if (promptpayLink) promptpayLink.setAttribute("href", selectedPlan.link_qr);
+
+    // Show Content
+    if (contentDiv) contentDiv.style.display = "grid";
+  } else {
+    // Show Error
+    if (errorDiv) errorDiv.style.display = "block";
+  }
+
+  // Client-side auth check
+  onAuthStateChanged(auth, (user) => {
+    if (!user) {
+      // If not logged in, redirect to login with callback back to this checkout page
+      const currentUrl = encodeURIComponent(window.location.href);
+      window.location.href = `/login?callback=${currentUrl}`;
+    } else {
+      // Update Stripe links with client_reference_id
+      const links = document.querySelectorAll(".payment-option");
+      links.forEach((link) => {
+        if (link.tagName === "A") {
+          // Only update anchor tags
+          const baseHref = link.getAttribute("href");
+          if (
+            baseHref &&
+            !baseHref.includes("client_reference_id") &&
+            baseHref.startsWith("http")
+          ) {
+            link.setAttribute(
+              "href",
+              `${baseHref}?client_reference_id=${user.uid}`,
+            );
+          }
+        }
+      });
+    }
+  });
+</script>
+
+<style>
+  .checkout-container {
+    padding-top: 8rem;
+    padding-bottom: 4rem;
+    min-height: 80vh;
+  }
+
+  h2 {
+    font-size: 1.5rem;
+    margin-bottom: 1.5rem;
+    font-weight: 700;
+    color: #1a1a1a; /* Force dark text */
+  }
+
+  .checkout-grid {
+    display: grid;
+    grid-template-columns: 1fr 1.5fr;
+    gap: 2rem;
+    max-width: 1000px;
+    margin: 0 auto;
+  }
+
+  @media (max-width: 768px) {
+    .checkout-grid {
+      grid-template-columns: 1fr;
+    }
+    /* Show summary first on mobile? Usually better to show what you're buying */
+  }
+
+  .summary-card,
+  .payment-card {
+    background: rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    border-radius: 1rem;
+    padding: 2rem;
+    box-shadow:
+      0 20px 40px -10px rgba(0, 0, 0, 0.1),
+      0 0 20px rgba(255, 255, 255, 0.2);
+  }
+
+  /* Summary Styles */
+  .plan-details {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 1.1rem;
+    margin-bottom: 1rem;
+    color: #333;
+  }
+
+  .plan-name {
+    font-weight: 600;
+    color: #1a1a1a;
+  }
+
+  .divider {
+    height: 1px;
+    background: rgba(0, 0, 0, 0.1);
+    margin: 1rem 0;
+  }
+
+  .total-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #1a1a1a;
+  }
+
+  /* Payment Option Styles */
+  .payment-options {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .payment-option {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: 0.75rem;
+    background: rgba(255, 255, 255, 0.5);
+    text-decoration: none;
+    color: #1a1a1a;
+    transition: all 0.2s;
+    cursor: pointer;
+  }
+
+  .payment-option:hover:not(.disabled) {
+    background: var(--glass-bg-hover);
+    border-color: var(--color-primary);
+    transform: translateY(-2px);
+  }
+
+  .payment-option.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    filter: grayscale(1);
+  }
+
+  .option-icon {
+    font-size: 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .stripe-logo-img {
+    height: 28px;
+    width: auto;
+  }
+
+  .option-details {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+  }
+
+  .option-title {
+    font-weight: 600;
+  }
+
+  .option-sub {
+    font-size: 0.85rem;
+    color: var(--color-text-muted);
+  }
+
+  .arrow {
+    color: var(--color-text-muted);
+  }
+
+  .error-state {
+    text-align: center;
+    padding: 4rem;
+    background: var(--glass-bg);
+    border-radius: 1rem;
+    max-width: 500px;
+    margin: 0 auto;
+  }
+
+  .btn-primary {
+    display: inline-block;
+    margin-top: 1rem;
+    padding: 0.75rem 1.5rem;
+    background: var(--color-primary);
+    color: white;
+    text-decoration: none;
+    border-radius: 0.5rem;
+    font-weight: 600;
+  }
+</style>

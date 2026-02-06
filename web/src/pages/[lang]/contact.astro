@@ -1,0 +1,15 @@
+---
+import ContactTemplate from "../../components/templates/Contact.astro";
+import { languages } from "../../i18n/ui";
+
+export function getStaticPaths() {
+    const keys = Object.keys(languages);
+    return keys
+        .filter((lang) => lang !== "en")
+        .map((lang) => ({ params: { lang } }));
+}
+
+const { lang } = Astro.params;
+---
+
+<ContactTemplate lang={lang as "ja" | "es"} />

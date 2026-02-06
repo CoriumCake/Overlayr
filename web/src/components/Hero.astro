@@ -1,0 +1,108 @@
+---
+import DownloadButton from "./DownloadButton.astro";
+import { useTranslations } from "../i18n/ui";
+
+interface Props {
+    lang?: "en" | "ja" | "es";
+}
+
+const { lang = "en" } = Astro.props;
+const t = useTranslations(lang);
+---
+
+<section class="hero">
+    <!-- Subtle Background Elements -->
+
+    <div class="container hero-container">
+        <div class="content-wrapper">
+            <h1 class="title">
+                {t("hero.title")}
+            </h1>
+            <p class="subtitle">
+                {t("hero.subtitle")}
+            </p>
+
+            <div class="cta-wrapper">
+                <DownloadButton version="2.0.0" checksum="a1b2c3d4e5f6..." />
+                <p class="compatibility">{t("hero.compatibility")}</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<style>
+    .hero {
+        position: relative;
+        min-height: 100svh; /* Dynamic viewport height for perfect mobile fit */
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        overflow: hidden;
+        padding-top: var(--header-height);
+    }
+
+    .hero-container {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        position: relative;
+        z-index: 1;
+    }
+
+    .content-wrapper {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        gap: clamp(2rem, 5vh, 4rem); /* Responsive vertical rhythm */
+        max-width: 1000px;
+        width: 100%;
+    }
+
+    /* Elegant Typography */
+    .title {
+        font-size: clamp(3rem, 7vw, 6rem);
+        line-height: 1.1;
+        letter-spacing: -0.02em;
+        font-weight: 800;
+        margin: 0;
+        text-wrap: balance; /* Prevents widows/orphans */
+        color: var(--color-text-heading, var(--color-text-main));
+    }
+
+    .subtitle {
+        font-size: clamp(1.125rem, 2vw, 1.5rem);
+        line-height: 1.6;
+        color: var(--color-text-muted);
+        max-width: 60ch; /* Optimal reading length */
+        margin: 0;
+        text-wrap: pretty;
+    }
+
+    .cta-wrapper {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+        margin-top: 1rem;
+    }
+
+    .compatibility {
+        font-size: 0.875rem;
+        color: var(--color-text-muted);
+        opacity: 0.7;
+    }
+
+    /* Mobile Adjustments */
+    @media (max-width: 768px) {
+        .orb {
+            width: 80vw;
+            height: 80vw;
+            opacity: 0.1;
+        }
+
+        .content-wrapper {
+            gap: 2rem;
+        }
+    }
+</style>

@@ -1,0 +1,23 @@
+---
+import HomeTemplate from "../../components/templates/Home.astro";
+import { languages } from "../../i18n/ui";
+
+export function getStaticPaths() {
+    const keys = Object.keys(languages);
+    // Remove default lang if it is handled at root, OR handle all here if we redirect root?
+    // Current config: prefixDefaultLocale: false.
+    // Root '/' handles 'en'. This file `[lang]/index.astro` handles `es/`, `ja/`.
+    // So we filter out 'en' to avoid conflict or duplicate content?
+    // Actually Astro i18n routing usually expects:
+    // src/pages/index.astro -> EN
+    // src/pages/[lang]/index.astro -> ES, JA
+
+    return keys
+        .filter((lang) => lang !== "en")
+        .map((lang) => ({ params: { lang } }));
+}
+
+const { lang } = Astro.params;
+---
+
+<HomeTemplate lang={lang as "ja" | "es"} />

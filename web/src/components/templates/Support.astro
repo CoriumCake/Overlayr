@@ -1,0 +1,139 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import { SITE } from "../../config";
+import { useTranslations } from "../../i18n/ui";
+
+interface Props {
+    lang: "en" | "ja" | "es";
+}
+
+const { lang } = Astro.props;
+const t = useTranslations(lang);
+---
+
+<Layout title={`${t("support.title")} - ${SITE.title}`}>
+    <section class="support-page">
+        <div class="container">
+            <h1>{t("support.title")}</h1>
+            <p class="subtitle">{t("support.subtitle")}</p>
+
+            <div class="faq-grid">
+                <!-- Native <details> for JS-free interactivity -->
+                <details class="glass-panel faq-item">
+                    <summary>How do I install Overlayr?</summary>
+                    <p>
+                        Simply download the latest installer from our Downloads
+                        page, run the .exe, and follow the on-screen
+                        instructions. No complex setup required.
+                    </p>
+                </details>
+
+                <details class="glass-panel faq-item">
+                    <summary>Does it work with anti-cheat?</summary>
+                    <p>
+                        Yes. Overlayr uses standard Windows APIs for overlay
+                        composition and does not inject code into game
+                        processes, making it safe for most anti-cheat systems.
+                    </p>
+                </details>
+
+                <details class="glass-panel faq-item">
+                    <summary>How do I change the translation language?</summary>
+                    <p>
+                        Open the Overlayr dashboard, navigate to Settings >
+                        Interpretation, and select your target language from the
+                        dropdown menu.
+                    </p>
+                </details>
+
+                <details class="glass-panel faq-item">
+                    <summary>My overlay isn't showing up.</summary>
+                    <p>
+                        Ensure that your game is running in "Borderless Window"
+                        or "Windowed" mode for best compatibility. Exclusive
+                        Fullscreen support requires the "Hook Mode" enabled in
+                        settings.
+                    </p>
+                </details>
+            </div>
+        </div>
+    </section>
+</Layout>
+
+<style>
+    .support-page {
+        padding-top: calc(var(--header-height) + var(--space-lg));
+        padding-bottom: var(--space-xl);
+    }
+
+    h1 {
+        text-align: center;
+        margin-bottom: var(--space-md);
+        font-size: var(--text-h1);
+    }
+
+    .subtitle {
+        text-align: center;
+        color: var(--color-text-muted);
+        margin-bottom: var(--space-xl);
+        font-size: var(--text-h3);
+    }
+
+    .faq-grid {
+        max-width: 800px;
+        margin-inline: auto;
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-md);
+    }
+
+    .faq-item {
+        padding: 0;
+        overflow: hidden;
+    }
+
+    summary {
+        padding: var(--space-md) var(--space-lg);
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 1.125rem;
+        background: rgba(255, 255, 255, 0.03);
+        transition: background 0.2s;
+        border-bottom: 1px solid transparent;
+        list-style: none; /* Hide default triangle */
+        position: relative;
+    }
+
+    summary::-webkit-details-marker {
+        display: none;
+    }
+
+    summary::after {
+        content: "+";
+        position: absolute;
+        right: var(--space-lg);
+        font-weight: 300;
+        font-size: 1.5rem;
+        line-height: 1;
+        transition: transform 0.3s;
+    }
+
+    details[open] summary::after {
+        transform: rotate(45deg);
+    }
+
+    details[open] summary {
+        background: rgba(var(--color-primary-rgb), 0.1);
+        border-bottom: 1px solid var(--glass-border);
+    }
+
+    summary:hover {
+        background: var(--glass-bg-hover);
+    }
+
+    .faq-item p {
+        padding: var(--space-md) var(--space-lg);
+        color: var(--color-text-muted);
+        line-height: 1.6;
+    }
+</style>

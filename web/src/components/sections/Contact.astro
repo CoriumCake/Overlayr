@@ -1,0 +1,125 @@
+---
+import { SITE } from "../../config";
+import { useTranslations } from "../../i18n/ui";
+
+interface Props {
+    lang: "en" | "ja" | "es";
+}
+
+const { lang } = Astro.props;
+const t = useTranslations(lang);
+---
+
+<section id="contact" class="contact-section">
+    <div class="container">
+        <h1>{t("contact.title")}</h1>
+        <p class="subtitle">{t("contact.subtitle")}</p>
+
+        <div class="grid">
+            <!-- Discord Community -->
+            <div class="glass-panel card">
+                <div class="icon">💬</div>
+                <h2>{t("contact.discord")}</h2>
+                <p>{t("contact.discord.desc")}</p>
+                <a href={SITE.discord} class="link"
+                    >{t("contact.discord.action")}</a
+                >
+            </div>
+
+            <!-- GitHub -->
+            <div class="glass-panel card">
+                <div class="icon">🐛</div>
+                <h2>{t("contact.github")}</h2>
+                <p>{t("contact.github.desc")}</p>
+                <a href={`${SITE.repo}/issues`} class="link"
+                    >{t("contact.github.action")}</a
+                >
+            </div>
+
+            <!-- Email Support -->
+            <div class="glass-panel card">
+                <div class="icon">✉️</div>
+                <h2>{t("contact.email")}</h2>
+                <p>{t("contact.email.desc")}</p>
+                <a
+                    href={`https://mail.google.com/mail/?view=cm&fs=1&to=${SITE.email}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="link">{SITE.email}</a
+                >
+            </div>
+        </div>
+    </div>
+</section>
+
+<style>
+    .contact-section {
+        padding-block: var(--space-xl);
+        text-align: center;
+    }
+
+    .subtitle {
+        font-size: var(--text-h3);
+        color: var(--color-text-muted);
+        margin-bottom: var(--space-lg);
+    }
+
+    .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: var(--space-md);
+        max-width: 1000px;
+        margin-inline: auto;
+    }
+
+    .card {
+        padding: var(--space-lg);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+        transition:
+            transform 0.3s ease,
+            border-color 0.3s ease;
+        background: rgba(255, 255, 255, 0.9);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 1px solid rgba(255, 255, 255, 0.5);
+        border-radius: 1rem;
+        box-shadow:
+            0 20px 40px -10px rgba(0, 0, 0, 0.1),
+            0 0 20px rgba(255, 255, 255, 0.2);
+    }
+
+    .card:hover {
+        transform: translateY(-5px);
+        border-color: var(--color-primary);
+    }
+
+    .icon {
+        font-size: 3rem;
+    }
+
+    h2 {
+        font-size: 1.5rem;
+        color: #1a1a1a; /* Force dark text */
+    }
+
+    p {
+        color: #666; /* Force dark muted text */
+    }
+
+    .link {
+        color: #0284c7; /* Darker Sky Blue for better contrast on white */
+        font-weight: bold;
+        font-size: 1.1rem;
+        text-decoration: underline;
+        text-decoration-thickness: 2px;
+        text-underline-offset: 4px;
+        transition: color 0.2s;
+    }
+
+    .link:hover {
+        color: var(--color-accent);
+    }
+</style>

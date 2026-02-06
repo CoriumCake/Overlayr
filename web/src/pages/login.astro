@@ -1,0 +1,165 @@
+---
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout title="Login - Overlayr">
+  <div class="login-wrapper">
+    <div class="login-card">
+      <h1 class="login-title">Welcome Back</h1>
+      <p class="login-subtitle">
+        Sign in to manage your subscription and activate the desktop app.
+      </p>
+
+      <button id="btn-google" class="google-btn">
+        <img
+          src="https://www.svgrepo.com/show/475656/google-color.svg"
+          class="google-icon"
+          alt="Google"
+          width="24"
+          height="24"
+        />
+        Sign in with Google
+      </button>
+
+      <div id="status" class="status-msg hidden">Authenticating...</div>
+    </div>
+  </div>
+</Layout>
+
+<style>
+  .login-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    background-color: var(--color-bg);
+  }
+
+  .login-card {
+    background-color: rgba(31, 41, 55, 0.8);
+    padding: 2rem;
+    border-radius: 1rem;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+    text-align: center;
+    max-width: 28rem;
+    width: 100%;
+    border: 1px solid var(--glass-border);
+  }
+
+  .login-title {
+    font-size: 1.875rem;
+    font-weight: 700;
+    margin-bottom: 1.5rem;
+    color: var(--color-text-heading);
+  }
+
+  .login-subtitle {
+    margin-bottom: 2rem;
+    color: var(--color-text-muted);
+  }
+
+  .google-btn {
+    width: 100%;
+    background-color: white;
+    color: #1a1a1a;
+    font-weight: 700;
+    padding: 0.75rem 1rem;
+    border-radius: 0.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+
+  .google-btn:hover {
+    background-color: #f3f4f6;
+  }
+
+  .google-icon {
+    width: 1.5rem;
+    height: 1.5rem;
+  }
+
+  .status-msg {
+    margin-top: 1rem;
+    font-size: 0.875rem;
+    color: #facc15; /* Yellow-400 */
+  }
+
+  .status-msg.hidden {
+    display: none;
+  }
+
+  .text-red-500 {
+    color: #ef4444;
+  }
+</style>
+
+<script>
+  import {
+    GoogleAuthProvider,
+    signInWithPopup,
+    onAuthStateChanged,
+  } from "firebase/auth";
+  import { auth } from "../lib/firebase";
+
+  const btn = document.getElementById("btn-google");
+  const status = document.getElementById("status");
+
+  onAuthStateChanged(auth, (user) => {
+    if (user) {
+      const urlParams = new URLSearchParams(window.location.search);
+      const callback = urlParams.get("callback");
+      // If no special callback (like desktop auth), go to profile
+      if (!callback) {
+        window.location.href = "/profile";
+      }
+    }
+  });
+
+  btn?.addEventListener("click", async () => {
+    try {
+      if (status) {
+        status.innerText = "Opening popup...";
+        status.classList.remove("hidden");
+      }
+
+      const provider = new GoogleAuthProvider();
+      const result = await signInWithPopup(auth, provider);
+      const user = result.user;
+      const token = await user.getIdToken();
+
+      if (status) status.innerText = "Success! Redirecting...";
+
+      // Check for callback param
+      const urlParams = new URLSearchParams(window.location.search);
+      const callback = urlParams.get("callback");
+
+      if (callback === "desktop") {
+        // Desktop Deep Link Redirect
+        // Format: overlayr://auth?token=...&uid=...
+        const deepLink = `overlayr://auth?token=${token}&uid=${user.uid}`;
+        console.log("Redirecting to:", deepLink);
+        window.location.href = deepLink;
+
+        setTimeout(() => {
+          if (status)
+            status.innerText = "Opened Overlayr? You can close this tab.";
+        }, 3000);
+      } else {
+        // Normal web login, go to dashboard/pricing
+        window.location.href = "/";
+      }
+    } catch (error: any) {
+      console.error(error);
+      if (status) {
+        status.innerText = "Error: " + error.message;
+        status.classList.add("text-red-500");
+        status.classList.remove("text-yellow-400");
+      }
+    }
+  });
+</script>

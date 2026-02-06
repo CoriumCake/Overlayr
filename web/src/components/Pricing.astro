@@ -1,0 +1,322 @@
+---
+interface Props {
+    lang: string;
+}
+
+const { lang } = Astro.props;
+
+import { STRIPE_LINKS } from "../config";
+
+
+const TIERS = [
+    {
+        id: "free",
+        name: "Free",
+        price: "฿0",
+        period: "forever",
+        link: null, // No link for free tier
+        features: [
+            "Basic OCR Engine",
+            "50 Translations / day",
+            "Standard Speed",
+            "Community Support",
+        ],
+    },
+    {
+        id: "pro",
+        name: "Pro",
+        price: "฿199",
+        period: "/ month",
+        link: STRIPE_LINKS.pro,
+        features: [
+            "Advanced OCR Engine",
+            "500 Translations / day",
+            "Faster AI Processing",
+            "Priority Support",
+        ],
+    },
+    {
+        id: "plus",
+        name: "Plus",
+        price: "฿499",
+        period: "/ month",
+        link: STRIPE_LINKS.plus,
+        features: [
+            "Premium AI Models",
+            "2,000 Translations / day",
+            "Real-time processing",
+            "No Watermark",
+        ],
+    },
+    {
+        id: "ultimate",
+        name: "Ultimate",
+        price: "฿999",
+        period: "/ month",
+        link: STRIPE_LINKS.ultimate,
+        features: [
+            "Enterprise-Grade AI",
+            "Unlimited Translations",
+            "Zero Latency Mode",
+            "Dedicated Support",
+        ],
+    },
+];
+---
+
+<section id="pricing" class="pricing-section">
+    <div class="container">
+        <div class="pricing-header">
+            <h2 class="section-title">Pricing</h2>
+            <p class="section-subtitle">
+                Start with a 7-day free trial. No credit card required.
+            </p>
+        </div>
+
+        <div class="pricing-grid">
+            {
+                TIERS.map((tier) => (
+                    <div class="pricing-card">
+                        <h3 class="tier-name">{tier.name}</h3>
+                        <div class="tier-price-wrapper">
+                            <span class="tier-price">{tier.price}</span>
+                            <span class="tier-period">{tier.period}</span>
+                        </div>
+                        <ul class="tier-features">
+                            {tier.features.map((feature) => (
+                                <li class="feature-item">
+                                    <svg
+                                        class="feature-icon"
+                                        width="20"
+                                        height="20"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M5 13l4 4L19 7"
+                                        />
+                                    </svg>
+                                    {feature}
+                                </li>
+                            ))}
+                        </ul>
+
+                        {tier.link ? (
+                            <a class="stripe-btn" data-tier-id={tier.id}>
+                                Subscribe
+                            </a>
+                        ) : (
+                            <a class="stripe-btn" href="#downloads">
+                                Download Now
+                            </a>
+                        )}
+                    </div>
+                ))
+            }
+        </div>
+    </div>
+</section>
+
+<style>
+    .pricing-section {
+        padding-block: 5rem;
+        background-color: transparent;
+    }
+
+    .container {
+        width: 100%;
+        max-width: 1200px;
+        margin-inline: auto;
+        padding-inline: 1.5rem;
+    }
+
+    .pricing-header {
+        text-align: center;
+        margin-bottom: 4rem;
+    }
+
+    .section-title {
+        font-size: 2.5rem;
+        font-weight: 800;
+        margin-bottom: 1rem;
+        background: linear-gradient(to right, #ec4899, #8b5cf6);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+
+    .section-subtitle {
+        font-size: 1.25rem;
+        color: var(--color-text-muted);
+    }
+
+    .pricing-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 2rem;
+    }
+
+    .pricing-card {
+        background: rgba(255, 255, 255, 0.9);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border-radius: 1rem;
+        padding: 2rem;
+        border: 1px solid rgba(255, 255, 255, 0.5);
+        box-shadow:
+            0 20px 40px -10px rgba(0, 0, 0, 0.1),
+            0 0 20px rgba(255, 255, 255, 0.2);
+        display: flex;
+        flex-direction: column;
+        transition:
+            transform 0.3s,
+            border-color 0.3s;
+        position: relative;
+    }
+
+    .pricing-card:hover {
+        border-color: var(--color-primary);
+        transform: translateY(-5px);
+    }
+
+    .tier-name {
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: #1a1a1a; /* Force dark text */
+        margin-bottom: 0.5rem;
+    }
+
+    .tier-price-wrapper {
+        display: flex;
+        align-items: baseline;
+        margin-bottom: 1.5rem;
+    }
+
+    .tier-price {
+        font-size: 1.875rem;
+        font-weight: 700;
+        color: #1a1a1a;
+    }
+
+    .tier-period {
+        color: #666; /* Force dark muted text */
+        margin-left: 0.5rem;
+    }
+
+    .tier-features {
+        list-style: none;
+        padding: 0;
+        margin-bottom: 2rem;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .feature-item {
+        display: flex;
+        align-items: center;
+        color: #333; /* Force dark text */
+    }
+
+    .feature-icon {
+        color: var(
+            --color-primary
+        ); /* Use primary for branding consistency, or keep green if preferred */
+        margin-right: 0.5rem;
+        flex-shrink: 0;
+    }
+
+    .stripe-btn {
+        display: block;
+        width: 100%;
+        padding: 0.75rem 1rem;
+        background: rgb(44, 177, 255); /* Solid Cyan/Blue to match screenshot */
+        color: white;
+        font-weight: 700;
+        text-align: center;
+        border-radius: 0.5rem;
+        transition:
+            transform 0.2s,
+            box-shadow 0.2s,
+            background 0.2s;
+        cursor: pointer;
+        text-decoration: none;
+        border: none;
+    }
+
+    .stripe-btn:hover {
+        transform: scale(1.05);
+        background: rgb(30, 150, 230);
+    }
+
+    .auth-prompt {
+        margin-top: 3rem;
+        text-align: center;
+    }
+
+    #user-status {
+        color: var(--color-text-muted);
+        margin-bottom: 0.5rem;
+    }
+
+    .login-link {
+        color: #f472b6;
+        text-decoration: underline;
+    }
+
+    .login-link:hover {
+        color: #fbcfe8;
+    }
+</style>
+
+<script>
+    import { auth } from "../lib/firebase";
+    import { onAuthStateChanged } from "firebase/auth";
+
+    // User status element removed
+
+    onAuthStateChanged(auth, (user) => {
+        // Re-query buttons to ensure we have the live elements (in case they were replaced)
+        const buttons = document.querySelectorAll(".stripe-btn");
+
+        if (user) {
+            // Update buttons to redirect to checkout page
+            buttons.forEach((btn) => {
+                const tierId = btn.getAttribute("data-tier-id");
+                if (tierId) {
+                    btn.setAttribute("href", `/checkout?plan=${tierId}`);
+                    // Ensure it opens in same tab
+                    btn.removeAttribute("target");
+
+                    // Remove any previous click listeners by cloning (if needed) or just trust the href
+                    // Since href takes precedence over click listeners usually, or we can clone again to clear
+                    const newBtn = btn.cloneNode(true);
+                    btn.parentNode?.replaceChild(newBtn, btn);
+                }
+            });
+        } else {
+            // Setup Login Popup behavior
+            buttons.forEach((btn) => {
+                btn.removeAttribute("href"); // Remove direct link
+                // Remove old listeners to prevent duplicates if auth state flips
+                const newBtn = btn.cloneNode(true);
+                btn.parentNode?.replaceChild(newBtn, btn);
+
+                newBtn.addEventListener("click", () => {
+                    // @ts-ignore
+                    if (window.openLoginPopup) {
+                        // @ts-ignore
+                        window.openLoginPopup();
+                    } else {
+                        // Fallback
+                        window.location.href = "/login?callback=web";
+                    }
+                });
+            });
+        }
+    });
+</script>
