@@ -3,29 +3,36 @@ from typing import Optional, Tuple, Callable, List, Dict, Any
 from PIL import Image
 import numpy as np
 from ..services.windows_ocr import WindowsOCREngine
+from ..services.paddle_ocr import PaddleOCREngine
 from ..services.google_translate import GoogleTranslateService
 from ..services.validation_service import ValidationService
 from ..utils.singleton import SingletonMeta
 from PIL import ImageEnhance, ImageFilter
 
+import cv2
+from .post_processing import TextPostProcessor
+
 class AsyncEngine(metaclass=SingletonMeta):
     """
     Orchestrates OCR and Translation asynchronously.
-    Pipeline: Resize (2x) -> Grayscale -> Contrast -> Sharpen -> Windows OCR.
+    Pipeline: Resize (2x) -> FNLM -> AdaptiveThresh -> CCA -> Close -> PaddleOCR.
     """
     def __init__(self) -> None:
         print("AsyncEngine: Init start...", flush=True)
         self.ocr_service = WindowsOCREngine()
+        # Ensure we have a default language. Paddle needs 'en', 'japan', 'korean', 'ch'
+        # self.ocr_service = PaddleOCREngine(lan='en') 
         print("AsyncEngine: Windows OCR initialized.", flush=True)
         self.translator_service = GoogleTranslateService()
         print("AsyncEngine: Google Translate initialized.", flush=True)
+        self.post_processor = TextPostProcessor()
+        print("AsyncEngine: PostProcessor initialized.", flush=True)
         self._is_running = False
         self._loop_task: Optional[asyncio.Task] = None
 
     def set_status_callback(self, callback):
         """Pass UI status callback to services."""
         if hasattr(self.ocr_service, 'set_callback'):
-            # WindowsOCR might not support this yet, but safe to call if it exists
             self.ocr_service.set_callback(callback)
         
         # Current language state
@@ -54,14 +61,25 @@ class AsyncEngine(metaclass=SingletonMeta):
         # Update translator (async)
         await self.translator_service.load_model(source, target)
         
-        # Update OCR language
+        # Update Windows OCR language
+        # Windows OCR Engine handles mapping internally (e.g. ja->ja, zh->zh-Hans)
+        # We just pass the code.
+        # Common UI codes: "Japanese" (ja), "English" (en), "Chinese" (zh-CN)
+        # self.ocr_service.set_language(source) 
+        # Actually better to extract the lang code part if source is "ja" or "en" etc.
+        # Assuming source is just the code "en", "ja", etc. from the UI.
+        # Let's verify what UI sends. 
+        # UI sends values from the dict: "ja", "en", "ko", "th", "zh-CN"
+        
         self.ocr_service.set_language(source)
+             
+        # But for this task, let's assume default 'en' or user setting matches
         
         # Store for internal use (noise filtering logic)
         self.source = source
         self.target = target
 
-    async def process_image(self, image: Image.Image, step_callback: Optional[Callable] = None, skip_translation: bool = False, merge_mode: str = "paragraph") -> Tuple[List[Dict[str, Any]], str]:
+    async def process_image(self, image: Image.Image, step_callback: Optional[Callable] = None, skip_translation: bool = True, merge_mode: str = "paragraph") -> Tuple[List[Dict[str, Any]], str]:
         """
         Runs OCR and translates text using fast Windows+Google APIs.
         Supports step_callback(stage_name, data) for debugging flow.
@@ -70,32 +88,121 @@ class AsyncEngine(metaclass=SingletonMeta):
         import time
         t0 = time.time()
         
-        # Preprocessing: Resize -> Grayscale -> Image Enhancement -> SHARPEN
-        scale_factor = 2.0
-        new_width = int(image.width * scale_factor)
-        new_height = int(image.height * scale_factor)
+        # --- NEW PIPELINE (Optimized: MedianBlur > Gray/CLAHE > Upscale > Bin > CCA LUT) ---
+        import time
+        import os
         
-        processed = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        processed = processed.convert("L")
-        processed = ImageEnhance.Contrast(processed).enhance(1.5)
-        processed = processed.filter(ImageFilter.SHARPEN)
+        # Helper to log time and save debug images
+        last_time = time.perf_counter()
+        debug_dir = r"d:\NotWork\NewWork\Overlayr\ProcessingImge"
+        if not os.path.exists(debug_dir): os.makedirs(debug_dir)
+        timestamp = int(time.time() * 1000)
         
+        # TOGGLE: Set to False to disable debug image saving
+        SAVE_DEBUG_IMAGES = False
 
+        def log_and_save(name, img_cv, suffix):
+            nonlocal last_time
+            now = time.perf_counter()
+            print(f"[DEBUG] Preprocessing - {name}: {(now - last_time)*1000:.2f} ms", flush=True)
+            last_time = now
+            
+            # Save debug image
+            if SAVE_DEBUG_IMAGES:
+                try:
+                    fname = f"step_{suffix}_{timestamp}.png"
+                    # cv2.imwrite expects BGR or Grayscale.
+                    cv2.imwrite(os.path.join(debug_dir, fname), img_cv)
+                except Exception as e:
+                    print(f"[DEBUG] Save Fail ({name}): {e}", flush=True)
+
+        # Convert PIL to CV2 (BGR)
+        scale_factor = 2.5
+        padding = 50
+        open_cv_image = np.array(image.convert('RGB')) 
+        open_cv_image = open_cv_image[:, :, ::-1].copy()
         
-        # Windows OCR works better with some contrast
-        results = await self.ocr_service.extract_text(processed)
+        # 1. Upscale 250% (Bicubic)
+        # Resize directly on the color image for better interpolation quality before greyscale
+        processed_cv = cv2.resize(open_cv_image, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+        log_and_save("Upscale 2.5x", processed_cv, "01_upscale")
+
+        # 2. Grayscale & CLAHE
+        gray = cv2.cvtColor(processed_cv, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        processed_cv = clahe.apply(gray)
+        log_and_save("Grayscale & CLAHE", processed_cv, "02_clahe")
+
+        # 3. Denoise: Median Blur (k=5)
+        # Applied after upscale/enhance to remove noise amplified by CLAHE 
+        processed_cv = cv2.medianBlur(processed_cv, 5)
+        log_and_save("Median Blur (Denoise)", processed_cv, "03_denoise")
+        
+        # 4. Adaptive Thresholding (C=15) - High contrast separation
+        processed_cv = cv2.adaptiveThreshold(processed_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 15)
+        log_and_save("Adaptive Threshold", processed_cv, "04_threshold")
+
+        # 5. Clean Noise: CCA + NumPy LUT Optimization
+        # Invert for CCA (Need white text on black background)
+        processed_cv = cv2.bitwise_not(processed_cv)
+        
+        # Connected Components
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(processed_cv, connectivity=8)
+        
+        # Filtering using NumPy LUT (Lookup Table) - Fastest method
+        min_area = 10
+        
+        # stats[:, 4] is area. Index 0 is background.
+        areas = stats[:, cv2.CC_STAT_AREA]
+        
+        # Create a LUT where valid labels = 255, others = 0
+        lut = np.zeros(num_labels, dtype=np.uint8)
+        
+        # Get indices of valid components (area >= min_area), skipping background (index 0)
+        valid_indices = np.where(areas >= min_area)[0]
+        if 0 in valid_indices:
+             valid_indices = valid_indices[valid_indices != 0]
+             
+        lut[valid_indices] = 255
+        
+        # Apply LUT
+        processed_cv = lut[labels]
+        log_and_save("Clean Noise (CCA+LUT)", processed_cv, "05_clean_cca")
+        
+        # 6. Final Invert (Back to Black text on White BG for OCR)
+        processed_cv = cv2.bitwise_not(processed_cv)
+        
+        # 7. Padding
+        processed_cv = cv2.copyMakeBorder(processed_cv, padding, padding, padding, padding, cv2.BORDER_CONSTANT, value=[255,255,255])
+        log_and_save("Final Invert & Padding", processed_cv, "06_final")
+        
+        # Convert back to PIL
+        processed_pil = Image.fromarray(processed_cv)
+        
+        # Execute OCR
+        results = await self.ocr_service.extract_text(processed_pil)
         t1 = time.time()
         
-        # Scale back coordinates
-        scaled_results = []
+        # Scale back coordinates & Post-Process
+        final_results = []
         for bbox_points, text, conf in results:
-            # bbox_points is [[x1,y1], [x2,y2]...]
+            # Post-Process Text
+            cleaned_text = self.post_processor.clean_text(text)
+            final_text = self.post_processor.correct_text(cleaned_text)
+            
+            if not final_text: continue
+            
+            # Scale coordinates back to original image
+            # x_orig = (x_ocr - padding) / scale
             scaled_bbox = []
             for point in bbox_points:
-                scaled_bbox.append([int(point[0] / scale_factor), int(point[1] / scale_factor)])
-            scaled_results.append((scaled_bbox, text, conf))
+                x = (point[0] - padding) / scale_factor
+                y = (point[1] - padding) / scale_factor
+                scaled_bbox.append([int(x), int(y)])
+                
+            final_results.append((scaled_bbox, final_text, conf))
             
-        results = scaled_results
+        results = final_results
         
         # DEBUG CALLBACK: OCR DONE
         if step_callback:
@@ -117,8 +224,22 @@ class AsyncEngine(metaclass=SingletonMeta):
         for bbox_points, text, conf in results:
             if conf < 0.35: continue 
             
-            if not ValidationService.is_valid_text(text, self.source):
+            # 1. First, try to correct the text (Spell Check / Dictionary)
+            # This helps fix "garbage" that might otherwise be filtered out.
+            corrected_text = self.post_processor.correct_text(text)
+            
+            # Debug change
+            if corrected_text != text:
+                 print(f"[DEBUG] Speller Corrected: '{text}' -> '{corrected_text}'", flush=True)
+                 text = corrected_text
+
+            # 2. Then, Validate (Filter)
+            is_valid = ValidationService.is_valid_text(text, self.source)
+            if not is_valid:
+                print(f"[DEBUG] Filtered out text: '{text}' (Conf: {conf})", flush=True)
                 continue
+            else:
+                 print(f"[DEBUG] Accepted text: '{text}' (Conf: {conf})", flush=True)
             
             pts = np.array(bbox_points)
             left = int(np.min(pts[:, 0]))
@@ -146,14 +267,65 @@ class AsyncEngine(metaclass=SingletonMeta):
                 "bg_color": bg_color_hex
             })
 
+        # --- DEBUG SAVE: Processed Image + Grouped Boxes ---
+        # Move this BEFORE validation check so we can see what's happening even if no text is found
+        try:
+            import os
+            from PIL import ImageDraw, ImageFont
+            
+            # Use the preprocessed image (processed_pil) which is Upscaled + Padded
+            debug_img = processed_pil.convert("RGB")
+            draw = ImageDraw.Draw(debug_img)
+            
+            # Load a font
+            try:
+                font = ImageFont.truetype("arial.ttf", 24)
+            except:
+                font = ImageFont.load_default()
+
+            # We can only draw if we have merged_metadata.
+            # But if metadata is empty, we haven't merged yet.
+            # Let's try to merge what we have (if anything) or just save the raw image.
+            
+            items_to_draw = []
+            if metadata:
+                 # If we have valid metadata, merge and draw it
+                 merged = self._merge_text_blocks(metadata, mode=merge_mode)
+                 items_to_draw = merged
+            
+            for item in items_to_draw:
+                bbox = item["bbox"] 
+                l = (bbox[0] * scale_factor) + padding
+                t = (bbox[1] * scale_factor) + padding
+                r = (bbox[2] * scale_factor) + padding
+                b = (bbox[3] * scale_factor) + padding
+                
+                draw.rectangle([l, t, r, b], outline="blue", width=4)
+                
+                try:
+                    text_label = item["original"]
+                    draw.text((l, max(0, t - 30)), text_label, fill="blue", font=font)
+                except:
+                   pass
+            
+            debug_dir = r"d:\NotWork\NewWork\Overlayr\ProcessingImge"
+            if not os.path.exists(debug_dir): os.makedirs(debug_dir)
+            
+            timestamp = int(time.time() * 1000)
+            save_path = os.path.join(debug_dir, f"proc_grouped_{timestamp}.png")
+            
+            if SAVE_DEBUG_IMAGES:
+                debug_img.save(save_path)
+                print(f"[DEBUG] Saved debug image to: {save_path}", flush=True)
+            
+        except Exception as e:
+             print(f"Failed to save debug image: {e}", flush=True)
+
         if not metadata:
             return [], raw_text
 
-        # Merge spatially close blocks
-        merged_metadata = self._merge_text_blocks(metadata, mode=merge_mode)
-        
-
-        
+        # Merge spatially close blocks (Real logic for return)
+        merged_metadata = self._merge_text_blocks(metadata, mode=merge_mode)  
         # DEBUG CALLBACK: MERGE DONE
         if step_callback:
             await step_callback("MERGED", merged_metadata)

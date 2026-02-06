@@ -11,3 +11,7 @@ keyboard
 winocr
 langdetect
 easyocr
+fuzzywuzzy
+python-Levenshtein
+symspellpy
+

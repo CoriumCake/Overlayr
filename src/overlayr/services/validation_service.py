@@ -60,10 +60,12 @@ class ValidationService:
         
         # If it's mostly symbols or digits, it's probably noise (coordinates, random artifacts)
         # Exception: short numbers like "10" or "1:00" might be valid, but "(0.0)" or "0724" are usually noise here.
-        if (symbol_count + digit_count) > length * 0.5 and length < 10:
+        # If it's mostly symbols or digits, it's probably noise (coordinates, random artifacts)
+        # Exception: short numbers like "10" or "1:00" might be valid, but "(0.0)" or "0724" are usually noise here.
+        if (symbol_count + digit_count) > length * 0.7 and length < 10:
             return False
             
-        if symbol_count > length * 0.25:
+        if symbol_count > length * 0.5:
             return False
             
         # 2. Source-Specific Logic
@@ -105,9 +107,11 @@ class ValidationService:
         if letter_count > 0 and (digit_count > 0 or symbol_count > 0):
             # If it's short and mixed without spaces, it's noise
             if ' ' not in text and length < 15:
-                return False
+                # Relaxed: Allow if it has enough vowels or looks like a code
+                pass 
+                
             # Even with spaces, if there are many symbols/digits relative to letters, it's noise
-            if (digit_count + symbol_count) > letter_count and length < 20:
+            if (digit_count + symbol_count) > letter_count * 2 and length < 20:
                 return False
                 
         # 4. Pure Digits or Symbols Check
