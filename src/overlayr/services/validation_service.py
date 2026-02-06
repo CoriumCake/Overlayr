@@ -7,7 +7,7 @@ class ValidationService:
     """
     
     SYMBOLS: Set[str] = set(r"{}[]|=+-_/\<>*^#~€£¥•©®™()[].,:;!?'\"")
-    VOWELS: Set[str] = set("aeiouAEIOU")
+    VOWELS: Set[str] = set("aeiouAEIOUyY")
     
     # regex for URLs, domains, and common UI artifacts
     UI_PATTERNS = [
@@ -82,10 +82,20 @@ class ValidationService:
 
             # Existing vowels check
             if letter_count > 0:
-                vowel_count = sum(1 for c in text if c in ValidationService.VOWELS)
-                if vowel_count == 0 and length > 2:
-                    return False
-                if letter_count < length * 0.6 and length > 5:
+                # Exception for Honorifics/Abbreviations (Mr., Mrs., Dr., etc.)
+                clean_upper = text.replace('.', '').upper()
+                honorifics = {"MR", "MRS", "MS", "DR", "ST", "JR", "SR", "MT", "SGT", "CAPT"}
+                
+                if clean_upper in honorifics:
+                    pass # Allow valid abbreviations even without vowels
+                else:
+                    vowel_count = sum(1 for c in text if c in ValidationService.VOWELS)
+                    if vowel_count == 0 and length > 2:
+                        return False
+                        
+                # Relaxed density check: allow short phrases with punctuation (e.g. "OH...I")
+                # Only enforce 60% letters if text is longer than 8 chars (was 5)
+                if letter_count < length * 0.6 and length > 8:
                     return False
             
             # Use langdetect for longer text to be sure

@@ -1,50 +1,69 @@
-Sequence Diagram of Overlayr Workflow (Final Version)
+Sequence Diagram of Overlayr Workflow (Final Architecture)
 ======================================================
-*Updated: 2026-02-06 (Latest Architecture)*
+*Updated: 2026-02-07 (Latest Configuration)*
 
 1. Capture Mechanism (การจับภาพ)
 ------------------------------------------------------
-Overlayr ใช้ไลบรารี `mss` เป็นแกนหลัก (High-performance screen shot)
+Overlayr ใช้ไลบรารี `mss` เป็นแกนหลักในการจับภาพ (High-performance screen shot)
 [เทคนิคสำคัญ: Invisible Overlay]
-- เราใช้ `SetWindowDisplayAffinity` (Windows API) เพื่อทำให้หน้าต่าง Overlay "ล่องหน" ในสายตาของโปรแกรมจับภาพ
-- ผลลัพธ์: เราสามารถจับภาพหน้าจอได้ตลอดเวลาโดยไม่ต้องซ่อน/แสดง Overlay ไปมา (No flickering) และ OCR จะไม่เผลออ่านข้อความแปลของตัวเอง
+- เราใช้ `SetWindowDisplayAffinity` (Windows API) เพื่อทำให้หน้าต่าง Overlay "ล่องหน" จากการจับภาพ
+- **ข้อดี:** จับภาพได้ต่อเนื่องโดยไม่ต้องสั่ง Hide/Show หน้าต่าง ช่วยลดอาการกระพริบ (Flickering) และทำให้การทำงานลื่นไหลแบบ Real-time
 
 2. Preprocessing (การเตรียมภาพ)
 ------------------------------------------------------
-เป้าหมาย: ทำภาพให้ "ขาว-ดำ" ชัดเจนที่สุด เพื่อให้ OCR อ่านง่าย (Optimized for Windows OCR)
-ลำดับขั้นตอน (Pipeline Order):
-1. [Upscale 2.5x] ขยายภาพ 2.5 เท่าด้วย Bicubic Interpolation เพื่อให้ตัวอักษรเล็กๆ มีรายละเอียดเส้นชัดเจน
-2. [Grayscale & CLAHE] แปลงขาวดำและปรับ Equalization เพื่อเร่งคอนทราสต์ตัวอักษร
-3. [Denoise] Median Blur เพื่อลบจุดรบกวน (Noise)
-4. [Adaptive Threshold] แปลงเป็นภาพขาว-ดำ (Binary) ตัดพื้นหลังออก
-5. [Clean Noise (CCA)] ใช้ Connected Component Analysis ลบฝุ่นจุดดำเล็กๆ ที่ไม่ใช่ตัวอักษร
-6. [Finalize] Invert สี (ตัวอักษรดำ พื้นขาว) และเติมขอบ (Padding)
+เป้าหมาย: แปลงภาพให้เป็น "ขาว-ดำ" (Binary) ที่คมชัดที่สุด เพื่อให้ Windows OCR อ่านได้แม่นยำ
+ลำดับขั้นตอน (Pipeline Order & Parameters):
+1. **[Upscale 2.0x]**
+   - **Scale:** 2.0 เท่า
+   - **Interpolation:** Bicubic (`cv2.INTER_CUBIC`)
+   - *เหตุผล:* ขยายเพื่อให้เส้นตัวอักษรเล็กๆ (Small fonts) มีความหนาเพียงพอให้ OCR จับได้
+2. **[Grayscale & CLAHE]**
+   - **ClipLimit:** 2.0 (ค่าน้อยคือปรับคอนทราสต์เบาลง เพื่อไม่ให้ Noise เยอะเกินไป)
+   - **TileGridSize:** (8,8) (ขนาดตารางที่ใช้คำนวณ)
+   - *เหตุผล:* ปรับแสงให้เท่ากันทั้งภาพ (Equalization) ทำให้ตัวอักษรเด่นชัดขึ้น
+3. **[Denoise (Median Blur)]**
+   - **Kernel Size:** 5 (รัศมี 5 พิกเซล)
+   - *เหตุผล:* ลบจุดรบกวน (Salt-and-pepper noise) ที่มักเกิดขึ้นหลังจากเร่งคอนทราสต์
+4. **[Adaptive Threshold]**
+   - **Method:** Gaussian C
+   - **Block Size:** 11
+   - **C (Constant):** 12 (ลดจาก 15 เพื่อเก็บรายละเอียดตัวอักษรบางที่อาจจะจาง)
+   - *เหตุผล:* ตัดขอบตัวอักษรออกจากพื้นหลัง
+5. **[Morphological Closing]**
+   - **Kernel:** Rect (2,2)
+   - *เหตุผล:* เชื่อมต่อเส้นตัวอักษรที่ขาดออกจากกัน (Repair broken fonts)
+6. **[Clean Noise (CCA)]**
+   - **Min Area:** 10 pixels
+   - *เหตุผล:* ลบจุดดำเล็กๆ ที่ไม่ใช่ตัวอักษร
+7. **[Finalize]** Invert สี (ตัวอักษรดำ พื้นขาว) และเติมขอบ (Padding) 50px 50px
 
 3. OCR (การอ่านข้อความ)
 ------------------------------------------------------
-- Engine: **Windows Dictionary-based OCR** (รวดเร็ว, ไม่ต้องใช้เน็ต)
-- Input: ภาพจากขั้นตอนที่ 2
-- Output: ข้อความดิบ (Raw Text) และ ตำแหน่ง (Bounding Boxes)
+- **Engine:** Windows Dictionary-based OCR (Offline)
+- **Input:** ภาพขาว-ดำจากขั้นตอน Preprocessing
+- **Features:** ทำงานเร็วมาก (Milliseconds), รองรับภาษาไทย/อังกฤษ/ญี่ปุ่น
 
-4. Post-Processing (การประมวลผลก่อนแปล)
+4. Post-Processing & Logic (ตรรกะหลังการอ่าน)
 ------------------------------------------------------
-1. [Spell Check & Correction]
-   - ทำ **ก่อน** Validation เพื่อกู้คืนคำที่อ่านผิด
-   - ตัวอย่าง: `th1s` -> `this`
-2. [Validation]
-   - กรองข้อความขยะทิ้ง (Gibberish Filter)
-   - กฎเกณฑ์ผ่อนปรน (Relaxed Rules): ยอมรับสัญลักษณ์ได้ 50% ของความยาว เพื่อไม่ให้ตัดคำที่มีเครื่องหมายตกใจหรือจุดทิ้ง
+1. **[Spell Check / Correction]**
+   - ทำ **ก่อน** Validation เพื่อแก้ไขคำที่ OCR อ่านผิดเล็กน้อย (เช่น `th1s` -> `this`)
+2. **[Validation Service]**
+   - คัดกรองข้อความขยะ (Gibberish) โดยใช้กฎที่ผ่อนปรน (Relaxed Rules)
+   - ยอมรับสัญลักษณ์ได้มากขึ้น (50%) เพื่อเก็บข้อความสั้นๆ หรือประโยคที่มีเครื่องหมายตกใจ
+3. **[Translation]**
+   - ส่งข้อความที่ผ่านการคัดกรองไปยัง Google Translate (Async)
 
-5. Translation (การแปลภาษา)
+5. Display & Performance (การแสดงผล)
 ------------------------------------------------------
-- Engine: **Google Translate (Async)**
-- Input: ข้อความภาษาอังกฤษ (หรือญี่ปุ่น/เกาหลี) ที่ผ่านการกรองแล้ว
-- Output: ข้อความภาษาไทย
+- **Technology:** Tkinter Transparent Window
+- **Behavior:**
+  - สร้าง Overlay ทับตำแหน่งเดิมของข้อความ
+  - แสดงผลลัพธ์ที่แปลแล้ว (Translated Text) บนพื้นหลังสีเข้มโปร่งแสง
+- **Performance Loop:**
+  - **Zero Delay:** `await asyncio.sleep(0)`
+  - การทำงานเป็นรอบแบบทันที (Immediate Cycle) เพื่อให้การจับภาพและการแสดงผลตอบสนองไวที่สุด (Max FPS)
 
-6. Display (การแสดงผล)
+6. Authentication (ระบบยืนยันตัวตน)
 ------------------------------------------------------
-- Technology: **Tkinter Transparent Window** (Click-Through)
-- การแสดงผล:
-  - วาดข้อความผลลัพธ์ (Translated Text) ทับตำแหน่งเดิมบนหน้าจอ
-  - มีพื้นหลังสีเข้มโปร่งแสง (Semi-transparent background) เพื่อให้อ่านง่าย
-  - **Performance:** Loop Delay = 0 วินาที (Real-time updates) เพื่อความลื่นไหลสูงสุด
+- มีระบบตรวจสอบสิทธิ์การใช้งาน (Pro/Trial)
+- เชื่อมต่อ Login ผ่าน Browser และตรวจสอบ Status ก่อนเริ่มทำงาน

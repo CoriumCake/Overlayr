@@ -10,13 +10,9 @@ opencv-python
 keyboard
 winocr
 langdetect
-easyocr
 fuzzywuzzy
 python-Levenshtein
 symspellpy
-<<<<<<< Updated upstream
 requests
-=======
 winsdk
-
->>>>>>> Stashed changes
+rapidocr_onnxruntime

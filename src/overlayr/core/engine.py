@@ -3,7 +3,7 @@ from typing import Optional, Tuple, Callable, List, Dict, Any
 from PIL import Image
 import numpy as np
 from ..services.windows_ocr import WindowsOCREngine
-from ..services.paddle_ocr import PaddleOCREngine
+from ..services.rapid_ocr import RapidOCREngine
 from ..services.google_translate import GoogleTranslateService
 from ..services.validation_service import ValidationService
 from ..utils.singleton import SingletonMeta
@@ -15,14 +15,13 @@ from .post_processing import TextPostProcessor
 class AsyncEngine(metaclass=SingletonMeta):
     """
     Orchestrates OCR and Translation asynchronously.
-    Pipeline: Resize (2x) -> FNLM -> AdaptiveThresh -> CCA -> Close -> PaddleOCR.
+    Pipeline: Resize (2x) -> FNLM -> AdaptiveThresh -> CCA -> Close -> RapidOCR.
     """
     def __init__(self) -> None:
         print("AsyncEngine: Init start...", flush=True)
-        self.ocr_service = WindowsOCREngine()
-        # Ensure we have a default language. Paddle needs 'en', 'japan', 'korean', 'ch'
-        # self.ocr_service = PaddleOCREngine(lan='en') 
-        print("AsyncEngine: Windows OCR initialized.", flush=True)
+        # self.ocr_service = WindowsOCREngine()
+        self.ocr_service = RapidOCREngine()
+        print("AsyncEngine: RapidOCR initialized.", flush=True)
         self.translator_service = GoogleTranslateService()
         print("AsyncEngine: Google Translate initialized.", flush=True)
         self.post_processor = TextPostProcessor()
@@ -100,7 +99,7 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         # TOGGLE: Debug Image Saving
         SAVE_INTERMEDIATE_DEBUG = False
-        SAVE_FINAL_DEBUG = False
+        SAVE_FINAL_DEBUG = True
 
         if SAVE_INTERMEDIATE_DEBUG or SAVE_FINAL_DEBUG:
             if not os.path.exists(debug_dir):
@@ -122,15 +121,15 @@ class AsyncEngine(metaclass=SingletonMeta):
                     print(f"[DEBUG] Save Fail ({name}): {e}", flush=True)
 
         # Convert PIL to CV2 (BGR)
-        scale_factor = 2.5
+        scale_factor = 2.0
         padding = 50
         open_cv_image = np.array(image.convert('RGB')) 
         open_cv_image = open_cv_image[:, :, ::-1].copy()
         
-        # 1. Upscale 250% (Bicubic)
+        # 1. Upscale 200% (Bicubic)
         # Resize directly on the color image for better interpolation quality before greyscale
-        processed_cv = cv2.resize(open_cv_image, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
-        log_and_save("Upscale 2.5x", processed_cv, "01_upscale")
+        processed_cv = cv2.resize(open_cv_image, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        log_and_save("Upscale 2.0x", processed_cv, "01_upscale")
 
         # 2. Grayscale & CLAHE
         gray = cv2.cvtColor(processed_cv, cv2.COLOR_BGR2GRAY)
@@ -143,13 +142,19 @@ class AsyncEngine(metaclass=SingletonMeta):
         processed_cv = cv2.medianBlur(processed_cv, 5)
         log_and_save("Median Blur (Denoise)", processed_cv, "03_denoise")
         
-        # 4. Adaptive Thresholding (C=15) - High contrast separation
-        processed_cv = cv2.adaptiveThreshold(processed_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 15)
+        # 4. Adaptive Thresholding (C=12) - slightly relaxed from 15 to keep faint text
+        processed_cv = cv2.adaptiveThreshold(processed_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 12)
         log_and_save("Adaptive Threshold", processed_cv, "04_threshold")
 
         # 5. Clean Noise: CCA + NumPy LUT Optimization
         # Invert for CCA (Need white text on black background)
         processed_cv = cv2.bitwise_not(processed_cv)
+
+        # 5.1 Morphological Closing (Connect broken text)
+        # Useful for manga fonts where ink might be skip processing
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        processed_cv = cv2.morphologyEx(processed_cv, cv2.MORPH_CLOSE, kernel)
+        log_and_save("Morph Closing", processed_cv, "05_closing")
         
         # Connected Components
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(processed_cv, connectivity=8)
@@ -185,7 +190,10 @@ class AsyncEngine(metaclass=SingletonMeta):
         processed_pil = Image.fromarray(processed_cv)
         
         # Execute OCR
+        ocr_start = time.perf_counter()
         results = await self.ocr_service.extract_text(processed_pil)
+        ocr_dur = (time.perf_counter() - ocr_start) * 1000
+        print(f"[DEBUG] OCR Processing: {ocr_dur:.2f} ms", flush=True)
         t1 = time.time()
         
         # Scale back coordinates & Post-Process
@@ -226,39 +234,40 @@ class AsyncEngine(metaclass=SingletonMeta):
         # Prepare batch
         w, h = image.size # Original size
         
+        filtered_metadata = [] # Store rejected items for debug
+
         for bbox_points, text, conf in results:
             if conf < 0.35: continue 
             
-            # 1. First, try to correct the text (Spell Check / Dictionary)
-            # This helps fix "garbage" that might otherwise be filtered out.
+            # ... (Spell Check) ...
             corrected_text = self.post_processor.correct_text(text)
-            
-            # Debug change
             if corrected_text != text:
                  print(f"[DEBUG] Speller Corrected: '{text}' -> '{corrected_text}'", flush=True)
                  text = corrected_text
 
+            # ... (Calculate coordinates common for both) ...
+            pts = np.array(bbox_points)
+            left = int(np.min(pts[:, 0])); top = int(np.min(pts[:, 1]))
+            right = int(np.max(pts[:, 0])); bottom = int(np.max(pts[:, 1]))
+            left = max(0, left); top = max(0, top); right = min(w, right); bottom = min(h, bottom)
+
             # 2. Then, Validate (Filter)
             is_valid = ValidationService.is_valid_text(text, self.source)
+            
             if not is_valid:
                 print(f"[DEBUG] Filtered out text: '{text}' (Conf: {conf})", flush=True)
+                # Store filtered item
+                filtered_metadata.append({
+                    "bbox": [left, top, right, bottom],
+                    "original": text
+                })
                 continue
             else:
                  print(f"[DEBUG] Accepted text: '{text}' (Conf: {conf})", flush=True)
             
-            pts = np.array(bbox_points)
-            left = int(np.min(pts[:, 0]))
-            top = int(np.min(pts[:, 1]))
-            right = int(np.max(pts[:, 0]))
-            bottom = int(np.max(pts[:, 1]))
-            
-            left = max(0, left); top = max(0, top)
-            right = min(w, right); bottom = min(h, bottom)
-
             try:
                 region = image.crop((left, top, right, bottom))
                 if region.width == 0 or region.height == 0: continue
-                    
                 np_region = np.array(region)
                 avg_color = np.mean(np_region, axis=(0,1))
                 bg_color_hex = '#%02x%02x%02x' % (int(avg_color[0]), int(avg_color[1]), int(avg_color[2]))
@@ -273,28 +282,21 @@ class AsyncEngine(metaclass=SingletonMeta):
             })
 
         # --- DEBUG SAVE: Processed Image + Grouped Boxes ---
-        # Move this BEFORE validation check so we can see what's happening even if no text is found
         try:
             import os
             from PIL import ImageDraw, ImageFont
             
-            # Use the preprocessed image (processed_pil) which is Upscaled + Padded
             debug_img = processed_pil.convert("RGB")
             draw = ImageDraw.Draw(debug_img)
             
-            # Load a font
             try:
                 font = ImageFont.truetype("arial.ttf", 24)
             except:
                 font = ImageFont.load_default()
 
-            # We can only draw if we have merged_metadata.
-            # But if metadata is empty, we haven't merged yet.
-            # Let's try to merge what we have (if anything) or just save the raw image.
-            
+            # Draw Valid Items (BLUE)
             items_to_draw = []
             if metadata:
-                 # If we have valid metadata, merge and draw it
                  merged = self._merge_text_blocks(metadata, mode=merge_mode)
                  items_to_draw = merged
             
@@ -306,12 +308,24 @@ class AsyncEngine(metaclass=SingletonMeta):
                 b = (bbox[3] * scale_factor) + padding
                 
                 draw.rectangle([l, t, r, b], outline="blue", width=4)
-                
                 try:
-                    text_label = item["original"]
-                    draw.text((l, max(0, t - 30)), text_label, fill="blue", font=font)
-                except:
-                   pass
+                    draw.text((l, max(0, t - 30)), item["original"], fill="blue", font=font)
+                except: pass
+
+            # Draw Filtered Items (RED)
+            for item in filtered_metadata:
+                bbox = item["bbox"]
+                l = (bbox[0] * scale_factor) + padding
+                t = (bbox[1] * scale_factor) + padding
+                r = (bbox[2] * scale_factor) + padding
+                b = (bbox[3] * scale_factor) + padding
+                
+                # Dashed or Thinner line for rejected? Just Red.
+                draw.rectangle([l, t, r, b], outline="red", width=2)
+                try:
+                    # Draw text in red
+                    draw.text((l, max(0, t - 30)), f"[X] {item['original']}", fill="red", font=font)
+                except: pass
             
             debug_dir = os.path.join(os.getcwd(), "debug_images")
             if SAVE_FINAL_DEBUG and not os.path.exists(debug_dir): 
