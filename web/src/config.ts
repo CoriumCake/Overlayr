@@ -1,3 +1,4 @@
+// @ts-check
 export const SITE = {
     title: "Overlayr",
     description: "Your Live Translation Overlay",
