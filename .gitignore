@@ -22,3 +22,7 @@ dist/
 # OS
 Thumbs.db
 Desktop.ini
+
+# Vercel & Astro
+.vercel/
+.output/
