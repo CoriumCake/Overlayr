@@ -6,6 +6,8 @@ export const SITE = {
     discord: "https://discord.gg/overlayr",
 };
 
+export const GITHUB_LATEST_RELEASE = "https://github.com/Overlayr/Overlayr/releases/latest";
+
 export const STRIPE_LINKS = {
     pro: "https://buy.stripe.com/test_bJedR32D45qV3m5cRn0ZW06", // Card Link
     pro_qr: "https://buy.stripe.com/test_7sY2817Xo5qVf4Ng3z0ZW07", // PromptPay Link
