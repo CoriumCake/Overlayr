@@ -70,7 +70,9 @@ import Layout from "../layouts/Layout.astro";
         align-items: center;
         justify-content: center;
         padding: 2rem;
-        background-color: var(--color-bg);
+        /* Revert to default/transparent so global noise and orbs show through */
+        position: relative;
+        z-index: 1;
     }
 
     .container {
@@ -79,12 +81,12 @@ import Layout from "../layouts/Layout.astro";
     }
 
     .profile-card {
-        background-color: rgba(31, 41, 55, 0.5);
-        border: 1px solid var(--glass-border);
+        background-color: #ffffff; /* White Card */
+        border: 1px solid rgba(0, 0, 0, 0.1);
         border-radius: 1.5rem;
         padding: 2.5rem;
-        backdrop-filter: blur(10px);
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.05);
+        color: #1a1a1a; /* Force dark text for contrast on white */
     }
 
     .header {
@@ -102,25 +104,37 @@ import Layout from "../layouts/Layout.astro";
     .name {
         font-size: 1.75rem;
         font-weight: 700;
-        color: var(--color-text-heading);
+        color: #111;
         margin: 0;
     }
 
     .email {
-        color: var(--color-text-muted);
+        color: #555;
         margin: 0;
     }
 
     .divider {
         height: 1px;
-        background-color: var(--glass-border);
+        background-color: #eee;
         margin-block: 2rem;
     }
 
     .subscription-status h2 {
         font-size: 1.25rem;
         margin-bottom: 1.5rem;
-        color: var(--color-text-heading);
+        color: #111;
+    }
+
+    /* ... skipped ... */
+
+    .logout-btn {
+        background-color: #f3f4f6;
+        color: #374151;
+        border: 1px solid #e5e7eb;
+    }
+
+    .logout-btn:hover {
+        background-color: #e5e7eb;
     }
 
     .status-row {
@@ -136,12 +150,12 @@ import Layout from "../layouts/Layout.astro";
     }
 
     .label {
-        color: var(--color-text-muted);
+        color: #666; /* Muted text for white bg */
     }
 
     .value {
         font-weight: 600;
-        color: var(--color-text-main);
+        color: #000; /* Dark text for white bg */
     }
 
     .badge {

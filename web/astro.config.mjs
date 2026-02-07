@@ -1,5 +1,6 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
+import vercel from '@astrojs/vercel';
 
 import sitemap from '@astrojs/sitemap';
 
@@ -7,6 +8,11 @@ import sitemap from '@astrojs/sitemap';
 export default defineConfig({
     site: 'https://overlayr.catcode.tech',
     output: 'static',
+    adapter: vercel({
+        webAnalytics: {
+            enabled: true,
+        },
+    }),
     compressHTML: true,
 
     build: {
