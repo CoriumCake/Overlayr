@@ -504,6 +504,15 @@ class MainWindow(ctk.CTk):
                             target_hwnd = self.selected_source.get('id')
                             if active_hwnd != target_hwnd:
                                 is_active = False
+                                # print(f"DEBUG FOCUS: Active={active_hwnd} Target={target_hwnd}", flush=True) # Too spammy, only if mismatch? 
+                                # Actually, if it's mismatch, we HIDE. So we need to know WHY it's hidden.
+                                # Let's print only if state CHANGES? That requires state tracking.
+                                # For now, just print if active_hwnd is different every 60 frames? No.
+                        
+                        # DEBUG for User Issue:
+                        if not is_active and (self.frame_count % 30 == 0):
+                             print(f"DEBUG: Overlay Hidden. Active: {active_hwnd}, Target: {target_hwnd}, Bounds: {bounds}", flush=True)
+                            
                     except: pass
                     
                     self.is_target_active = is_active

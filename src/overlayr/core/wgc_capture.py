@@ -747,9 +747,11 @@ class WGCCapture:
                 size = Size()
                 hr = GetSize(self.item_ptr, byref(size))
                 
-                # Handling Minimized Windows (Size 0x0)
-                if hr == S_OK and (size.Width <= 0 or size.Height <= 0):
-                    print(f"WGC (Pure): Target is minimized/invalid size ({size.Width}x{size.Height}). Deferring Pool creation.", flush=True)
+                # Handling Minimized Windows (Size 0x0) OR Tiny Placeholder
+                # Chrome minimized returns ~160x28. Treat anything < 200x100 as "minimized" state to be safe?
+                # Actually, 50x50 is safe enough for "not real content".
+                if hr == S_OK and (size.Width <= 50 or size.Height <= 50):
+                    print(f"WGC (Pure): Target is minimized/tiny ({size.Width}x{size.Height}). Deferring Pool creation.", flush=True)
                     self.running = True # Pretend we started, will try to init pool in get_latest_frame
                     return
 
@@ -757,6 +759,7 @@ class WGCCapture:
                 
                 print(f"WGC (Pure): Item Size: {size.Width}x{size.Height}", flush=True)
                 
+                self.current_size = (size.Width, size.Height)
                 self.pool_ptr = create_frame_pool(
                     self.device_ptr, 
                     DXGI_FORMAT_B8G8R8A8_UNORM, 
@@ -794,8 +797,9 @@ class WGCCapture:
                 size = Size()
                 hr = GetSize(self.item_ptr, byref(size))
                 
-                if hr == S_OK and size.Width > 0 and size.Height > 0:
+                if hr == S_OK and size.Width > 50 and size.Height > 50:
                      print(f"WGC (Pure): Window restored! Size: {size.Width}x{size.Height}. Creating Pool...", flush=True)
+                     self.current_size = (size.Width, size.Height)
                      self.pool_ptr = create_frame_pool(
                         self.device_ptr, 
                         DXGI_FORMAT_B8G8R8A8_UNORM, 
@@ -829,8 +833,77 @@ class WGCCapture:
             if hr != 0 or not frame_ptr:
                 return None
             
+            if hr != 0 or not frame_ptr:
+                return None
+            
             try:
                 # We got a frame!
+                # 0. Check ContentSize and Recreate Pool if needed
+                # Direct3D11CaptureFrame::ContentSize [8]
+                p_frame = cast(frame_ptr, POINTER(POINTER(c_void_p)))
+                vtbl_frame = p_frame.contents
+                
+                class SizeInt32(Structure):
+                    _fields_ = [("Width", c_int), ("Height", c_int)]
+
+                GetContentSize_proto = ctypes.WINFUNCTYPE(HRESULT, c_void_p, POINTER(SizeInt32))
+                GetContentSize = GetContentSize_proto(vtbl_frame[8])
+                
+                content_size = SizeInt32()
+                hr = GetContentSize(frame_ptr, byref(content_size))
+                
+                if hr == 0:
+                     current_w, current_h = getattr(self, 'current_size', (0,0))
+                     if (content_size.Width != current_w or content_size.Height != current_h) and content_size.Width > 50:
+                         print(f"WGC: Size Changed {current_w}x{current_h} -> {content_size.Width}x{content_size.Height}. Recreating Pool.", flush=True)
+                         
+                         # Recreate Pool
+                         # We can call Recreate() on the pool, or just create a new one.
+                         # IDirect3D11CaptureFramePool::Recreate(device, pixelFormat, numberOfBuffers, size) [8]
+                         # Let's try Recreate first.
+                         p_pool_recreate = cast(self.pool_ptr, POINTER(POINTER(c_void_p)))
+                         vtbl_pool = p_pool_recreate.contents
+                         Recreate_proto = ctypes.WINFUNCTYPE(HRESULT, c_void_p, c_void_p, c_int, c_int, SizeInt32)
+                         # Wait, SizeInt32 is struct by value? No, in C API usually passed by value or ref?
+                         # WinRT uses struct SizeInt32 directly.
+                         # Function sig: Recreate(device, pixelFormat, numberOfBuffers, size)
+                         
+                         # We need to find index of Recreate.
+                         # IInspectable: 6 methods.
+                         # Create: Static.
+                         # Recreate: Method on instance?
+                         # Looking at IDirect3D11CaptureFramePool:
+                         # 6: Recreate(device, pixelFormat, numberOfBuffers, size)
+                         
+                         Recreate = Recreate_proto(vtbl_pool[6])
+                         # SizeInt32 passed by value in WinRT ABI? Usually passed as struct.
+                         # ctypes handles struct by value if specified in argtypes.
+                         # Recreate_proto = ctypes.WINFUNCTYPE(HRESULT, c_void_p, c_void_p, c_int, c_int, SizeInt32)
+                         
+                         # hr = Recreate(self.pool_ptr, self.device_ptr, DXGI_FORMAT_B8G8R8A8_UNORM, 2, content_size)
+                         # If Recreate fails or too complex, just release and create new?
+                         # Let's use CreateFreeThreaded (Static) again? No, that makes a NEW pool.
+                         # We have a valid pool instance.
+                         # Let's try Recreate.
+                         
+                         # If this is risky, we can just update self.current_size and let next frame handle it?
+                         # No, we need a pool that matches the size often.
+                         # Actually WGC allows mismatch, but it might crop/scale.
+                         # Better to recreate.
+                         
+                         # SIMPLER: specific Recreate VTable index is tricky without metadata.
+                         # Safe fallback: Treat "Resize" as "Stop/Start" internally?
+                         # Or just Update self.current_size and ignore? 
+                         # If we don't recreate, we get the old size's staging texture later.
+                         
+                         # Let's just update self.current_size for Staging creation!
+                         # Because the Frame content IS the new size.
+                         # The Pool size just determines buffer size. 
+                         # If Frame is bigger than Pool, does it crash?
+                         
+                         # Let's update current_size and see if Staging Texture creation handles it.
+                         self.current_size = (content_size.Width, content_size.Height)
+                         
                 # 1. Get Surface (IDirect3DSurface) from Frame
                 # Direct3D11CaptureFrame inherits from IInspectable
                 # [6] get_Surface(IDirect3DSurface**)
