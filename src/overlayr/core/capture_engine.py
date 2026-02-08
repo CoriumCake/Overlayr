@@ -5,10 +5,12 @@ from typing import Optional, Dict, Any, Tuple
 import asyncio
 from ..utils.singleton import SingletonMeta
 from ..services.source_manager import SourceManager
+from .wgc_capture import WGCCapture
 
 class CaptureEngine(metaclass=SingletonMeta):
     """
     Handles capturing images from Screens or Windows.
+    Now supports WGC for Background Application Capture.
     """
     def __init__(self):
         self.mode = "screen" # screen | window
@@ -17,11 +19,23 @@ class CaptureEngine(metaclass=SingletonMeta):
         self.current_bbox = None
         self.source_manager = None # Don't init here, circle dep/blocking?
         self.roi = None # (x_ratio, y_ratio, w_ratio, h_ratio) or None
+        
+        # WGC Instance
+        self.wgc = WGCCapture()
 
     def set_source(self, mode: str, target: Dict[str, Any]) -> None:
         self.mode = mode
         self.target = target
         self.roi = None # Clear ROI when switching sources
+        
+        # Stop WGC if switching away or changing target
+        self.wgc.stop()
+        
+        if mode == "window":
+            # Start WGC session
+            self.wgc.start(target)
+
+
 
     def set_roi(self, roi: Optional[Tuple[float, float, float, float]]) -> None:
         """Set Region of Interest as ratios (x, y, w, h) of target."""
@@ -33,8 +47,8 @@ class CaptureEngine(metaclass=SingletonMeta):
         Returns (image, bounds_dict) where bounds_dict has keys: left, top, width, height
         """
         try:
-            with mss.mss() as sct:
-                if self.mode == "screen":
+            if self.mode == "screen":
+                with mss.mss() as sct:
                     monitor_idx = self.target['id'] + 1
                     
                     if monitor_idx < len(sct.monitors):
@@ -55,39 +69,63 @@ class CaptureEngine(metaclass=SingletonMeta):
                         img = sct.grab(target_bbox)
                         return Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX"), target_bbox
             
-                elif self.mode == "window":
-                    # Re-fetch window to get fresh position
+            elif self.mode == "window":
+                # Use WGC for Background Capture
+                # WGC returns full window image. We might need to crop ROI or window borders if client area matches?
+                # For simplicty, WGC captures client area usually (if using CreateForWindow). 
+                # Actually standard CreateForWindow captures client area + non-client?
+                # Usually entire window including borders.
+                
+                img = self.wgc.get_latest_frame()
+                if img:
+                    # Get Window Position from WGC? No, WGC returns image. 
+                    # We still need Window Position to draw the Overlay correctly!
+                    # So we still need gw/pygetwindow to track the "Target Location" on screen!
+                    
                     import pygetwindow as gw
                     hwnd = self.target.get('id')
                     
-                    # Find window by hwnd
-                    w = None
+                    # Retrieve current bounds
+                    w_obj = None
                     try:
-                        for win in gw.getAllWindows():
-                            if getattr(win, '_hWnd', None) == hwnd:
-                                w = win
-                                break
-                    except:
-                        w = self.target.get('window_obj')
+                       w_obj = gw.Window(hwnd) # pygetwindow might handle hwnd directly? No, it wraps FindWindow.
+                       # Optimization: We already have window object in target?
+                       # target['window_obj'] is a stale object? gw objects update?
+                       w_obj = self.target.get('window_obj')
+                       # Check if valid/visible
+                       if not w_obj.isActive and not w_obj.visible: # Is active not needed, just visible
+                           pass
+                    except: pass
                     
-                    if w is None:
-                        w = self.target.get('window_obj')
+                    if w_obj:
+                         target_bbox = {"left": w_obj.left, "top": w_obj.top, "width": w_obj.width, "height": w_obj.height}
+                         
+                         # If ROI is set, crop the WGC image
+                         if self.roi:
+                             rx, ry, rw, rh = self.roi
+                             
+                             # Crop coordinates relative to image (0,0 is top-left of image)
+                             # Image size check
+                             iw, ih = img.size
+                             
+                             crop_x = int(rx * iw)
+                             crop_y = int(ry * ih)
+                             crop_w = int(rw * iw)
+                             crop_h = int(rh * ih)
+                             
+                             img = img.crop((crop_x, crop_y, crop_x + crop_w, crop_y + crop_h))
+                             
+                             # Update target_bbox to match screen position of ROI
+                             target_bbox = {
+                                 "left": w_obj.left + crop_x,
+                                 "top": w_obj.top + crop_y,
+                                 "width": crop_w,
+                                 "height": crop_h
+                             }
+                             
+                         return img, target_bbox
                     
-                    if w and w.width > 0 and w.height > 0:
-                        target_bbox = {"top": w.top, "left": w.left, "width": w.width, "height": w.height}
-                        
-                        # Apply ROI if set
-                        if self.roi:
-                            rx, ry, rw, rh = self.roi
-                            target_bbox = {
-                                "left": w.left + int(rx * w.width),
-                                "top": w.top + int(ry * w.height),
-                                "width": int(rw * w.width),
-                                "height": int(rh * w.height)
-                            }
-                            
-                        img = sct.grab(target_bbox)
-                        return Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX"), target_bbox
+                return None, None
                     
         except Exception as e:
             print(f"Capture error: {e}")

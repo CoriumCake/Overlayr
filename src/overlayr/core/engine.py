@@ -28,6 +28,14 @@ class AsyncEngine(metaclass=SingletonMeta):
         print("AsyncEngine: PostProcessor initialized.", flush=True)
         self._is_running = False
         self._loop_task: Optional[asyncio.Task] = None
+        
+        # Translation Cache: LRU (OrderedDict)
+        # Key: source_text, Value: translated_text
+        from collections import OrderedDict
+        self._translation_cache = OrderedDict()
+        self.CACHE_SIZE = 100
+        
+        self._loop_counter = 0
 
     def set_status_callback(self, callback):
         """Pass UI status callback to services."""
@@ -121,43 +129,66 @@ class AsyncEngine(metaclass=SingletonMeta):
                     print(f"[DEBUG] Save Fail ({name}): {e}", flush=True)
 
         # Convert PIL to CV2 (BGR)
-        scale_factor = 2.0
         padding = 50
         open_cv_image = np.array(image.convert('RGB')) 
         open_cv_image = open_cv_image[:, :, ::-1].copy()
         
-        # 1. Upscale 200% (Bicubic)
-        # Resize directly on the color image for better interpolation quality before greyscale
-        processed_cv = cv2.resize(open_cv_image, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-        log_and_save("Upscale 2.0x", processed_cv, "01_upscale")
-
+        # 1. Smart Scaling (Optimize for Speed/Accuracy)
+        w, h = image.size
+        target_width = 1600 # Optimal width for OCR
+        scale_factor = 1.0
+        
+        if w > target_width:
+            # Downscale (Speed up!)
+            scale_factor = target_width / w
+            new_w = int(w * scale_factor)
+            new_h = int(h * scale_factor)
+            processed_cv = cv2.resize(open_cv_image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            log_and_save(f"Smart Scale (Down {scale_factor:.2f}x)", processed_cv, "01_scale")
+        elif w < 800:
+            # Upscale (Accuracy for small text)
+            scale_factor = 2.0
+            new_w = int(w * scale_factor)
+            new_h = int(h * scale_factor)
+            processed_cv = cv2.resize(open_cv_image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+            log_and_save(f"Smart Scale (Up {scale_factor:.2f}x)", processed_cv, "01_scale")
+        else:
+             # Keep original
+             scale_factor = 1.0
+             processed_cv = open_cv_image
+             log_and_save("Smart Scale (1.0x)", processed_cv, "01_scale")
+             
         # 2. Grayscale & CLAHE
         gray = cv2.cvtColor(processed_cv, cv2.COLOR_BGR2GRAY)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         processed_cv = clahe.apply(gray)
-        log_and_save("Grayscale & CLAHE", processed_cv, "02_clahe")
+        # log_and_save("Grayscale & CLAHE", processed_cv, "02_clahe")
 
-        # 3. Denoise: Median Blur (k=5)
-        # Applied after upscale/enhance to remove noise amplified by CLAHE 
-        processed_cv = cv2.medianBlur(processed_cv, 5)
-        log_and_save("Median Blur (Denoise)", processed_cv, "03_denoise")
+        # 3. Denoise: Median Blur (Adaptive)
+        # Only blur if we upscaled (likely noisy) or image is smallish to avoid destroying details on high-res downscaled
+        if scale_factor > 1.5:
+             processed_cv = cv2.medianBlur(processed_cv, 3) # Reduced kernel from 5 to 3 for speed
+             # log_and_save("Median Blur (k=3)", processed_cv, "03_denoise")
+        else:
+             # Skip blur for downscaled/native images to keep sharpness
+             pass
         
-        # 4. Adaptive Thresholding (C=12) - slightly relaxed from 15 to keep faint text
-        processed_cv = cv2.adaptiveThreshold(processed_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 12)
-        log_and_save("Adaptive Threshold", processed_cv, "04_threshold")
+        # 4. Adaptive Thresholding (Optimized for Masking)
+        # Use a lower C (8) to be more inclusive (keep faint text), since we will mask the original gray later
+        thresh_cv = cv2.adaptiveThreshold(processed_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 8)
+        # log_and_save("Adaptive Threshold (Mask)", thresh_cv, "04_threshold")
 
         # 5. Clean Noise: CCA + NumPy LUT Optimization
         # Invert for CCA (Need white text on black background)
-        processed_cv = cv2.bitwise_not(processed_cv)
+        mask_cv = cv2.bitwise_not(thresh_cv)
 
-        # 5.1 Morphological Closing (Connect broken text)
-        # Useful for manga fonts where ink might be skip processing
+        # 5.1 Morphological Closing (Connect broken text in mask)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-        processed_cv = cv2.morphologyEx(processed_cv, cv2.MORPH_CLOSE, kernel)
-        log_and_save("Morph Closing", processed_cv, "05_closing")
+        mask_cv = cv2.morphologyEx(mask_cv, cv2.MORPH_CLOSE, kernel)
+        # log_and_save("Morph Closing (Mask)", mask_cv, "05_closing")
         
-        # Connected Components
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(processed_cv, connectivity=8)
+        # Connected Components on Mask
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_cv, connectivity=8)
         
         # Filtering using NumPy LUT (Lookup Table) - Fastest method
         min_area = 10
@@ -176,18 +207,41 @@ class AsyncEngine(metaclass=SingletonMeta):
         lut[valid_indices] = 255
         
         # Apply LUT
-        processed_cv = lut[labels]
-        log_and_save("Clean Noise (CCA+LUT)", processed_cv, "05_clean_cca")
+        # Apply LUT to get Final Mask
+        final_mask = lut[labels]
+        log_and_save("Clean Mask (CCA+LUT)", final_mask, "05_clean_mask")
         
-        # 6. Final Invert (Back to Black text on White BG for OCR)
-        processed_cv = cv2.bitwise_not(processed_cv)
+        # 6. Hybrid Apply: Use Mask to keep Grayscale pixels
+        # Mask: 255 (Text), 0 (BG)
+        # We want: Text->Gray, BG->White
+        
+        # Standard: Inverted Binary (Text=Black, BG=White) for OCR?
+        # RapidOCR prefers Black Text on White BG.
+        
+        # Create Output Canvas (White)
+        final_cv = np.full_like(processed_cv, 255)
+        
+        # Copy Grayscale pixels where Mask is White (Text)
+        # processed_cv holds the Grayscale image from Step 3
+        final_cv = cv2.bitwise_and(processed_cv, processed_cv, mask=final_mask)
+        
+        # But wait, bitwise_and with mask=0 puts 0 (Black). We want White BG.
+        # So: Final = (Gray AND Mask) + (NOT Mask)
+        # Gray AND Mask -> Text is Gray, BG is Black(0)
+        # NOT Mask -> Text is Black(0), BG is White(255)
+        # Add them -> Text is Gray, BG is White.
+        
+        bg_white = cv2.bitwise_not(final_mask)
+        final_cv = cv2.add(final_cv, bg_white)
         
         # 7. Padding
-        processed_cv = cv2.copyMakeBorder(processed_cv, padding, padding, padding, padding, cv2.BORDER_CONSTANT, value=[255,255,255])
-        log_and_save("Final Invert & Padding", processed_cv, "06_final")
+        padding_color = [255,255,255] if len(final_cv.shape) == 3 else 255
+        final_cv = cv2.copyMakeBorder(final_cv, padding, padding, padding, padding, cv2.BORDER_CONSTANT, value=padding_color)
+        log_and_save("Final Hybrid (Gray+Mask)", final_cv, "06_final")
         
         # Convert back to PIL
-        processed_pil = Image.fromarray(processed_cv)
+        # Convert back to PIL
+        processed_pil = Image.fromarray(final_cv)
         
         # Execute OCR
         ocr_start = time.perf_counter()
@@ -352,11 +406,57 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         texts_to_translate = [m["original"] for m in merged_metadata]
 
-        # Batch Translate via Google (or skip)
-        if skip_translation:
-             translated_texts = texts_to_translate
-        else:
-             translated_texts = await self.translator_service.translate(texts_to_translate)
+        # --- Translation Caching (Last 2 Loops) ---
+        self._loop_counter += 1
+        current_loop = self._loop_counter
+        
+        final_translations = [None] * len(texts_to_translate)
+        missing_indices = []
+        missing_texts = []
+        
+        # 1. Check Cache
+        for i, text in enumerate(texts_to_translate):
+            if text in self._translation_cache:
+                trans = self._translation_cache[text]
+                # Move to end (Recently Used)
+                self._translation_cache.move_to_end(text)
+                
+                final_translations[i] = trans
+                print(f"[DEBUG] CACHED: '{text}'", flush=True)
+                continue
+            
+            # If miss
+            missing_indices.append(i)
+            missing_texts.append(text)
+
+        # 2. Batch Translate Missing
+        if missing_texts:
+            print(f"[DEBUG] TRANSLATING (New/Expired): {missing_texts}", flush=True)
+            if skip_translation:
+                 new_results = missing_texts
+            else:
+                 new_results = await self.translator_service.translate(missing_texts)
+                 if isinstance(new_results, str): new_results = [new_results]
+            
+            for i, result in enumerate(new_results):
+                original_idx = missing_indices[i]
+                final_translations[original_idx] = result
+                
+                # Update Cache (LRU)
+                text_key = missing_texts[i]
+                self._translation_cache[text_key] = result
+                self._translation_cache.move_to_end(text_key)
+                
+                # Prune if exceeding size
+                while len(self._translation_cache) > self.CACHE_SIZE:
+                    self._translation_cache.popitem(last=False) # Pop first (Oldest)
+
+        translated_texts = final_translations
+
+        # 3. Prune Old Cache (> 2 loops ago) - REMOVED for LRU Strategy
+        # keys_to_remove = [k for k, v in self._translation_cache.items() if current_loop - v[1] > 2]
+        # for k in keys_to_remove:
+        #     del self._translation_cache[k]
         
         # DEBUG CALLBACK: TRANSLATE DONE
         if step_callback:
