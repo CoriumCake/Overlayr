@@ -10,6 +10,7 @@ from ..core.capture_engine import CaptureEngine
 from ..services.source_manager import SourceManager
 from ..ui.overlay import ResultOverlay
 from ..ui.components.source_card import SourceCard
+from ..ui.components.loading_spinner import LoadingSpinner
 
 class ROISelector(ctk.CTkToplevel):
     def __init__(self, parent, on_confirm):
@@ -195,6 +196,17 @@ class MainWindow(ctk.CTk):
         self.scroll_apps = ctk.CTkScrollableFrame(self.tab_apps, fg_color="transparent")
         self.scroll_apps.pack(fill="both", expand=True)
 
+        # Loading Spinners (Initial State)
+        self.scroll_screens.grid_columnconfigure(0, weight=1)
+        self.spinner_screens = LoadingSpinner(self.scroll_screens, width=50, height=50)
+        self.spinner_screens.grid(row=0, column=0, pady=50) # No side padding, centered by weight
+        self.spinner_screens.start()
+        
+        self.scroll_apps.grid_columnconfigure(0, weight=1)
+        self.spinner_apps = LoadingSpinner(self.scroll_apps, width=50, height=50)
+        self.spinner_apps.grid(row=0, column=0, pady=50)
+        self.spinner_apps.start()
+
         # 3. Footer
         self.footer_frame = ctk.CTkFrame(self)
         self.footer_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
@@ -345,6 +357,20 @@ class MainWindow(ctk.CTk):
         
         if not silent:
             self.lbl_status.configure(text="Ready")
+            
+        # Only remove spinners if we actually found something, OR if this was a manual refresh (silent=False)
+        # If silent (auto-refresh) and list is empty, maybe keep spinner? 
+        # Actually, if list is empty, we show empty state.
+        # Let's remove spinners always when data returns, to avoid infinite spinner on empty list.
+        
+        # Remove Spinners if present
+        if hasattr(self, 'spinner_screens') and self.spinner_screens:
+            self.spinner_screens.destroy()
+            self.spinner_screens = None
+            
+        if hasattr(self, 'spinner_apps') and self.spinner_apps:
+            self.spinner_apps.destroy()
+            self.spinner_apps = None
 
     def _on_resize(self, event):
         """Update grid layout on resize without fetching source data."""
@@ -453,11 +479,71 @@ class MainWindow(ctk.CTk):
             
             # Start loop
             threading.Thread(target=self.stream_loop, daemon=True).start()
+            
+            # Start Visibility Loop (Decoupled for instant toggle)
+            self._check_visibility()
         else:
             # Stop
             self.is_streaming = False
             self.btn_stream.configure(text="Start", fg_color="green")
             self.overlay.hide()
+
+    def _check_visibility(self):
+        """
+        Check active window frequently (10Hz) to specific overlay visibility instantly.
+        Separate from OCR loop to avoid lag.
+        """
+        if not self.is_streaming: return
+        
+        is_active = True
+        try:
+            import ctypes
+            active_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            if self.selected_source.get('type') == 'window':
+                target_hwnd = self.selected_source.get('id')
+                # Strict check: Active window must be target
+                if active_hwnd != target_hwnd:
+                    is_active = False
+        except: pass
+        
+        # Check for state change
+        prev_state = getattr(self, 'is_target_active', True)
+        
+        # Update state
+        self.is_target_active = is_active
+        
+        # Apply instantly if changed
+        if is_active != prev_state:
+             # print(f"Visibility Changed: {prev_state} -> {is_active}", flush=True)
+             if not is_active:
+                 self.overlay.show_results([], 0, 0, visible=False)
+             else:
+                 # If becoming active, show known data?
+                 # Or wait for next update?
+                 # We can just set visible=True with empty/current results?
+                 # Ideally show_results(..., visible=True) with LAST results?
+                 # For now, just rely on next update or just ensure window is shown?
+                 # To force show, we can call show_results with visible=True but no data clearing?
+                 # Actually show_results clears canvas if new results passed.
+                 # Let's just update the flag. The stream loop updates overlay anyway.
+                 # BUT user wants INSTANT show.
+                 # If we have last results, maybe redraw?
+                 # For now, just hiding instantly is the priority.
+                 # Showing will happen on next frame (which is processed in background).
+                 # Showing will happen on next frame (which is processed in background).
+                 
+                 # NEW: Instant Show using Cached Data
+                 last_data = getattr(self, 'last_overlay_data', None)
+                 if last_data:
+                     # print("Instant Show Restore!", flush=True)
+                     # args: results, x, y, geometry
+                     results, x, y, geometry = last_data
+                     if geometry:
+                        self.overlay.set_geometry(geometry)
+                     self.overlay.show_results(results, x, y, visible=True)
+
+        # Schedule next check (100ms)
+        self.after(100, self._check_visibility)
 
 
 
@@ -495,30 +581,14 @@ class MainWindow(ctk.CTk):
                     last_bounds = bounds
                     
 
-                    # Focus Check: Only show overlay if target is active
-                    is_active = True
-                    try:
-                        import ctypes
-                        active_hwnd = ctypes.windll.user32.GetForegroundWindow()
-                        if self.selected_source.get('type') == 'window':
-                            target_hwnd = self.selected_source.get('id')
-                            if active_hwnd != target_hwnd:
-                                is_active = False
-                                # print(f"DEBUG FOCUS: Active={active_hwnd} Target={target_hwnd}", flush=True) # Too spammy, only if mismatch? 
-                                # Actually, if it's mismatch, we HIDE. So we need to know WHY it's hidden.
-                                # Let's print only if state CHANGES? That requires state tracking.
-                                # For now, just print if active_hwnd is different every 60 frames? No.
-                        
-                        # DEBUG for User Issue:
-                        if not is_active and (self.frame_count % 30 == 0):
-                             print(f"DEBUG: Overlay Hidden. Active: {active_hwnd}, Target: {target_hwnd}, Bounds: {bounds}", flush=True)
-                            
-                    except: pass
                     
-                    self.is_target_active = is_active
+                    # Focus check moved to _check_visibility loop
+                    is_active = getattr(self, 'is_target_active', True)
+
+                    # if not is_active:
+                    #      self.after(0, lambda: self.overlay.show_results([], 0, 0, visible=False)) 
                     
-                    if not is_active:
-                         self.after(0, lambda: self.overlay.show_results([], 0, 0, visible=False)) 
+                    # Start new processing 
                     
                     # Start new processing
                     pending_future = asyncio.run_coroutine_threadsafe(
@@ -558,9 +628,12 @@ class MainWindow(ctk.CTk):
                 # print("DEBUG: Step 3 - Merged. Showing boxes. Waiting 2s...", flush=True)
                 
                 # Extract boxes for display
+                # Extract boxes for display
                 boxes = [item['bbox'] for item in data]
-                offset_x = bounds['left']
-                offset_y = bounds['top']
+                # Overlay window IS ALREADY at bounds['left'], bounds['top']
+                # So we draw relative to 0,0 of the overlay.
+                offset_x = 0 
+                offset_y = 0
                 geometry = f"{bounds['width']}x{bounds['height']}+{bounds['left']}+{bounds['top']}"
                 
                 self.after(0, lambda: self.overlay.set_geometry(geometry))
@@ -589,8 +662,11 @@ class MainWindow(ctk.CTk):
             self.after(0, lambda: self.overlay.show_debug("STEP 5: Result (Translated)"))
             
             # Use bounds directly from capture (always current)
-            offset_x = bounds['left']
-            offset_y = bounds['top']
+            # Use bounds directly from capture (always current)
+            # Fix: Overlay window is moved to bounds['left'], bounds['top'] via geometry.
+            # So the content should be drawn at offset 0,0 relative to the window.
+            offset_x = 0
+            offset_y = 0
             geometry = f"{bounds['width']}x{bounds['height']}+{bounds['left']}+{bounds['top']}"
 
             if self.is_streaming:
@@ -616,6 +692,10 @@ class MainWindow(ctk.CTk):
         if geometry:
             self.overlay.set_geometry(geometry)
         self.overlay.show_results(results, x, y, visible=visible)
+        
+        # Cache for Instant Restore
+        self.last_overlay_data = (results, x, y, geometry)
+        
         # self.overlay.show_debug(f"Raw: {raw_text[:50]}...")
             
     def toggle_compact(self):

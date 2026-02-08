@@ -45,9 +45,9 @@ class ResultOverlay:
         # Make the overlay "Invisible to Screen Capture" on Windows
         # This prevents the OCR from reading our own translated text!
         if platform.system() == "Windows":
-             self._apply_affinity()
+             self._apply_window_styles()
                 
-    def _apply_affinity(self):
+    def _apply_window_styles(self):
         try:
             import ctypes
             from ctypes import wintypes
@@ -64,6 +64,8 @@ class ResultOverlay:
             WDA_EXCLUDEFROMCAPTURE = 0x00000011
             
             user32 = ctypes.windll.user32
+            
+            # 1. Set Window Display Affinity (Invisible to Capture)
             user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
             user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
             
@@ -73,9 +75,31 @@ class ResultOverlay:
             else:
                 err = ctypes.GetLastError()
                 print(f"Overlay Invisibility: FAILED (HWND: {hwnd}, Error: {err})", flush=True)
+
+            # 2. Set Extended Window Styles (Click-Through & No-Focus)
+            # WS_EX_TRANSPARENT (0x20): Events pass through window
+            # WS_EX_LAYERED (0x80000): Required for transparency
+            # WS_EX_TOOLWINDOW (0x80): Hides from Alt-Tab
+            # WS_EX_NOACTIVATE (0x08000000): Prevents focus stealing
+            
+            GWL_EXSTYLE = -20
+            WS_EX_TRANSPARENT = 0x00000020
+            WS_EX_LAYERED     = 0x00080000
+            WS_EX_TOOLWINDOW  = 0x00000080
+            WS_EX_NOACTIVATE  = 0x08000000
+            
+            # Get current style
+            current_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            
+            # Add new styles
+            new_style = current_style | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+            
+            # Set new style
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
+            print(f"Overlay Click-Through: ENABLED (Style: {hex(new_style)})", flush=True)
                 
         except Exception as e:
-            print(f"Overlay Invisibility: Error setting affinity: {e}", flush=True)
+            print(f"Overlay Style Error: {e}", flush=True)
         
     def show_results(self, results: list, offset_x: int, offset_y: int, visible: bool = True):
         """
