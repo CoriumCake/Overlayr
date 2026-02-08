@@ -28,6 +28,10 @@ class AsyncEngine(metaclass=SingletonMeta):
         print("AsyncEngine: PostProcessor initialized.", flush=True)
         self._is_running = False
         self._loop_task: Optional[asyncio.Task] = None
+        
+        # Translation Cache: {source_text: (translated_text, loop_id)}
+        self._translation_cache = {}
+        self._loop_counter = 0
 
     def set_status_callback(self, callback):
         """Pass UI status callback to services."""
@@ -352,11 +356,51 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         texts_to_translate = [m["original"] for m in merged_metadata]
 
-        # Batch Translate via Google (or skip)
-        if skip_translation:
-             translated_texts = texts_to_translate
-        else:
-             translated_texts = await self.translator_service.translate(texts_to_translate)
+        # --- Translation Caching (Last 2 Loops) ---
+        self._loop_counter += 1
+        current_loop = self._loop_counter
+        
+        final_translations = [None] * len(texts_to_translate)
+        missing_indices = []
+        missing_texts = []
+        
+        # 1. Check Cache
+        for i, text in enumerate(texts_to_translate):
+            if text in self._translation_cache:
+                trans, last_loop = self._translation_cache[text]
+                # Reuse if within 2 loops
+                if current_loop - last_loop <= 2:
+                    final_translations[i] = trans
+                    # Refresh timestamp (keep alive)
+                    self._translation_cache[text] = (trans, current_loop)
+                    print(f"[DEBUG] CACHED (Skip Translate): '{text}'", flush=True)
+                    continue
+            
+            # If miss
+            missing_indices.append(i)
+            missing_texts.append(text)
+
+        # 2. Batch Translate Missing
+        if missing_texts:
+            print(f"[DEBUG] TRANSLATING (New/Expired): {missing_texts}", flush=True)
+            if skip_translation:
+                 new_results = missing_texts
+            else:
+                 new_results = await self.translator_service.translate(missing_texts)
+                 if isinstance(new_results, str): new_results = [new_results]
+            
+            for i, result in enumerate(new_results):
+                original_idx = missing_indices[i]
+                final_translations[original_idx] = result
+                # Update Cache
+                self._translation_cache[missing_texts[i]] = (result, current_loop)
+        
+        translated_texts = final_translations
+
+        # 3. Prune Old Cache (> 2 loops ago)
+        keys_to_remove = [k for k, v in self._translation_cache.items() if current_loop - v[1] > 2]
+        for k in keys_to_remove:
+            del self._translation_cache[k]
         
         # DEBUG CALLBACK: TRANSLATE DONE
         if step_callback:

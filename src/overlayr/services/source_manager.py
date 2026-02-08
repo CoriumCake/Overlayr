@@ -107,12 +107,25 @@ class SourceManager(metaclass=SingletonMeta):
             all_wins = gw.getAllWindows()
             print(f"Found {len(all_wins)} total windows (raw)")
             for w in all_wins:
-                if not (w.title and w.visible and w.width > 50 and w.height > 50):
-                    continue
-                    
+                # Basic validation
+                if not w.title: continue
+                
                 hwnd = getattr(w, '_hWnd', None)
                 if not hwnd: continue
+
+                # Visibility Check
+                is_visible = w.visible
+                is_minimized = user32.IsIconic(hwnd) != 0
                 
+                # If neither visible nor minimized, skip (pure background processes)
+                if not (is_visible or is_minimized):
+                    continue
+                
+                # Size Check: Only check size if visible AND NOT minimized
+                # (Minimized windows report weird sizes/coordinates like -32000)
+                if is_visible and not is_minimized and not (w.width > 50 and w.height > 50):
+                    continue
+                    
                 process_name = get_process_name(hwnd)
                 
                 # Filter blacklist
@@ -123,11 +136,17 @@ class SourceManager(metaclass=SingletonMeta):
                 if is_system_window(hwnd):
                     continue
                 
+                # If checking for "Cloaked" windows (Windows 10/11 inactive UWP apps)
+                # We might want to filter them out unless they are minimized.
+                # But let's keep it simple for now.
+                
                 # Build display name with process info
                 display_name = w.title
                 icon = "🪟"
                 
-                if "brave" in process_name:
+                if is_minimized:
+                    icon = "🔽" # Minimized icon
+                elif "brave" in process_name:
                     icon = "🦁"
                 elif "chrome" in process_name:
                     icon = "🌐"

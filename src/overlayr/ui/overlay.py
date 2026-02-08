@@ -77,8 +77,16 @@ class ResultOverlay:
         except Exception as e:
             print(f"Overlay Invisibility: Error setting affinity: {e}", flush=True)
         
-    def show_results(self, results: list, offset_x: int, offset_y: int):
-        self.top.deiconify()
+    def show_results(self, results: list, offset_x: int, offset_y: int, visible: bool = True):
+        """
+        Draw results on canvas.
+        :param visible: If True, makes the window visible (deiconify). If False, effectively hides (withdraw) but updates content?
+                       Actually, if hidden, we can just Draw. But we should Withdraw if switching to hidden.
+        """
+        if visible:
+            self.top.deiconify()
+        else:
+            self.top.withdraw()
         
         # Clear only translation results, keep debug text
         self.canvas.delete("result")

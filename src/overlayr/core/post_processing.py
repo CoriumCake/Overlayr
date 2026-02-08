@@ -82,8 +82,14 @@ class TextPostProcessor:
         # FIX: "OH...I" read backwards as "I"""HO"
         text = re.sub(r'(?i)I"+HO', "OH...I", text)
 
-        # L00K -> LOOK (L00K, l00k, LO0K, etc.)
-        text = re.sub(r'(?i)\bL[0O]{2}K\b', 'LOOK', text)
+        # Generic 0 -> O Rule:
+        # If 0 is adjacent to a letter and NOT adjacent to another digit, treat as O.
+        # Covers: BEDR00M, H0ME, L00K, 0K, 0LD
+        # Excludes: 10th, 2000, Area 51
+        def replace_zeros(match):
+            return 'O' * len(match.group())
+            
+        text = re.sub(r'(?<=[a-zA-Z])0+(?!\d)|(?<!\d)0+(?=[a-zA-Z])', replace_zeros, text)
         
         return text
 

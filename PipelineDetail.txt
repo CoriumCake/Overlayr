@@ -1,13 +1,15 @@
 Sequence Diagram of Overlayr Workflow (Final Architecture)
 ======================================================
-*Updated: 2026-02-07 (Latest Configuration)*
+*Updated: 2026-02-08 (WGC & Smart Visibility Integrated)*
 
 1. Capture Mechanism (การจับภาพ)
 ------------------------------------------------------
-Overlayr ใช้ไลบรารี `mss` เป็นแกนหลักในการจับภาพ (High-performance screen shot)
-[เทคนิคสำคัญ: Invisible Overlay]
-- เราใช้ `SetWindowDisplayAffinity` (Windows API) เพื่อทำให้หน้าต่าง Overlay "ล่องหน" จากการจับภาพ
-- **ข้อดี:** จับภาพได้ต่อเนื่องโดยไม่ต้องสั่ง Hide/Show หน้าต่าง ช่วยลดอาการกระพริบ (Flickering) และทำให้การทำงานลื่นไหลแบบ Real-time
+Overlayr ใช้เทคโนโลยีการจับภาพแบบผสมผสาน (Hybrid Capture System) เพื่อความยืดหยุ่นสูงสุด:
+1. **Screen Mode:** ใช้ `mss` สำหรับจับภาพหน้าจอแบบดั้งเดิม (รวดเร็ว, จับทุกอย่างบนจอ)
+2. **Application Mode (New):** ใช้ **Windows Graphics Capture (WGC)**
+   - **Background Capture:** สามารถจับภาพหน้าต่างเป้าหมายได้ **แม้จะมีหน้าต่างอื่นบังอยู่** หรือทำงานอยู่เบื้องหลัง (Background)
+   - **High Performance:** ใช้ GPU (Direct3D11) + DXGI ในการดึงภาพโดยตรง ทำให้ลื่นไหลและกิน CPU น้อยกว่าเดิม
+   - **Invisible Overlay:** ตัว Overlay ของเราถูกตั้งค่า `WDA_EXCLUDEFROMCAPTURE` ทำให้ WGC มองไม่เห็น Overlay โดยอัตโนมัติ (ไม่ต้อง Hide/Show ให้กระพริบ)
 
 2. Preprocessing (การเตรียมภาพ)
 ------------------------------------------------------
@@ -18,24 +20,22 @@ Overlayr ใช้ไลบรารี `mss` เป็นแกนหลัก�
    - **Interpolation:** Bicubic (`cv2.INTER_CUBIC`)
    - *เหตุผล:* ขยายเพื่อให้เส้นตัวอักษรเล็กๆ (Small fonts) มีความหนาเพียงพอให้ OCR จับได้
 2. **[Grayscale & CLAHE]**
-   - **ClipLimit:** 2.0 (ค่าน้อยคือปรับคอนทราสต์เบาลง เพื่อไม่ให้ Noise เยอะเกินไป)
-   - **TileGridSize:** (8,8) (ขนาดตารางที่ใช้คำนวณ)
+   - **ClipLimit:** 2.0
+   - **TileGridSize:** (8,8)
    - *เหตุผล:* ปรับแสงให้เท่ากันทั้งภาพ (Equalization) ทำให้ตัวอักษรเด่นชัดขึ้น
 3. **[Denoise (Median Blur)]**
-   - **Kernel Size:** 5 (รัศมี 5 พิกเซล)
+   - **Kernel Size:** 5
    - *เหตุผล:* ลบจุดรบกวน (Salt-and-pepper noise) ที่มักเกิดขึ้นหลังจากเร่งคอนทราสต์
 4. **[Adaptive Threshold]**
-   - **Method:** Gaussian C
-   - **Block Size:** 11
-   - **C (Constant):** 12 (ลดจาก 15 เพื่อเก็บรายละเอียดตัวอักษรบางที่อาจจะจาง)
+   - **Method:** Gaussian C, Block Size: 11, C: 12
    - *เหตุผล:* ตัดขอบตัวอักษรออกจากพื้นหลัง
 5. **[Morphological Closing]**
    - **Kernel:** Rect (2,2)
-   - *เหตุผล:* เชื่อมต่อเส้นตัวอักษรที่ขาดออกจากกัน (Repair broken fonts)
+   - *เหตุผล:* เชื่อมต่อเส้นตัวอักษรที่ขาดออกจากกัน
 6. **[Clean Noise (CCA)]**
    - **Min Area:** 10 pixels
    - *เหตุผล:* ลบจุดดำเล็กๆ ที่ไม่ใช่ตัวอักษร
-7. **[Finalize]** Invert สี (ตัวอักษรดำ พื้นขาว) และเติมขอบ (Padding) 50px 50px
+7. **[Finalize]** Invert สี (ตัวอักษรดำ พื้นขาว) และเติมขอบ (Padding) 50px
 
 3. OCR (การอ่านข้อความ)
 ------------------------------------------------------
@@ -46,24 +46,46 @@ Overlayr ใช้ไลบรารี `mss` เป็นแกนหลัก�
 4. Post-Processing & Logic (ตรรกะหลังการอ่าน)
 ------------------------------------------------------
 1. **[Spell Check / Correction]**
-   - ทำ **ก่อน** Validation เพื่อแก้ไขคำที่ OCR อ่านผิดเล็กน้อย (เช่น `th1s` -> `this`)
+   - ใช้ `SymSpell` (ความเร็วสูง) ตรวจแก้คำผิดโดยอิงจาก Dictionary
+   - ใช้ `FuzzyWuzzy` (Levenshtein Distance) เป็นตัวสำรองสำหรับคำที่ใกล้เคียง
 2. **[Validation Service]**
    - คัดกรองข้อความขยะ (Gibberish) โดยใช้กฎที่ผ่อนปรน (Relaxed Rules)
-   - ยอมรับสัญลักษณ์ได้มากขึ้น (50%) เพื่อเก็บข้อความสั้นๆ หรือประโยคที่มีเครื่องหมายตกใจ
 3. **[Translation]**
    - ส่งข้อความที่ผ่านการคัดกรองไปยัง Google Translate (Async)
 
 5. Display & Performance (การแสดงผล)
 ------------------------------------------------------
 - **Technology:** Tkinter Transparent Window
-- **Behavior:**
-  - สร้าง Overlay ทับตำแหน่งเดิมของข้อความ
-  - แสดงผลลัพธ์ที่แปลแล้ว (Translated Text) บนพื้นหลังสีเข้มโปร่งแสง
+- **Smart Visibility (ระบบฉลาดล้ำ):**
+  - **Auto-Hide:** เมื่อสลับไปหน้าต่างอื่น (Alt-Tab) Overlay จะ **ซ่อนตัวทันที** (ไม่เกะกะ)
+  - **Instant Show:** เมื่อกลับมาหน้าต่างเดิม Overlay จะ **โผล่มาทันที** พร้อมผลแปลล่าสุด
+  - **Background Processing:** แม้ Overlay จะซ่อนอยู่ แต่ระบบแปลภายใต้ยั่งระทำงานตลอดเวลา (Persistent) ทำให้ข้อความพร้อมเสมอเมื่อคุณกลับมา
 - **Performance Loop:**
-  - **Zero Delay:** `await asyncio.sleep(0)`
-  - การทำงานเป็นรอบแบบทันที (Immediate Cycle) เพื่อให้การจับภาพและการแสดงผลตอบสนองไวที่สุด (Max FPS)
+  - **Zero Delay:** `await asyncio.sleep(0)` เพื่อ Max FPS
 
 6. Authentication (ระบบยืนยันตัวตน)
 ------------------------------------------------------
 - มีระบบตรวจสอบสิทธิ์การใช้งาน (Pro/Trial)
-- เชื่อมต่อ Login ผ่าน Browser และตรวจสอบ Status ก่อนเริ่มทำงาน
+- เชื่อมต่อ Login ผ่าน Browser
+
+7. Source Selection Modes (โหมดการเลือกแหล่งภาพ)
+------------------------------------------------------
+1. **[Screen Mode] (โหมดหน้าจอ)**
+   - จับภาพจากจอมอนิเตอร์โดยตรง (ใช้ `mss`)
+   - จับทุกอย่างที่เห็นบนจอ (ติดหน้าต่างที่บัง)
+
+2. **[Application Mode] (โหมดแอพพลิเคชั่น - WGC)**
+   - **Technology:** Windows Graphics Capture (WGC) ผ่าน Python (`ctypes` Pure Implementation)
+   - **ความสามารถ:**
+     - **ทะลุบัง:** จับภาพหน้าต่างเกม/แอปได้สมบูรณ์แม้จะมีหน้าต่างอื่นทับ
+     - **Lazy Initialization (รองรับการพับจอ):**
+       - ถ้าหน้าต่างถูกพับ (Minimized) โปรแกรมจะ **รอ (Wait)** อย่างฉลาด
+       - ทันทีที่หน้าต่างถูกเปิดขึ้นมา (Restore) โปรแกรมจะเริ่มจับภาพอัตโนมัติ (Auto-Resume)
+       - ไม่ต้องกด Start ใหม่ ไม่ต้องกลัวโปรแกรมค้าง
+
+8. Technical Deep Dive (เบื้องหลังความแรง)
+------------------------------------------------------
+- **Pure Python WGC Wrapper:**
+  - เราเขียน Wrapper ของ Windows Graphics Capture ขึ้นมาใหม่เองด้วย `ctypes` ทั้งหมด (ไม่พึ่ง `winsdk` ที่มีข้อจำกัด)
+  - เข้าถึง Direct3D11 Device และ DXGI Interface ในระดับ Memory Pointer
+  - **Proxy DLL Injection:** มีระบบฉลาดในการโหลด DLL ระบบ (`Windows.UI.Core.dll` ฯลฯ) เพื่อให้ใช้งานได้บน Windows รุ่นต่างๆ อย่างราบรื่น

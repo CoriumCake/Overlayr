@@ -60,9 +60,11 @@ class MainWindow(ctk.CTk):
         self.source_manager = None
         
         # Bind resize for responsive grid
-        self.bind("<Configure>", lambda e: self.refresh_sources(silent=True) if e.widget == self else None)
+        self.bind("<Configure>", lambda e: self._on_resize(e) if e.widget == self else None)
         
         # State
+        self.cached_monitors = []
+        self.cached_windows = []
         self.selected_source = None
         self.is_streaming = False
         self.is_streaming = False
@@ -112,7 +114,7 @@ class MainWindow(ctk.CTk):
     def _on_backend_ready(self):
         self.lbl_status.configure(text="Ready")
         if self.selected_source:
-            self.btn_stream.configure(state="normal")
+            self.btn_stream.configure(state="normal", fg_color="green")
         
         # Start auto-refresh polling once backend is ready
         self._schedule_auto_refresh()
@@ -203,7 +205,7 @@ class MainWindow(ctk.CTk):
         self.btn_define_roi = ctk.CTkButton(self.footer_frame, text="Define Area", command=self.define_roi, width=100)
         self.btn_define_roi.pack(side="right", padx=5, pady=5)
         
-        self.btn_stream = ctk.CTkButton(self.footer_frame, text="Start", command=self.toggle_stream, state="disabled", fg_color="green", width=100)
+        self.btn_stream = ctk.CTkButton(self.footer_frame, text="Start", command=self.toggle_stream, state="disabled", fg_color="gray", width=100)
         self.btn_stream.pack(side="right", padx=10, pady=5)
         
         # 4. Auth Check
@@ -333,16 +335,25 @@ class MainWindow(ctk.CTk):
                 self.after(0, lambda: self.lbl_status.configure(text="Error fetching sources"))
 
     def _update_source_grids(self, monitors, windows, silent=False):
+        # Update cache
+        self.cached_monitors = monitors
+        self.cached_windows = windows
+        
         # Synchronize grids instead of rebuilding
         self._sync_grid(self.scroll_screens, monitors, "screens")
         self._sync_grid(self.scroll_apps, windows, "apps")
         
         if not silent:
             self.lbl_status.configure(text="Ready")
+
+    def _on_resize(self, event):
+        """Update grid layout on resize without fetching source data."""
+        if not self.cached_monitors and not self.cached_windows: return
+        self._update_source_grids(self.cached_monitors, self.cached_windows, silent=True)
         
         # Re-enable start button if selection exists
-        if self.selected_source and self.async_engine:
-            self.btn_stream.configure(state="normal")
+        if self.selected_source and self.async_engine and not self.is_streaming:
+            self.btn_stream.configure(state="normal", fg_color="green")
 
     def _sync_grid(self, parent, new_sources, cache_key):
         """Diff & Sync algorithm to update source cards with responsive layout."""
@@ -396,10 +407,10 @@ class MainWindow(ctk.CTk):
 
         
         # If engine is ready, enable button
-        if self.async_engine:
-             self.btn_stream.configure(state="normal")
-        else:
-             self.btn_stream.configure(state="disabled") # Keep disabled until ready
+        if self.async_engine and not self.is_streaming:
+             self.btn_stream.configure(state="normal", fg_color="green")
+        elif not self.async_engine:
+             self.btn_stream.configure(state="disabled", fg_color="gray") # Keep disabled until ready
 
     def _on_tab_change(self):
         self.refresh_sources()
@@ -483,21 +494,22 @@ class MainWindow(ctk.CTk):
                 if image and bounds:
                     last_bounds = bounds
                     
+
                     # Focus Check: Only show overlay if target is active
                     is_active = True
                     try:
-                        import pygetwindow as gw
-                        active_win = gw.getActiveWindow()
+                        import ctypes
+                        active_hwnd = ctypes.windll.user32.GetForegroundWindow()
                         if self.selected_source.get('type') == 'window':
                             target_hwnd = self.selected_source.get('id')
-                            if active_win is None or getattr(active_win, '_hWnd', None) != target_hwnd:
+                            if active_hwnd != target_hwnd:
                                 is_active = False
                     except: pass
-
+                    
+                    self.is_target_active = is_active
+                    
                     if not is_active:
-                        self.after(0, self.overlay.hide)
-                        time.sleep(0.1)
-                        continue
+                         self.after(0, lambda: self.overlay.show_results([], 0, 0, visible=False)) 
                     
                     # Start new processing
                     pending_future = asyncio.run_coroutine_threadsafe(
@@ -573,7 +585,9 @@ class MainWindow(ctk.CTk):
             geometry = f"{bounds['width']}x{bounds['height']}+{bounds['left']}+{bounds['top']}"
 
             if self.is_streaming:
-                self.after(0, lambda: self._update_overlay_safe(results, raw_text, offset_x, offset_y, geometry))
+                # Use stored visibility state
+                visible = getattr(self, 'is_target_active', True)
+                self.after(0, lambda: self._update_overlay_safe(results, raw_text, offset_x, offset_y, geometry, visible))
                 
             # Wait 0 seconds (Immediate Yield) for max performance
             await asyncio.sleep(0)
@@ -585,15 +599,15 @@ class MainWindow(ctk.CTk):
         except Exception as e:
             print(f"Proc Error: {e}")
 
-    def _update_overlay_safe(self, results, raw_text, x, y, geometry):
+    def _update_overlay_safe(self, results, raw_text, x, y, geometry, visible=True):
         if not self.is_streaming:
             self.overlay.hide()
             return
             
         if geometry:
             self.overlay.set_geometry(geometry)
-        self.overlay.show_results(results, x, y)
-        self.overlay.show_debug(raw_text)
+        self.overlay.show_results(results, x, y, visible=visible)
+        # self.overlay.show_debug(f"Raw: {raw_text[:50]}...")
             
     def toggle_compact(self):
         if self.switch_compact.get():
