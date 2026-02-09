@@ -26,3 +26,6 @@ Desktop.ini
 # Vercel & Astro
 .vercel/
 .output/
+
+# Debug Images
+debug_images/

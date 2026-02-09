@@ -1,5 +1,6 @@
 import customtkinter as ctk # type: ignore
 import tkinter as tk
+import os
 import threading
 import asyncio
 import time
@@ -11,6 +12,7 @@ from ..services.source_manager import SourceManager
 from ..ui.overlay import ResultOverlay
 from ..ui.components.source_card import SourceCard
 from ..ui.components.loading_spinner import LoadingSpinner
+from ..ui.components.profile_menu import ProfileMenu
 
 class ROISelector(ctk.CTkToplevel):
     def __init__(self, parent, on_confirm):
@@ -25,9 +27,8 @@ class ROISelector(ctk.CTkToplevel):
         
         self.label = ctk.CTkLabel(self, text="Move/Resize over Subtitles\nThen click Confirm", font=("Segoe UI", 12, "bold"))
         self.label.pack(expand=True, padx=20, pady=20)
-        
-        self.btn_confirm = ctk.CTkButton(self, text="Confirm Area", command=self.confirm, fg_color="green")
-        self.btn_confirm.pack(side="bottom", pady=10)
+        # Status Bar
+
         
         # Initial position near center
         self.geometry("600x150+400+600")
@@ -130,8 +131,7 @@ class MainWindow(ctk.CTk):
         self.header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
 
         # Login / Status Button (Right Side)
-        self.btn_login = ctk.CTkButton(self.header_frame, text="Login", width=80, command=self.login_flow)
-        self.btn_login.pack(side="right", padx=5)
+
         
         # Language Selection UI
         ctk.CTkLabel(self.header_frame, text="Translate", font=("Roboto Medium", 16)).pack(side="left", padx=5)
@@ -180,8 +180,6 @@ class MainWindow(ctk.CTk):
         )
         self.opt_grouping_mode.pack(side="left", padx=5)
         
-        self.switch_compact = ctk.CTkSwitch(self.header_frame, text="Compact", command=self.toggle_compact)
-        self.switch_compact.pack(side="right", padx=10)
         
         # 2. Tabs
         self.tab_view = ctk.CTkTabview(self, command=self._on_tab_change)
@@ -230,25 +228,241 @@ class MainWindow(ctk.CTk):
         login_url = "https://overlayr.catcode.tech/login?callback=desktop"
         webbrowser.open(login_url)
         self.lbl_status.configure(text="Waiting for login...", text_color="yellow")
+        self.start_login_polling()
+
+    def start_login_polling(self):
+        self.polling_start_time = time.time()
+        self._check_login_status()
+
+    def _check_login_status(self):
+        if not self.auth_service: return
+
+        # Reload session from file
+        self.auth_service.load_session()
+        
+        info = self.auth_service.get_user_info()
+        if info['logged_in']:
+            self._update_auth_ui()
+            self.lbl_status.configure(text="Login Successful!", text_color="green")
+            # Stop polling
+            return
+
+        # Timeout after 5 minutes
+        if time.time() - self.polling_start_time > 300:
+            self.lbl_status.configure(text="Login timed out.", text_color="red")
+            return
+
+        # Continue polling
+        self.after(1500, self._check_login_status)
 
     def _update_auth_ui(self):
         if not self.auth_service: return
         
-        status, days = self.auth_service.get_subscription_status()
+        # Clear existing button if any
+        if hasattr(self, 'btn_profile'):
+            self.btn_profile.destroy()
+            
+        # Get Status
+        user_info = self.auth_service.get_user_info()
+        print(f"[DEBUG] _update_auth_ui: {user_info}")
+        is_logged_in = user_info['logged_in']
+        is_pro = user_info['pro']
+        is_logged_in = user_info['logged_in']
+        is_pro = user_info['pro']
+        photo_url = user_info.get('photo_url')
         
-        if status == 'pro':
-            self.title("Overlayr - Pro Version")
-            self.btn_login.configure(text="PRO", fg_color="gold", text_color="black", state="disabled")
-        elif status == 'trial':
-            self.title(f"Overlayr - Trial ({days} days left)")
-            self.btn_login.configure(text=f"Trial: {days}d", fg_color="orange")
-        elif status == 'expired':
-            self.title("Overlayr - Trial Expired")
-            self.btn_login.configure(text="Buy Now", fg_color="red", command=self.login_flow)
-            # Disable functionality
-            self.btn_stream.configure(state="disabled")
-            self.scroll_screens.pack_forget() # Hide sources to annoy?
-            # Ideally block start button logic more robustly
+        # Load Icon
+        self.profile_icon = None
+        self.profile_icon_large = None # For menu
+        
+        # 1. Try Online Image
+        if photo_url:
+            try:
+                import requests
+                from PIL import Image, ImageDraw
+                from io import BytesIO
+                
+                # Check cache
+                if not hasattr(self, '_user_photo_cache') or getattr(self, '_user_photo_cache_url', None) != photo_url:
+                     try:
+                        resp = requests.get(photo_url, timeout=2)
+                        if resp.status_code == 200:
+                            img_data = BytesIO(resp.content)
+                            pil_img = Image.open(img_data).convert("RGBA")
+                            
+                            # Keep high res original
+                            # Resize for button (Use 64x64 for 2x pixel density on 32pt button)
+                            pil_btn = pil_img.resize((64, 64), Image.Resampling.LANCZOS)
+                            
+                            # Circular Mask for Button
+                            mask = Image.new('L', (64, 64), 0)
+                            draw = ImageDraw.Draw(mask)
+                            draw.ellipse((0, 0, 64, 64), fill=255)
+                            pil_btn.putalpha(mask)
+                            
+                            # For Menu (Large, 128x128)
+                            pil_large = pil_img.resize((128, 128), Image.Resampling.LANCZOS)
+                            # Circular Mask for Menu
+                            mask_l = Image.new('L', (128, 128), 0)
+                            draw_l = ImageDraw.Draw(mask_l)
+                            draw_l.ellipse((0, 0, 128, 128), fill=255)
+                            pil_large.putalpha(mask_l)
+                            
+                            self._user_photo_cache = pil_btn
+                            self._user_photo_cache_large = pil_large
+                            self._user_photo_cache_url = photo_url
+                     except Exception as e:
+                        print(f"Failed to download profile image: {e}")
+                
+                if hasattr(self, '_user_photo_cache'):
+                    self.profile_icon = ctk.CTkImage(light_image=self._user_photo_cache, dark_image=self._user_photo_cache, size=(32, 32))
+                    self.profile_icon_large = ctk.CTkImage(light_image=self._user_photo_cache_large, dark_image=self._user_photo_cache_large, size=(64, 64))
+
+            except Exception as e:
+                print(f"Profile Image Error: {e}")
+
+        # 2. Try Local Placeholder
+        if not self.profile_icon:
+            try:
+                from PIL import Image
+                icon_path = os.path.join(os.getcwd(), "assets", "user_placeholder.png")
+                if os.path.exists(icon_path):
+                     pil_img = Image.open(icon_path)
+                     self.profile_icon = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(32, 32))
+            except: pass
+            
+        # 3. Last Resort: Generated Icon
+        if not self.profile_icon:
+            try:
+                from PIL import Image, ImageDraw
+                # Create a simple colored circle with a letter
+                # Color based on pro status
+                color = "#FFD700" if is_pro else "#808080" # Gold or Gray
+                img = Image.new('RGBA', (32, 32), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(img)
+                draw.ellipse((0, 0, 32, 32), fill=color)
+                
+                # Add "U" or "P"
+                # draw.text((10, 8), "P" if is_pro else "U", fill="white") # Simple text
+                
+                self.profile_icon = ctk.CTkImage(light_image=img, dark_image=img, size=(32, 32))
+            except Exception as e:
+                 print(f"Fallback Icon Error: {e}")
+
+        # Create Button (Icon Only)
+        self.btn_profile = ctk.CTkButton(
+            self.header_frame, 
+            text="", 
+            image=self.profile_icon, 
+            width=40, 
+            height=40,
+            fg_color="transparent", 
+            hover_color=("gray70", "gray30"),
+            command=self._on_profile_click
+        )
+        self.btn_profile.pack(side="right", padx=5)
+
+        # Update Title
+        if is_pro:
+            self.title("Overlayr - Pro")
+        else:
+             status, days = self.auth_service.get_subscription_status()
+             if status == 'trial':
+                 self.title(f"Overlayr - Trial ({days} days left)")
+             else:
+                 self.title("Overlayr - Free/Expired")
+
+    def _on_settings_click(self):
+        print("Settings clicked")
+
+    def _on_profile_click(self):
+        # 1. Toggle Check
+        # If menu exists and is mapped (visible), hide/destroy it
+        if hasattr(self, 'profile_menu') and self.profile_menu.winfo_exists():
+             self.profile_menu.destroy()
+             del self.profile_menu
+             return
+
+        user_info = self.auth_service.get_user_info()
+        
+        if not user_info['logged_in']:
+            # Simple login action if not logged in
+            self.login_flow()
+            return
+
+        # Show Custom Menu
+        # Attach large icon to info
+        if self.profile_icon_large:
+            user_info['large_icon'] = self.profile_icon_large
+        else:
+            # Fallback for menu
+            user_info['large_icon'] = self.profile_icon 
+            
+        # Create Menu (Frame inside MainWindow)
+        try:
+            # We need relative coordinates of the button within MainWindow
+            # btn_profile is in header_frame, which is in self
+            
+            # x = window_x_of_button + width - menu_width
+            # But header_frame might have padding
+            
+            # Easiest way: getting absolute root coordinates and subtracting window root coordinates?
+            # No, winfo_x/y is relative to parent.
+            
+            # button -> header_frame -> MainWindow
+            # x = self.header_frame.winfo_x() + self.btn_profile.winfo_x()
+            # y = self.header_frame.winfo_y() + self.btn_profile.winfo_y() + button_height
+            
+            # Ensure geometry is up to date
+            self.update_idletasks()
+            
+            root_x = self.winfo_rootx()
+            root_y = self.winfo_rooty()
+            
+            btn_root_x = self.btn_profile.winfo_rootx()
+            btn_root_y = self.btn_profile.winfo_rooty()
+            
+            btn_x = btn_root_x - root_x
+            btn_y = btn_root_y - root_y
+            btn_h = self.btn_profile.winfo_height()
+            btn_w = self.btn_profile.winfo_width()
+            
+            menu_w = 220 # matched with ProfileMenu width
+            
+            # Position: Right-aligned with button
+            target_x = btn_x + btn_w - menu_w
+            target_y = btn_y + btn_h + 5
+            
+            # Bounds check (Left)
+            if target_x < 10: target_x = 10
+            
+            # Bounds check (Right - strict clip to window)
+            window_w = self.winfo_width()
+            if target_x + menu_w > window_w - 10:
+                target_x = window_w - menu_w - 10
+            
+            # Instantiate
+            self.profile_menu = ProfileMenu(self, user_info, self.logout_flow, self._on_settings_click)
+            
+            # Bring to front
+            self.profile_menu.lift()
+            
+            # Show (Static)
+            self.profile_menu.show(target_x, target_y)
+            
+            # Bind global click to dismiss?
+            # For now, simplistic approach: bind click on main window to check? 
+            # Or just let user click the button again to toggle (handled above).
+            
+        except Exception as e:
+            print(f"Menu Error: {e}")
+
+    def logout_flow(self):
+        if self.auth_service:
+            self.auth_service.logout()
+            self._update_auth_ui()
+            self.lbl_status.configure(text="Logged out")
+
 
     def _update_merge_mode(self, choice):
         if "Document" in choice:
@@ -698,15 +912,6 @@ class MainWindow(ctk.CTk):
         
         # self.overlay.show_debug(f"Raw: {raw_text[:50]}...")
             
-    def toggle_compact(self):
-        if self.switch_compact.get():
-             self.geometry("400x100")
-             self.tab_view.grid_remove()
-             self.header_frame.grid_remove()
-        else:
-             self.geometry("800x600")
-             self.tab_view.grid()
-             self.header_frame.grid()
 
     def define_roi(self):
         if not self.selected_source: 
