@@ -83,11 +83,11 @@ class SourceManager(metaclass=SingletonMeta):
         return False
     
     def get_monitors(self) -> List[Dict[str, Any]]:
-        print("Getting monitors...")
+
         monitors = []
         try:
             mss_mons = screeninfo.get_monitors()
-            print(f"Found {len(mss_mons)} monitors")
+
             for i, m in enumerate(mss_mons):
                 monitors.append({
                     "id": i,
@@ -101,11 +101,11 @@ class SourceManager(metaclass=SingletonMeta):
         return monitors
     
     def get_windows(self) -> List[Dict[str, Any]]:
-        print("Getting windows...")
+
         windows = []
         try:
             all_wins = gw.getAllWindows()
-            print(f"Found {len(all_wins)} total windows (raw)")
+
             for w in all_wins:
                 if not (w.title and w.visible and w.width > 50 and w.height > 50):
                     continue
@@ -169,7 +169,7 @@ class SourceManager(metaclass=SingletonMeta):
             # Update state for change detection
             self._last_hwnd_set = {w['id'] for w in windows}
             
-            print(f"Filtered to {len(windows)} visible windows")
+
         except Exception as e:
             print(f"Error listing windows: {e}")
         return windows

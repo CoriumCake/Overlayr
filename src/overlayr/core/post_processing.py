@@ -27,11 +27,10 @@ class TextPostProcessor:
             
             if not dict_path:
                 try:
-                    import pkg_resources
-                    dict_path = pkg_resources.resource_filename(
-                        "symspellpy", "frequency_dictionary_en_82_765.txt"
-                    )
-                except (ImportError, FileNotFoundError):
+                    from importlib import resources
+                    # Modern replacement for pkg_resources using importlib.resources (Python 3.9+)
+                    dict_path = str(resources.files("symspellpy").joinpath("frequency_dictionary_en_82_765.txt"))
+                except (ImportError, AttributeError):
                     dict_path = "frequency_dictionary_en_82_765.txt"
 
             if dict_path and os.path.exists(dict_path):

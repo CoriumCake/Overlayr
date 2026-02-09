@@ -1,5 +1,6 @@
 import logging
 import time
+import threading
 from typing import List, Tuple, Any
 import numpy as np
 from PIL import Image
@@ -37,6 +38,10 @@ class RapidOCREngine:
                 
         return self._engine
     
+    def warmup(self):
+        """Triggers model loading."""
+        threading.Thread(target=self._get_engine, daemon=True).start()
+
     def set_language(self, lang_code: str) -> None:
         """
         RapidOCR usually handles general models well. 
