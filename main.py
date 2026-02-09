@@ -10,6 +10,34 @@ from overlayr.services.auth_service import AuthService
 if __name__ == "__main__":
     # Initialize Auth Service (checking for deep links)
     auth_service = AuthService()
+
+    # Single Instance Check
+    try:
+        from overlayr.utils.single_instance import SingleInstance
+        
+        def on_new_args(args):
+            print(f"Received new args: {args}")
+            # If we receive new args (like a deep link), process them
+            if len(args) > 1:
+                # Arg 0 is usually path, Arg 1 is overlayr://...
+                # Filter for overlayr://
+                links = [a for a in args if "overlayr://" in a]
+                if links:
+                    auth_service.handle_deep_link(links[0])
+
+        instance = SingleInstance(on_args_received=on_new_args)
+        
+        # 1. Try to notify existing
+        if instance.notify_existing_instance(sys.argv):
+            print("Passed arguments to existing instance. Exiting.")
+            sys.exit(0)
+            
+        # 2. If no existing, start server
+        instance.start_server()
+            
+    except Exception as e:
+        print(f"SingleInstance Error: {e}")
+
     
     # Process arguments (e.g., overlayr://auth?token=...)
     if len(sys.argv) > 1:

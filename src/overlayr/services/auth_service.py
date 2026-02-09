@@ -9,8 +9,8 @@ from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 
 # PLACEHOLDERS - To be replaced with actual Firebase Config
-FIREBASE_PROJECT_ID = "overlayr-app" # Replace with your project ID
-API_KEY = "YOUR_FIREBASE_API_KEY" # Needed for "Identity Toolkit" check if we want to refresh tokens
+FIREBASE_PROJECT_ID = "overlayr-486323" # Replace with your project ID
+API_KEY = "AIzaSyATZXidpVtX-hQpcdQDERaY1IYyrOOdpMQ" # Needed for "Identity Toolkit" check if we want to refresh tokens
 
 class AuthService:
     def __init__(self):
@@ -31,14 +31,22 @@ class AuthService:
     def register_protocol(self):
         """Registers the overlayr:// custom URI scheme in Windows Registry."""
         try:
-            exe_path = sys.executable
-            # If running as script (dev), point to python.exe + main.py ??
-            # For now assume we want to register whatever is running.
-            # IN PRODUCTION (Frozen): exe_path is the exe.
-            # IN DEV: We might want code to handle this carefully.
-            
-            # Simplified for now: Register current executable
-            # If dev, this might just open python.
+            # Determine command based on run mode
+            if getattr(sys, 'frozen', False):
+                # Production (PyInstaller exe)
+                exe_path = sys.executable
+                cmd = f'"{exe_path}" "%1"'
+            else:
+                # Development (Python script)
+                # Use pythonw.exe to avoid console window
+                py_dir = os.path.dirname(sys.executable)
+                pythonw = os.path.join(py_dir, "pythonw.exe")
+                if not os.path.exists(pythonw):
+                    pythonw = sys.executable 
+                
+                exe_path = pythonw
+                script_path = os.path.abspath("main.py")
+                cmd = f'"{pythonw}" "{script_path}" "%1"'
             
             # Protocol Key
             key_path = r"Software\Classes\overlayr"
@@ -52,13 +60,9 @@ class AuthService:
                 
             # Command
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, f"{key_path}\\shell\\open\\command") as key:
-                # "%1" receives the full url
-                cmd = f'"{exe_path}" "%1"'
-                # If running from source, might need adjustments
-                if not getattr(sys, 'frozen', False):
-                     # Hack for dev mode: assume main.py is in CWD or near
-                     pass 
                 winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd)
+                
+            print(f"[Auth] Protocol registered: {cmd}")
                 
         except Exception as e:
             print(f"[Auth] Failed to register protocol: {e}")
@@ -79,6 +83,8 @@ class AuthService:
             
             if token and uid:
                 self.save_session(uid, token)
+                # Fetch more details immediately
+                self.fetch_user_details()
                 print(f"[Auth] Logged in as {uid}")
                 return True
         return False
@@ -89,6 +95,7 @@ class AuthService:
         data = {
             "uid": uid, 
             "access_token": token,
+            "user_data": self.user_data,
             "timestamp": time.time()
         }
         with open(self.token_file, 'w') as f:
@@ -101,6 +108,7 @@ class AuthService:
                     data = json.load(f)
                     self.uid = data.get("uid")
                     self.access_token = data.get("access_token")
+                    self.user_data = data.get("user_data", {})
             except:
                 pass
 
@@ -189,3 +197,54 @@ class AuthService:
             print(f"[Auth] Firestore check failed: {e}")
             
         return None
+
+    def logout(self):
+        """Clears the session and resets state."""
+        self.uid = None
+        self.access_token = None
+        self.user_data = {}
+        
+        if self.token_file.exists():
+            try:
+                os.remove(self.token_file)
+            except Exception as e:
+                print(f"[Auth] Failed to delete session: {e}")
+
+    def fetch_user_details(self):
+        """Fetches user profile (photoUrl, displayName) from Firebase Auth."""
+        if not self.access_token: return
+        
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        data = {"idToken": self.access_token}
+        
+        try:
+            r = requests.post(url, headers=headers, json=data)
+            if r.status_code == 200:
+                body = r.json()
+                print(f"[DEBUG] Firebase Response: {body}")
+                users = body.get('users', [])
+                if users:
+                    user = users[0]
+                    self.user_data['photoUrl'] = user.get('photoUrl')
+                    self.user_data['displayName'] = user.get('displayName')
+                    self.user_data['email'] = user.get('email')
+                    
+                    # Persist updated data
+                    self.save_session(self.uid, self.access_token)
+            else:
+                print(f"[Auth] Failed to fetch user details: {r.status_code} {r.text}")
+        except Exception as e:
+            print(f"[Auth] Error fetching user details: {e}")
+
+    def get_user_info(self):
+        """Returns a dict with user info or partial info."""
+        status, _ = self.get_subscription_status()
+        return {
+            "uid": self.uid,
+            "logged_in": bool(self.uid and self.access_token),
+            "pro": status in ["pro", "trial"],
+            "photo_url": self.user_data.get('photoUrl'),
+            "display_name": self.user_data.get('displayName')
+        }
+
