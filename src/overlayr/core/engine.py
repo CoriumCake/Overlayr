@@ -107,7 +107,7 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         # TOGGLE: Debug Image Saving
         SAVE_INTERMEDIATE_DEBUG = False
-        SAVE_FINAL_DEBUG = True
+        SAVE_FINAL_DEBUG = False
 
         if SAVE_INTERMEDIATE_DEBUG or SAVE_FINAL_DEBUG:
             if not os.path.exists(debug_dir):
