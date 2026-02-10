@@ -7,6 +7,8 @@ import sitemap from '@astrojs/sitemap';
 // https://astro.build/config
 export default defineConfig({
     site: 'https://overlayr.catcode.tech',
+    // Astro 5: 'hybrid' is removed, use 'static'. 
+    // Individual routes use 'export const prerender = false' for SSR.
     output: 'static',
     adapter: vercel({
         webAnalytics: {
