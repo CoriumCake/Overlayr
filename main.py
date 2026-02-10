@@ -6,9 +6,11 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 from overlayr.ui.main_window import MainWindow
 from overlayr.services.auth_service import AuthService
+from overlayr.services.config_service import ConfigService
 
 if __name__ == "__main__":
-    # Initialize Auth Service (checking for deep links)
+    # Initialize Services
+    config_service = ConfigService()
     auth_service = AuthService()
 
     # Single Instance Check
@@ -43,5 +45,5 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         auth_service.process_launch_args(sys.argv)
 
-    app = MainWindow(auth_service)
+    app = MainWindow(auth_service, config_service)
     app.mainloop()

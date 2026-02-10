@@ -7,7 +7,7 @@ import sitemap from '@astrojs/sitemap';
 // https://astro.build/config
 export default defineConfig({
     site: 'https://overlayr.catcode.tech',
-    output: 'static',
+    output: 'hybrid',
     adapter: vercel({
         webAnalytics: {
             enabled: true,

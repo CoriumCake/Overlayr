@@ -1,23 +1,47 @@
+"""Tests for SingletonMeta — thread safety and identity."""
 import pytest
 import threading
-from src.overlayr.utils.singleton import SingletonMeta
+from overlayr.utils.singleton import SingletonMeta
 
-class SingletonClass(metaclass=SingletonMeta):
+
+class _TestSingleton(metaclass=SingletonMeta):
+    """Test class for singleton behavior."""
     def __init__(self):
         self.value = 0
 
-def test_singleton_instance():
-    s1 = SingletonClass()
-    s2 = SingletonClass()
-    assert s1 is s2
 
-def test_singleton_threading():
-    instances = []
-    def create_instance():
-        instances.append(SingletonClass())
-    
-    threads = [threading.Thread(target=create_instance) for _ in range(10)]
-    for t in threads: t.start()
-    for t in threads: t.join()
-    
-    assert all(i is instances[0] for i in instances)
+@pytest.fixture(autouse=True)
+def reset_singleton():
+    """Reset singleton instances between tests."""
+    _TestSingleton._instances = {}
+    yield
+    _TestSingleton._instances = {}
+
+
+class TestSingletonIdentity:
+    def test_same_instance(self):
+        s1 = _TestSingleton()
+        s2 = _TestSingleton()
+        assert s1 is s2
+
+    def test_shared_state(self):
+        s1 = _TestSingleton()
+        s1.value = 42
+        s2 = _TestSingleton()
+        assert s2.value == 42
+
+
+class TestSingletonThreadSafety:
+    def test_concurrent_creation(self):
+        instances = []
+
+        def create():
+            instances.append(_TestSingleton())
+
+        threads = [threading.Thread(target=create) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert all(i is instances[0] for i in instances)

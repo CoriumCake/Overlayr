@@ -1,23 +1,23 @@
 import tkinter as tk
 import customtkinter as ctk # type: ignore
 import math
+from ..theme import get_theme
 
 class LoadingSpinner(ctk.CTkFrame):
     def __init__(self, master, width=40, height=40, color=None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.width = width
         self.height = height
-        self.color = color if color else ["#1F6AA5", "#1F6AA5"] # Light/Dark mode colors or simple list
+        
+        # Get theme colors
+        colors = get_theme()
+        
+        self.color = color if color else [colors["primary_accent"], colors["primary_accent"]]
         if isinstance(self.color, str):
             self.color = [self.color, self.color]
             
-        # Determine background color for Canvas (tkinter doesn't support 'transparent')
-        # We need to manually match the parent's color or standard theme bg
-        bg_color = self._fg_color
-        if bg_color == "transparent" or bg_color == ["transparent", "transparent"]:
-            # Use standard CTk background colors as fallback
-            # Light: gray92, Dark: gray14
-            bg_color = ["gray92", "gray14"]
+        # Determine background color for Canvas
+        bg_color = [colors["bg_primary"], colors["bg_primary"]]
         
         self.bg_color = bg_color    
             

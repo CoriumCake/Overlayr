@@ -145,8 +145,14 @@ class ResultOverlay:
                 font_size = max(10, min(60, font_size))
 
             font = ("Segoe UI Semibold", font_size)
-            glass_bg = "#1a1a1a"
-            fg_color = "#ffffff"
+            
+            # Use central theme colors
+            from .theme import get_theme
+            colors = get_theme()
+            overlay_bg = colors.get("overlay_bg", "#1a1a1a")
+            overlay_fg = colors.get("overlay_text", "#ffffff")
+            overlay_border = colors.get("overlay_border", "#333333")
+            overlay_glow = colors.get("overlay_glow", "#444444")
             
             # Draw text FIRST to measure it
             # Position: align top-left with original box for now, can center later
@@ -170,7 +176,7 @@ class ResultOverlay:
                 cx, cy,
                 text=text,
                 anchor="center",
-                fill=fg_color,
+                fill=overlay_fg,
                 font=font,
                 width=box_w, # Wrap at original width
                 tags="result"
@@ -187,8 +193,8 @@ class ResultOverlay:
             bg_rect_id = self.canvas.create_rectangle(
                 t_bbox[0] - padding_x, t_bbox[1] - padding_y,
                 t_bbox[2] + padding_x, t_bbox[3] + padding_y,
-                fill=glass_bg,
-                outline="#333333",
+                fill=overlay_bg,
+                outline=overlay_border,
                 width=1,
                 tags="result"
             )
@@ -200,7 +206,7 @@ class ResultOverlay:
             self.canvas.create_line(
                 t_bbox[0] - padding_x, t_bbox[3] + padding_y,
                 t_bbox[2] + padding_x, t_bbox[3] + padding_y,
-                fill="#444444", width=1,
+                fill=overlay_glow, width=1,
                 tags="result"
             )
 

@@ -1,0 +1,15 @@
+DARK:
+  bg = #090e15
+  surface = #111821
+  primary = #00e9ff
+  primary-glow = #32eeff
+  accent = #3d98f4
+  text-main = #ffffff
+  text-muted = #b2bdcb
+LIGHT:
+  bg = #eff1f4
+  surface = #e0e4ea
+  primary = #0bc8da
+  accent = #248cf3
+  text-main = #0f1723
+  text-muted = #51627a

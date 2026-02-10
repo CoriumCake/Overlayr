@@ -37,7 +37,7 @@ def get_process_name(hwnd):
                     return exe_path.value.split('\\')[-1].lower()
             finally:
                 kernel32.CloseHandle(handle)
-    except:
+    except Exception:
         pass
     return ""
 
@@ -61,7 +61,7 @@ def is_system_window(hwnd):
         if any(st in title_str for st in system_titles):
             return True
             
-    except:
+    except Exception:
         pass
     return False
 
@@ -78,7 +78,7 @@ class SourceManager(metaclass=SingletonMeta):
             
             if current_hwnds != self._last_hwnd_set:
                 return True
-        except:
+        except Exception:
             pass
         return False
     

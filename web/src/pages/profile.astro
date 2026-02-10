@@ -44,6 +44,16 @@ import Layout from "../layouts/Layout.astro";
                         </div>
                     </div>
 
+                    <div
+                        id="features-container"
+                        class="features-section hidden"
+                    >
+                        <h3>Included Features</h3>
+                        <ul id="features-list" class="features-list">
+                            <!-- Features populated via JS -->
+                        </ul>
+                    </div>
+
                     <div id="no-plan" class="details hidden">
                         <p>
                             You are currently on the <strong>Free Tier</strong>.
@@ -56,7 +66,9 @@ import Layout from "../layouts/Layout.astro";
 
                 <div class="actions">
                     <button id="btn-logout" class="logout-btn">Sign Out</button>
-                    <!-- <button id="btn-manage" class="manage-btn hidden">Manage Subscription</button> -->
+                    <button id="btn-manage" class="manage-btn hidden"
+                        >Manage Subscription</button
+                    >
                 </div>
             </div>
         </div>
@@ -135,6 +147,60 @@ import Layout from "../layouts/Layout.astro";
 
     .logout-btn:hover {
         background-color: #e5e7eb;
+    }
+
+    .manage-btn {
+        background-color: #111827; /* Dark Gray / Black */
+        color: white;
+        padding: 0.75rem 1.5rem;
+        border-radius: 0.5rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        border: none;
+        flex: 1;
+    }
+
+    .manage-btn:hover {
+        background-color: #000;
+        transform: translateY(-1px);
+    }
+
+    .features-section {
+        margin-top: 2rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid #f3f4f6;
+    }
+
+    .features-section h3 {
+        font-size: 0.9rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #6b7280;
+        margin-bottom: 1rem;
+    }
+
+    .features-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.5rem;
+    }
+
+    .features-list li {
+        font-size: 0.875rem;
+        color: #374151;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .features-list li::before {
+        content: "✓";
+        color: #10b981;
+        font-weight: bold;
     }
 
     .status-row {
@@ -239,6 +305,18 @@ import Layout from "../layouts/Layout.astro";
         planName: document.getElementById("plan-name"),
         expiry: document.getElementById("expiry-date"),
         logoutBtn: document.getElementById("btn-logout"),
+        manageBtn: document.getElementById("btn-manage"),
+        featuresContainer: document.getElementById("features-container"),
+        featuresList: document.getElementById("features-list"),
+    };
+
+    const FEATURE_LABELS: Record<string, string> = {
+        advanced_ocr: "Advanced OCR Engine",
+        priority_support: "Priority Support",
+        premium_ai: "Premium AI Models",
+        no_watermark: "No Watermark",
+        unlimited_translations: "Unlimited Translations",
+        zero_latency: "Zero Latency Mode",
     };
 
     onAuthStateChanged(auth, async (user) => {
@@ -272,11 +350,56 @@ import Layout from "../layouts/Layout.astro";
                         ).toUpperCase();
 
                     if (data.expiryDate && els.expiry) {
-                        const date = new Date(data.expiryDate); // Ensure your webhook stores ISO string or Timestamp
+                        const date = new Date(data.expiryDate);
                         els.expiry.innerText = date.toLocaleDateString();
+                    }
+
+                    // 3. Show Features
+                    const features = data.features || [];
+                    if (
+                        features.length > 0 &&
+                        els.featuresList &&
+                        els.featuresContainer
+                    ) {
+                        els.featuresList.innerHTML = features
+                            .map(
+                                (f: string) =>
+                                    `<li>${FEATURE_LABELS[f] || f}</li>`,
+                            )
+                            .join("");
+                        els.featuresContainer.classList.remove("hidden");
+                    }
+
+                    // 4. Show Manage Button
+                    if (data.stripeCustomerId && els.manageBtn) {
+                        els.manageBtn.classList.remove("hidden");
+                        els.manageBtn.onclick = async () => {
+                            if (els.manageBtn)
+                                els.manageBtn.innerText = "Opening...";
+                            try {
+                                const res = await fetch(
+                                    "/api/create-portal-session",
+                                    {
+                                        method: "POST",
+                                        body: JSON.stringify({
+                                            customerId: data.stripeCustomerId,
+                                        }),
+                                    },
+                                );
+                                const { url } = await res.json();
+                                window.location.href = url;
+                            } catch (e) {
+                                console.error("Portal error:", e);
+                                if (els.manageBtn)
+                                    els.manageBtn.innerText =
+                                        "Error opening portal";
+                            }
+                        };
                     }
                 } else {
                     if (els.noPlan) els.noPlan.classList.remove("hidden");
+                    if (els.featuresContainer)
+                        els.featuresContainer.classList.add("hidden");
                 }
             } else {
                 // No doc = Free Tier

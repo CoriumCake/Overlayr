@@ -1,9 +1,12 @@
 from transformers import M2M100ForConditionalGeneration, M2M100Tokenizer
 import torch
 import gc
+from collections import OrderedDict
 from typing import List, Union
 from functools import lru_cache
 from ..utils.singleton import SingletonMeta
+
+_MAX_CACHE_SIZE = 2000
 
 class LocalTranslatorService(metaclass=SingletonMeta):
     def __init__(self, source: str = 'ja', target: str = 'en'):
@@ -15,7 +18,7 @@ class LocalTranslatorService(metaclass=SingletonMeta):
         self.target = target
         self._is_loading = False
         self._load_error = False
-        self._cache = {} # Manual cache for translations
+        self._cache: OrderedDict[str, str] = OrderedDict()  # Bounded cache
         print(f"LocalTranslatorService initialized. Device: {self.device}")
 
     async def load_model(self, src: str, tgt: str):
@@ -24,7 +27,7 @@ class LocalTranslatorService(metaclass=SingletonMeta):
         self.target = tgt
         
         # Clear cache when languages change
-        self._cache = {}
+        self._cache = OrderedDict()
         
         if self.model is not None:
              return
@@ -120,6 +123,10 @@ class LocalTranslatorService(metaclass=SingletonMeta):
             for idx, (orig_text, translated) in enumerate(zip(texts_to_translate, decoded)):
                 key = cache_key_prefix + orig_text
                 self._cache[key] = translated
+                # Evict oldest entries if cache exceeds limit
+                if len(self._cache) > _MAX_CACHE_SIZE:
+                    for _ in range(_MAX_CACHE_SIZE // 4):
+                        self._cache.popitem(last=False)
                 
                 # Find position in results
                 result_idx = indices_to_translate[idx]

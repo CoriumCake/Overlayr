@@ -4,6 +4,7 @@ import os
 import threading
 import asyncio
 import time
+import queue
 from typing import Optional
 
 from ..core.engine import AsyncEngine
@@ -12,7 +13,8 @@ from ..services.source_manager import SourceManager
 from ..ui.overlay import ResultOverlay
 from ..ui.components.source_card import SourceCard
 from ..ui.components.loading_spinner import LoadingSpinner
-from ..ui.components.profile_menu import ProfileMenu
+# from ..ui.components.profile_menu import ProfileMenu
+from .theme import get_theme, apply_theme_to_window
 
 class ROISelector(ctk.CTkToplevel):
     def __init__(self, parent, on_confirm):
@@ -23,9 +25,15 @@ class ROISelector(ctk.CTkToplevel):
         self.on_confirm = on_confirm
         
         # Make it look like a frame
-        self.configure(fg_color="#1f538d")
+        colors = get_theme()
+        self.configure(fg_color=colors["secondary_accent"])
         
-        self.label = ctk.CTkLabel(self, text="Move/Resize over Subtitles\nThen click Confirm", font=("Segoe UI", 12, "bold"))
+        self.label = ctk.CTkLabel(
+            self, 
+            text="Move/Resize over Subtitles\nThen click Confirm", 
+            font=("Segoe UI", 12, "bold"),
+            text_color=colors["text_primary"]
+        )
         self.label.pack(expand=True, padx=20, pady=20)
         # Status Bar
 
@@ -43,20 +51,42 @@ class ROISelector(ctk.CTkToplevel):
         self.destroy()
 
 class MainWindow(ctk.CTk):
-    def __init__(self, auth_service=None):
+    def __init__(self, auth_service=None, config_service=None):
         print("Initializing MainWindow with Auth...")
-        super().__init__()
+        # Use tuple color for atomic theme switching
+        from .theme import get_theme, get_theme_tuple
+        super().__init__(fg_color=get_theme_tuple("bg_primary"))
         print("Super init done.")
 
+        self.auth_service = auth_service
+        self.config_service = config_service
+
         # Theme
-        ctk.set_appearance_mode("Dark")
+        initial_mode = self.config_service.get("appearance_mode", "Dark") if self.config_service else "Dark"
+        ctk.set_appearance_mode(initial_mode)
         ctk.set_default_color_theme("blue")
+        apply_theme_to_window(self)
 
         self.title("Overlayr - Select Source")
         self.geometry("800x600")
+        self.resizable(True, True)
         
-        # Engines
-        self.auth_service = auth_service
+        def force_startup_size():
+            # More aggressive resize
+            
+            if self.state() == 'zoomed' or self.winfo_width() > 1000:
+                self.state('normal')
+                self.withdraw() # Flicker protection / force refresh
+                self.geometry("800x600")
+                self.update_idletasks()
+                self.deiconify()
+            else:
+                self.geometry("800x600")
+
+        # Ensure not maximized on startup - increase delay to 100ms to override any auto-restore
+        self.after(200, force_startup_size)
+        
+        # auth_service and config_service are already set above
         self.async_engine: Optional[AsyncEngine] = None
         self.capture_engine = None
         self.source_manager = None
@@ -76,7 +106,12 @@ class MainWindow(ctk.CTk):
         # UI Cache to prevent flickering
         self.cards_cache = {"screens": {}, "apps": {}}
         
+        # Thread-safe status message queue
+        self._status_queue = queue.Queue()
+        self._poll_status_messages()
+        
         # UI Setup
+        self._load_assets()
         self._create_ui()
         self.overlay = ResultOverlay(self)
 
@@ -86,6 +121,35 @@ class MainWindow(ctk.CTk):
         # Initialize backend (chain: services -> sources)
         self.lbl_status.configure(text="Initializing services...")
         threading.Thread(target=self._init_services, daemon=True).start()
+
+    def _load_assets(self):
+        """Load static assets like icons with proper light/dark variants"""
+        try:
+            from PIL import Image, ImageOps
+            asset_path = os.path.join(os.getcwd(), "assets", "settings.png")
+            if os.path.exists(asset_path):
+                pil_img = Image.open(asset_path).convert("RGBA")
+                
+                # Create inverted version for dark mode
+                r, g, b, a = pil_img.split()
+                rgb_img = Image.merge('RGB', (r, g, b))
+                inverted_rgb = ImageOps.invert(rgb_img)
+                r2, g2, b2 = inverted_rgb.split()
+                inverted_img = Image.merge('RGBA', (r2, g2, b2, a))
+                
+                # Fix #4: Provide separate images for light/dark modes
+                # light_image = original dark gear (visible on light bg)
+                # dark_image = inverted white gear (visible on dark bg)
+                self.settings_icon = ctk.CTkImage(
+                    light_image=pil_img,
+                    dark_image=inverted_img,
+                    size=(24, 24)
+                )
+            else:
+                self.settings_icon = None
+        except Exception as e:
+            print(f"Error loading settings icon: {e}")
+            self.settings_icon = None
 
     def _init_services(self):
         try:
@@ -98,8 +162,8 @@ class MainWindow(ctk.CTk):
             if hasattr(self, 'loop') and self.loop:
                 self.async_engine.set_loop(self.loop)
             
-            # Connect status callback
-            self.async_engine.set_status_callback(lambda msg: self.after(0, lambda: self.lbl_status.configure(text=msg)))
+            # Connect status callback (thread-safe via queue)
+            self.async_engine.set_status_callback(self._thread_safe_status)
             
             # Warmup translator in background to avoid delay later
             self.async_engine.warmup()
@@ -120,21 +184,164 @@ class MainWindow(ctk.CTk):
         
         # Start auto-refresh polling once backend is ready
         self._schedule_auto_refresh()
+    
+    def _thread_safe_status(self, msg):
+        """Thread-safe: push status message to queue (can be called from any thread)"""
+        try:
+            self._status_queue.put_nowait(msg)
+        except:
+            pass
+    
+    def _poll_status_messages(self):
+        """Main thread: poll queue and update UI"""
+        try:
+            while True:
+                msg = self._status_queue.get_nowait()
+                self.lbl_status.configure(text=msg)
+        except queue.Empty:
+            pass
+        except:
+            pass
+        # Schedule next poll
+        self.after(100, self._poll_status_messages)
+    
+    def _hide_scrollbar(self, scrollable_frame):
+        """Hide the scrollbar of a CTkScrollableFrame"""
+        try:
+            # Access the internal scrollbar widget
+            if hasattr(scrollable_frame, '_scrollbar'):
+                scrollable_frame._scrollbar.grid_remove()
+        except:
+            pass
+    
+    def _show_scrollbar(self, scrollable_frame):
+        """Show the scrollbar of a CTkScrollableFrame"""
+        try:
+            if hasattr(scrollable_frame, '_scrollbar'):
+                scrollable_frame._scrollbar.grid()
+        except:
+            pass
+    
+    def _update_scrollbar_visibility(self, scrollable_frame):
+        """Show scrollbar only if content overflows (using yview fraction)"""
+        try:
+            scrollable_frame.update_idletasks()
+            
+            # Use yview() to check if the view covers the entire range
+            # yview returns (0.0, 1.0) if all content is visible
+            y_fraction = scrollable_frame._parent_canvas.yview()
+            
+            # If the fraction is (0.0, 1.0), it means no scroll is needed
+            if y_fraction[0] <= 0.0 and y_fraction[1] >= 1.0:
+                self._hide_scrollbar(scrollable_frame)
+            else:
+                self._show_scrollbar(scrollable_frame)
+        except Exception as e:
+            # Fallback to height check if canvas check fails
+            try:
+                content_height = scrollable_frame._parent_frame.winfo_reqheight()
+                visible_height = scrollable_frame.winfo_height()
+                if content_height > visible_height:
+                    self._show_scrollbar(scrollable_frame)
+                else:
+                    self._hide_scrollbar(scrollable_frame)
+            except:
+                pass
+
+    def refresh_theme(self):
+        """Update all UI components to match the current theme"""
+        colors = get_theme()
+        apply_theme_to_window(self)
+        
+        # Update Header (elevated surface)
+        self.header_frame.configure(fg_color=colors["bg_card"])
+        for child in self.header_frame.winfo_children():
+            if isinstance(child, ctk.CTkLabel):
+                child.configure(text_color=colors["text_primary"])
+            elif isinstance(child, ctk.CTkOptionMenu):
+                child.configure(
+                    fg_color=colors["secondary_accent"],
+                    button_color=colors["accent"],
+                    button_hover_color=colors["accent_hover"],
+                    text_color=colors["text_primary"],
+                    dropdown_fg_color=colors["bg_card"],
+                    dropdown_hover_color=colors["bg_card_hover"],
+                    dropdown_text_color=colors["text_primary"]
+                )
+            elif isinstance(child, ctk.CTkButton):
+                child.configure(
+                    fg_color="transparent",
+                    hover_color=colors["bg_hover"],
+                    text_color=colors["text_primary"]
+                )
+        
+        # Update Tabs
+        self.tab_view.configure(
+            fg_color=colors["bg_primary"],
+            segmented_button_fg_color=colors["bg_secondary"],
+            segmented_button_selected_color=colors["accent"],
+            segmented_button_selected_hover_color=colors["accent_hover"],
+            segmented_button_unselected_color=colors["bg_secondary"],
+            segmented_button_unselected_hover_color=colors["bg_hover"],
+            text_color=colors["text_primary"]
+        )
+        # Update tab content frame backgrounds
+        # Note: Tabview doesn't support tuple colors well yet, so we keep manual update here for now
+        self.tab_screens.configure(fg_color=colors["bg_primary"])
+        self.tab_apps.configure(fg_color=colors["bg_primary"])
+        # Update scrollable frames and main content wrapper
+        # Main content uses tuple now, but we can re-confirm
+        # self.main_content.configure(fg_color=colors["bg_primary"]) 
+        self.scroll_screens.configure(fg_color=colors["bg_primary"])
+        self.scroll_apps.configure(fg_color=colors["bg_primary"])
+        
+        # Update Footer (elevated surface)
+        self.footer_frame.configure(fg_color=colors["bg_card"])
+        self.lbl_status.configure(text_color=colors["text_secondary"])
+        self.btn_define_roi.configure(
+            fg_color=colors["secondary_accent"],
+            hover_color=colors["bg_hover"],
+            text_color=colors["text_primary"]
+        )
+        # Only update start button if not streaming
+        if not self.is_streaming:
+            self.btn_stream.configure(
+                fg_color=colors["success"] if self.selected_source else "gray",
+                text_color="white"
+            )
+            
+        # Update cached cards if any exist
+        def update_cards(grid_frame):
+            for card in grid_frame.winfo_children():
+                if isinstance(card, SourceCard):
+                    card.refresh_colors(colors) # Update text/hover/etc
+                    card.set_selected(self.selected_source == card.source_data)
+        
+        update_cards(self.scroll_screens)
+        update_cards(self.scroll_apps)
+        
+        # Reload icons if needed (gear icon might need different inversion depending on light/dark)
+        self._load_assets()
+        if hasattr(self, 'btn_settings'):
+            self.btn_settings.configure(image=getattr(self, 'settings_icon', None))
+
+        self.update_idletasks()
 
     def _create_ui(self):
         # Layout: Header, Tabs (Screens/Apps), Grid, Footer
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1) 
 
-        # 1. Header
-        self.header_frame = ctk.CTkFrame(self)
-        self.header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        # 1. Header — elevated surface
+        colors = get_theme()
+        self.header_frame = ctk.CTkFrame(self, fg_color=colors["bg_card"], corner_radius=12)
+        self.header_frame.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
 
         # Login / Status Button (Right Side)
 
         
         # Language Selection UI
-        ctk.CTkLabel(self.header_frame, text="Translate", font=("Roboto Medium", 16)).pack(side="left", padx=5)
+        ctk.CTkLabel(self.header_frame, text="Translate", font=("Segoe UI", 14, "bold"), text_color=colors["text_primary"]).pack(side="left", padx=(12, 5))
         
         self.languages = {
             "Japanese": "ja",
@@ -145,54 +352,113 @@ class MainWindow(ctk.CTk):
         }
         
         # Source
-        self.var_source_lang = ctk.StringVar(value="English")
+        self.var_source_lang = ctk.StringVar(value=self.config_service.get("source_lang", "English") if self.config_service else "English")
         self.opt_source_lang = ctk.CTkOptionMenu(
             self.header_frame, 
             values=list(self.languages.keys()),
             command=self._on_language_change,
             variable=self.var_source_lang,
-            width=100
+            width=100,
+            height=32,
+            corner_radius=8,
+            fg_color=colors["secondary_accent"],
+            button_color=colors["accent"],
+            button_hover_color=colors["accent_hover"],
+            text_color=colors["text_primary"],
+            dropdown_fg_color=colors["bg_card"],
+            dropdown_hover_color=colors["bg_card_hover"],
+            dropdown_text_color=colors["text_primary"]
         )
-        self.opt_source_lang.pack(side="left", padx=5)
+        self.opt_source_lang.pack(side="left", padx=4)
         
-        ctk.CTkLabel(self.header_frame, text="➜").pack(side="left", padx=5)
+        ctk.CTkLabel(self.header_frame, text="→", font=("Segoe UI", 14), text_color=colors["text_secondary"]).pack(side="left", padx=4)
         
         # Target
-        self.var_target_lang = ctk.StringVar(value="Thai")
+        self.var_target_lang = ctk.StringVar(value=self.config_service.get("target_lang", "Thai") if self.config_service else "Thai")
         self.opt_target_lang = ctk.CTkOptionMenu(
             self.header_frame, 
             values=list(self.languages.keys()),
             command=self._on_language_change,
             variable=self.var_target_lang,
-            width=100
+            width=100,
+            height=32,
+            corner_radius=8,
+            fg_color=colors["secondary_accent"],
+            button_color=colors["accent"],
+            button_hover_color=colors["accent_hover"],
+            text_color=colors["text_primary"],
+            dropdown_fg_color=colors["bg_card"],
+            dropdown_hover_color=colors["bg_card_hover"],
+            dropdown_text_color=colors["text_primary"]
         )
-        self.opt_target_lang.pack(side="left", padx=5)
+        self.opt_target_lang.pack(side="left", padx=4)
         
         # Grouping Mode
-        ctk.CTkLabel(self.header_frame, text="Mode", font=("Roboto Medium", 16)).pack(side="left", padx=(20, 5))
-        self.var_grouping_mode = ctk.StringVar(value="Group (Manga)")
+        ctk.CTkLabel(self.header_frame, text="Mode", font=("Segoe UI", 13, "bold"), text_color=colors["text_primary"]).pack(side="left", padx=(20, 5))
+        self.var_grouping_mode = ctk.StringVar(value=self.config_service.get("grouping_mode", "Group (Manga)") if self.config_service else "Group (Manga)")
         self.opt_grouping_mode = ctk.CTkOptionMenu(
             self.header_frame,
             values=["Group (Manga)", "Document (Lines)"],
             variable=self.var_grouping_mode,
             command=self._update_merge_mode,
-            width=140
+            width=150,
+            height=32,
+            corner_radius=8,
+            fg_color=colors["secondary_accent"],
+            button_color=colors["accent"],
+            button_hover_color=colors["accent_hover"],
+            text_color=colors["text_primary"],
+            dropdown_fg_color=colors["bg_card"],
+            dropdown_hover_color=colors["bg_card_hover"],
+            dropdown_text_color=colors["text_primary"]
         )
-        self.opt_grouping_mode.pack(side="left", padx=5)
+        self.opt_grouping_mode.pack(side="left", padx=4)
         
         
-        # 2. Tabs
-        self.tab_view = ctk.CTkTabview(self, command=self._on_tab_change)
-        self.tab_view.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        
+        # Main content wrapper (for swapping with settings screen)
+        # Use tuple for atomic background switch
+        from .theme import get_theme_tuple
+        self.main_content = ctk.CTkFrame(self, fg_color=get_theme_tuple("bg_primary"))
+        self.main_content.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        self.main_content.grid_columnconfigure(0, weight=1)
+        self.main_content.grid_rowconfigure(0, weight=1)
+        
+        # 2. Tabs (inside main_content)
+        self.tab_view = ctk.CTkTabview(
+            self.main_content, 
+            command=self._on_tab_change,
+            fg_color=colors["bg_primary"],
+            segmented_button_fg_color=colors["bg_secondary"],
+            segmented_button_selected_color=colors["accent"],
+            segmented_button_selected_hover_color=colors["accent_hover"],
+            segmented_button_unselected_color=colors["bg_secondary"],
+            text_color=colors["text_primary"]
+        )
+        self.tab_view.grid(row=0, column=0, sticky="nsew", padx=12, pady=(0, 6))
         self.tab_screens = self.tab_view.add("Screens")
         self.tab_apps = self.tab_view.add("Applications")
         
-        # Scrollable Frames (Grids) for each tab
-        self.scroll_screens = ctk.CTkScrollableFrame(self.tab_screens, fg_color="transparent")
-        self.scroll_screens.pack(fill="both", expand=True)
+        # Set tab content backgrounds to match primary surface
+        self.tab_screens.configure(fg_color=colors["bg_primary"])
+        self.tab_apps.configure(fg_color=colors["bg_primary"])
         
-        self.scroll_apps = ctk.CTkScrollableFrame(self.tab_apps, fg_color="transparent")
+        # Scrollable Frames (Grids) for each tab
+        self.scroll_screens = ctk.CTkScrollableFrame(
+            self.tab_screens, 
+            fg_color=colors["bg_primary"]
+        )
+        self.scroll_screens.pack(fill="both", expand=True)
+        # Hide scrollbar initially (will show only when content overflows)
+        self._hide_scrollbar(self.scroll_screens)
+        
+        self.scroll_apps = ctk.CTkScrollableFrame(
+            self.tab_apps, 
+            fg_color=colors["bg_primary"]
+        )
         self.scroll_apps.pack(fill="both", expand=True)
+        # Hide scrollbar initially
+        self._hide_scrollbar(self.scroll_apps)
 
         # Loading Spinners (Initial State)
         self.scroll_screens.grid_columnconfigure(0, weight=1)
@@ -205,21 +471,44 @@ class MainWindow(ctk.CTk):
         self.spinner_apps.grid(row=0, column=0, pady=50)
         self.spinner_apps.start()
 
-        # 3. Footer
-        self.footer_frame = ctk.CTkFrame(self)
-        self.footer_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        # 3. Footer — elevated surface
+        self.footer_frame = ctk.CTkFrame(self.main_content, fg_color=colors["bg_card"], corner_radius=12)
+        self.footer_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
 
-        self.lbl_status = ctk.CTkLabel(self.footer_frame, text="Ready", anchor="w")
-        self.lbl_status.pack(side="left", padx=10, pady=5)
+        self.lbl_status = ctk.CTkLabel(self.footer_frame, text="Ready", anchor="w", text_color=colors["text_secondary"], font=("Segoe UI", 12))
+        self.lbl_status.pack(side="left", padx=12, pady=8)
         
-        self.btn_define_roi = ctk.CTkButton(self.footer_frame, text="Define Area", command=self.define_roi, width=100)
-        self.btn_define_roi.pack(side="right", padx=5, pady=5)
+        self.btn_define_roi = ctk.CTkButton(
+            self.footer_frame, 
+            text="Define Area", 
+            command=self.define_roi, 
+            width=110,
+            height=36,
+            corner_radius=8,
+            fg_color=colors["secondary_accent"],
+            hover_color=colors["bg_hover"],
+            text_color=colors["text_primary"],
+            font=("Segoe UI", 13)
+        )
+        self.btn_define_roi.pack(side="right", padx=8, pady=8)
         
-        self.btn_stream = ctk.CTkButton(self.footer_frame, text="Start", command=self.toggle_stream, state="disabled", fg_color="gray", width=100)
-        self.btn_stream.pack(side="right", padx=10, pady=5)
+        self.btn_stream = ctk.CTkButton(
+            self.footer_frame, 
+            text="Start Capture", 
+            command=self.toggle_stream, 
+            state="disabled",
+            width=130,
+            height=36,
+            corner_radius=8,
+            font=("Segoe UI", 13, "bold")
+        )
+        self.btn_stream.pack(side="right", padx=8, pady=8)
         
         # 4. Auth Check
         self._update_auth_ui()
+        
+        # Apply final theme sync
+        self.refresh_theme()
 
     def login_flow(self):
         """Opens the login page in browser."""
@@ -259,8 +548,8 @@ class MainWindow(ctk.CTk):
         if not self.auth_service: return
         
         # Clear existing button if any
-        if hasattr(self, 'btn_profile'):
-            self.btn_profile.destroy()
+        if hasattr(self, 'btn_settings'):
+            self.btn_settings.destroy()
             
         # Get Status
         user_info = self.auth_service.get_user_info()
@@ -349,18 +638,21 @@ class MainWindow(ctk.CTk):
             except Exception as e:
                  print(f"Fallback Icon Error: {e}")
 
-        # Create Button (Icon Only)
-        self.btn_profile = ctk.CTkButton(
+        # Create Settings Button (Right Side)
+        colors = get_theme()
+        
+        self.btn_settings = ctk.CTkButton(
             self.header_frame, 
-            text="", 
-            image=self.profile_icon, 
-            width=40, 
+            text="",
+            image=getattr(self, 'settings_icon', None),
+            width=40,
             height=40,
-            fg_color="transparent", 
-            hover_color=("gray70", "gray30"),
-            command=self._on_profile_click
+            fg_color="transparent",
+            hover_color=colors["bg_hover"],
+            corner_radius=20,
+            command=self._on_settings_click
         )
-        self.btn_profile.pack(side="right", padx=5)
+        self.btn_settings.pack(side="right", padx=5)
 
         # Update Title
         if is_pro:
@@ -373,98 +665,78 @@ class MainWindow(ctk.CTk):
                  self.title("Overlayr - Free/Expired")
 
     def _on_settings_click(self):
-        print("Settings clicked")
-
-    def _on_profile_click(self):
-        # 1. Toggle Check
-        # If menu exists and is mapped (visible), hide/destroy it
-        if hasattr(self, 'profile_menu') and self.profile_menu.winfo_exists():
-             self.profile_menu.destroy()
-             del self.profile_menu
-             return
-
-        user_info = self.auth_service.get_user_info()
-        
-        if not user_info['logged_in']:
-            # Simple login action if not logged in
-            self.login_flow()
-            return
-
-        # Show Custom Menu
-        # Attach large icon to info
-        if self.profile_icon_large:
-            user_info['large_icon'] = self.profile_icon_large
-        else:
-            # Fallback for menu
-            user_info['large_icon'] = self.profile_icon 
-            
-        # Create Menu (Frame inside MainWindow)
-        try:
-            # We need relative coordinates of the button within MainWindow
-            # btn_profile is in header_frame, which is in self
-            
-            # x = window_x_of_button + width - menu_width
-            # But header_frame might have padding
-            
-            # Easiest way: getting absolute root coordinates and subtracting window root coordinates?
-            # No, winfo_x/y is relative to parent.
-            
-            # button -> header_frame -> MainWindow
-            # x = self.header_frame.winfo_x() + self.btn_profile.winfo_x()
-            # y = self.header_frame.winfo_y() + self.btn_profile.winfo_y() + button_height
-            
-            # Ensure geometry is up to date
-            self.update_idletasks()
-            
-            root_x = self.winfo_rootx()
-            root_y = self.winfo_rooty()
-            
-            btn_root_x = self.btn_profile.winfo_rootx()
-            btn_root_y = self.btn_profile.winfo_rooty()
-            
-            btn_x = btn_root_x - root_x
-            btn_y = btn_root_y - root_y
-            btn_h = self.btn_profile.winfo_height()
-            btn_w = self.btn_profile.winfo_width()
-            
-            menu_w = 220 # matched with ProfileMenu width
-            
-            # Position: Right-aligned with button
-            target_x = btn_x + btn_w - menu_w
-            target_y = btn_y + btn_h + 5
-            
-            # Bounds check (Left)
-            if target_x < 10: target_x = 10
-            
-            # Bounds check (Right - strict clip to window)
-            window_w = self.winfo_width()
-            if target_x + menu_w > window_w - 10:
-                target_x = window_w - menu_w - 10
-            
-            # Instantiate
-            self.profile_menu = ProfileMenu(self, user_info, self.logout_flow, self._on_settings_click)
-            
-            # Bring to front
-            self.profile_menu.lift()
-            
-            # Show (Static)
-            self.profile_menu.show(target_x, target_y)
-            
-            # Bind global click to dismiss?
-            # For now, simplistic approach: bind click on main window to check? 
-            # Or just let user click the button again to toggle (handled above).
-            
-        except Exception as e:
-            print(f"Menu Error: {e}")
+        """Show settings screen directly"""
+        self._show_settings_screen()
 
     def logout_flow(self):
+        """Reset auth and update UI"""
         if self.auth_service:
             self.auth_service.logout()
-            self._update_auth_ui()
-            self.lbl_status.configure(text="Logged out")
+        self._update_auth_ui()
+        self.lbl_status.configure(text="Signed Out", text_color="white")
+        
+        # If we are in settings screen, go back
+        if hasattr(self, 'settings_screen') and self.settings_screen:
+            self._hide_settings_screen()
+    
+    def _show_settings_screen(self):
+        """Hide main content and header, show settings screen (flicker-free)"""
+        from ..ui.components.settings_screen import SettingsScreen
+        
+        # Get user info first
+        user_info = self.auth_service.get_user_info() if self.auth_service else {}
+        
+        # Create settings screen (but don't show yet)
+        self.settings_screen = SettingsScreen(
+            self, 
+            on_back=self._hide_settings_screen,
+            user_info=user_info,
+            on_logout=self.logout_flow
+        )
+        
+        # Build the widget tree before showing
+        self.settings_screen.update_idletasks()
+        
+        # Now swap views atomically
+        self.header_frame.grid_forget()
+        self.main_content.grid_forget()
+        self.settings_screen.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=0, pady=0)
+        
+        # Force redraw
+        self.update_idletasks()
+    
+    def _hide_settings_screen(self):
+        """Hide settings screen and restore header + main content (flicker-free)"""
+        # Prepare main content before destroying settings
+        self.header_frame.update_idletasks()
+        self.main_content.update_idletasks()
+        
+        # Swap views atomically
+        if hasattr(self, 'settings_screen') and self.settings_screen:
+            self.settings_screen.grid_forget()
+        
+        self.header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        self.main_content.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        
+        # Force redraw then destroy
+        self.update_idletasks()
+        
+        if hasattr(self, 'settings_screen') and self.settings_screen:
+            self.settings_screen.destroy()
+            self.settings_screen = None
+        
+        # Re-apply theme after returning to main view
+        self.after(50, self.refresh_theme)
+
+
+
+
 
 
     def _update_merge_mode(self, choice):
+        if self.config_service:
+            self.config_service.set("grouping_mode", choice)
+            
         if "Document" in choice:
             self.current_merge_mode = "line"
         else:
@@ -472,6 +744,10 @@ class MainWindow(ctk.CTk):
         print(f"Merge mode detected: {self.current_merge_mode}")
 
     def _on_language_change(self, choice):
+        if self.config_service:
+            self.config_service.set("source_lang", self.var_source_lang.get())
+            self.config_service.set("target_lang", self.var_target_lang.get())
+            
         if not self.async_engine: return
         
         src_name = self.var_source_lang.get()
@@ -585,6 +861,10 @@ class MainWindow(ctk.CTk):
         if hasattr(self, 'spinner_apps') and self.spinner_apps:
             self.spinner_apps.destroy()
             self.spinner_apps = None
+        
+        # Update scrollbar visibility after content changes
+        self.after(100, lambda: self._update_scrollbar_visibility(self.scroll_screens))
+        self.after(100, lambda: self._update_scrollbar_visibility(self.scroll_apps))
 
     def _on_resize(self, event):
         """Update grid layout on resize without fetching source data."""

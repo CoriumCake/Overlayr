@@ -1,7 +1,10 @@
 from deep_translator import GoogleTranslator
+from collections import OrderedDict
 from typing import List, Union
 import asyncio
 import concurrent.futures
+
+_MAX_CACHE_SIZE = 2000
 
 class GoogleTranslateService:
     """
@@ -12,8 +15,8 @@ class GoogleTranslateService:
     def __init__(self, source: str = 'en', target: str = 'th'):
         self.source = source
         self.target = target
-        self._cache = {}
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+        self._cache: OrderedDict[str, str] = OrderedDict()
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
     def warmup(self):
         """Warmup stub."""
         pass
@@ -21,7 +24,7 @@ class GoogleTranslateService:
     async def load_model(self, src: str, tgt: str) -> None:
         """Update source/target languages."""
         if src != self.source or tgt != self.target:
-            self._cache = {}
+            self._cache = OrderedDict()
         self.source = src
         self.target = tgt
         print(f"Google Translate: {src} -> {tgt}")
@@ -31,7 +34,7 @@ class GoogleTranslateService:
         try:
             translator = GoogleTranslator(source=self.source, target=self.target)
             return translator.translate(text)
-        except:
+        except Exception:
             return text
     
     async def translate(self, text: Union[str, List[str]]) -> Union[str, List[str]]:
@@ -81,6 +84,11 @@ class GoogleTranslateService:
             for idx, trans in zip(indices_to_translate, translated):
                 key = cache_prefix + texts[idx]
                 self._cache[key] = trans
+                # Evict oldest entries if cache exceeds limit
+                if len(self._cache) > _MAX_CACHE_SIZE:
+                    # Remove oldest 25%
+                    for _ in range(_MAX_CACHE_SIZE // 4):
+                        self._cache.popitem(last=False)
                 results[idx] = trans
             
             return results[0] if is_single else results

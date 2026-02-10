@@ -16,11 +16,6 @@ class RapidOCREngine:
         self._status_callback = None
         print("RapidOCREngine: Initialized (Lazy loading).")
         
-    def warmup(self):
-        """Pre-load models."""
-        print("RapidOCREngine: Warming up...", flush=True)
-        self._get_engine()
-
     def set_callback(self, callback):
         self._status_callback = callback
         

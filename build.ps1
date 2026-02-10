@@ -1,6 +1,11 @@
-# Build script for Screen Translator
+# Build script for Overlayr
 
-Write-Host "Building Screen Translator..."
+Write-Host "Building Overlayr..."
+
+# Activate virtual environment if it exists
+if (Test-Path ".venv\Scripts\Activate.ps1") {
+    . .\.venv\Scripts\Activate.ps1
+}
 
 # Clean previous builds
 if (Test-Path "dist") { Remove-Item -Path "dist" -Recurse -Force }
@@ -10,8 +15,20 @@ if (Test-Path "build") { Remove-Item -Path "build" -Recurse -Force }
 # --onefile: Create a single exe
 # --noconsole: Don't show terminal window (GUI app)
 # --name: Output filename
-# --collect-all easyocr: Collects all data/dependencies for easyocr (important!)
+# --icon: Application icon
+# --add-data: Include assets folder
+# --collect-all: Collect all dependencies for these packages
 
-& "C:\Users\Kaotok\AppData\Roaming\Python\Python314\Scripts\pyinstaller.exe" --noconsole --onefile --name "ScreenTranslator" --icon "Icon.ico" --add-data "Icon.png;." --collect-all "easyocr" main.py
+pyinstaller `
+    --noconsole `
+    --onefile `
+    --name "Overlayr" `
+    --icon "icon.ico" `
+    --add-data "assets;assets" `
+    --add-data "src;src" `
+    --collect-all "rapidocr_onnxruntime" `
+    --collect-all "symspellpy" `
+    --collect-all "customtkinter" `
+    main.py
 
-Write-Host "Build complete. Check dist/ScreenTranslator.exe"
+Write-Host "Build complete. Check dist/Overlayr.exe"

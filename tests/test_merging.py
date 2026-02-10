@@ -7,7 +7,7 @@ def test_merge_text_blocks_horizontal():
         {"bbox": [10, 10, 50, 20], "original": "Hello", "bg_color": "#000"},
         {"bbox": [60, 10, 100, 20], "original": "world", "bg_color": "#000"}
     ]
-    merged = engine._merge_text_blocks(elements)
+    merged = engine._merge_text_blocks(elements, mode="line")
     assert len(merged) == 1
     assert merged[0]["original"] == "Hello world"
     assert merged[0]["bbox"] == [10, 10, 100, 20]

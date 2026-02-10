@@ -106,7 +106,7 @@ class ValidationService:
                     # If detected as Thai/CJK/etc, reject. 
                     if lang in ['th', 'ja', 'ko', 'zh-cn', 'zh-tw', 'vi']:
                         return False
-                except: pass
+                except Exception: pass
 
         elif source_lang == 'th':
             # Thai MUST contain some Thai characters
