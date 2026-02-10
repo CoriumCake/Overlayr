@@ -1,5 +1,4 @@
 // @ts-check
-console.log("DEBUG: LOADING WEB/ASTRO.CONFIG.MJS - ATTEMPT #2");
 import { defineConfig } from 'astro/config';
 import vercel from '@astrojs/vercel';
 
