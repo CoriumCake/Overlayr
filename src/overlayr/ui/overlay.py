@@ -203,12 +203,13 @@ class ResultOverlay:
             self.canvas.tag_lower(bg_rect_id, text_id)
             
             # Glow/Highlight on text box
-            self.canvas.create_line(
-                t_bbox[0] - padding_x, t_bbox[3] + padding_y,
-                t_bbox[2] + padding_x, t_bbox[3] + padding_y,
-                fill=overlay_glow, width=1,
-                tags="result"
-            )
+            if overlay_glow and overlay_glow != "transparent":
+                self.canvas.create_line(
+                    t_bbox[0] - padding_x, t_bbox[3] + padding_y,
+                    t_bbox[2] + padding_x, t_bbox[3] + padding_y,
+                    fill=overlay_glow, width=1,
+                    tags="result"
+                )
 
     def set_geometry(self, geometry):
         # Prevent jumpy movement by only updating if changed significantly or just setting directly

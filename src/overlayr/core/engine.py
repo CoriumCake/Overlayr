@@ -164,75 +164,104 @@ class AsyncEngine(metaclass=SingletonMeta):
         processed_cv = clahe.apply(gray)
         # log_and_save("Grayscale & CLAHE", processed_cv, "02_clahe")
 
+        # --- AUTO-INVERT (Fix for White Text on Dark Background) ---
+        # Calculate mean brightness to detect Dark Mode / Inverted text
+        mean_brightness = np.mean(processed_cv)
+        is_dark_bg = mean_brightness < 127 # If mostly dark, assume white text
+        
+        if is_dark_bg:
+             processed_cv = cv2.bitwise_not(processed_cv)
+             log_and_save("Auto-Invert (Dark BG)", processed_cv, "02a_invert")
+
+
         # 3. Denoise: Median Blur (Adaptive)
         # Only blur if we upscaled (likely noisy) or image is smallish to avoid destroying details on high-res downscaled
+        # 3. Denoise: Median Blur (Adaptive)
         if scale_factor > 1.5:
-             processed_cv = cv2.medianBlur(processed_cv, 3) # Reduced kernel from 5 to 3 for speed
-             # log_and_save("Median Blur (k=3)", processed_cv, "03_denoise")
-        else:
-             # Skip blur for downscaled/native images to keep sharpness
-             pass
-        
-        # 4. Adaptive Thresholding (Optimized for Masking)
-        # Use a lower C (8) to be more inclusive (keep faint text), since we will mask the original gray later
+             processed_cv = cv2.medianBlur(processed_cv, 3)
+
+        # 4. Adaptive Thresholding
+        # Use a lower C (8) to be more inclusive
         thresh_cv = cv2.adaptiveThreshold(processed_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 8)
-        # log_and_save("Adaptive Threshold (Mask)", thresh_cv, "04_threshold")
+        
+        # --- DUAL POLARITY MASKING (Fix for Mixed Text) ---
+        # We need to capture both Dark Text (in light area) AND Light Text (in dark area).
+        # thresh_cv: 255=Light/BG, 0=Dark/Text (Logic A) OR 255=Text, 0=Dark/BG (Logic B)
+        #
+        # 1. Candidate Mask for DARK Text (Black on White)
+        # In this case, Text < LocalMean -> 0 in thresh_cv.
+        # So we want 0 values.
+        mask_dark_candidates = cv2.bitwise_not(thresh_cv) # 255 where Text is Dark
+        
+        # 2. Candidate Mask for LIGHT Text (White on Black)
+        # In this case, Text > LocalMean -> 255 in thresh_cv.
+        # So we want 255 values.
+        mask_light_candidates = thresh_cv # 255 where Text is Light
+        
+        # Function to Filter Noise & Huge BG using CCA
+        def filter_mask(mask, min_area=10, max_area_pct=0.6):
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+            
+            areas = stats[:, cv2.CC_STAT_AREA]
+            total_area = mask.shape[0] * mask.shape[1]
+            max_area = total_area * max_area_pct
+            
+            # Create LUT: 0=Ignore, 255=Keep
+            lut = np.zeros(num_labels, dtype=np.uint8)
+            
+            # Valid indices: Area >= min AND Area <= max 
+            # AND not background (checking index 0 usually sufficient if BG is largest, but we explicitly check area too)
+            valid_indices = np.where((areas >= min_area) & (areas <= max_area))[0]
+            
+            # Exclude label 0 (background/unconnected void) if it was selected? 
+            # Actually label 0 is "the zeros" in the mask. We are analyzing the "ones". 
+            # So label 0 is the "void" of the mask. We don't need to filter it, it's already 0.
+            # But we must ensure the "background blob" of the image isn't selected as text.
+            
+            if len(valid_indices) > 0:
+                lut[valid_indices] = 255
+                
+            return lut[labels]
 
-        # 5. Clean Noise: CCA + NumPy LUT Optimization
-        # Invert for CCA (Need white text on black background)
-        mask_cv = cv2.bitwise_not(thresh_cv)
+        # Filter both
+        mask_dark = filter_mask(mask_dark_candidates)
+        mask_light = filter_mask(mask_light_candidates)
 
-        # 5.1 Morphological Closing (Connect broken text in mask)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-        mask_cv = cv2.morphologyEx(mask_cv, cv2.MORPH_CLOSE, kernel)
-        # log_and_save("Morph Closing (Mask)", mask_cv, "05_closing")
+        # Merge Masks (Union)
+        # Ideally they shouldn't overlap (thresh is binary), but CCA stats might differ.
+        # But actually we treat them differently.
         
-        # Connected Components on Mask
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_cv, connectivity=8)
+        # 6. Hybrid Construction (Normalize everything to Dark Text on White BG)
         
-        # Filtering using NumPy LUT (Lookup Table) - Fastest method
-        min_area = 10
-        
-        # stats[:, 4] is area. Index 0 is background.
-        areas = stats[:, cv2.CC_STAT_AREA]
-        
-        # Create a LUT where valid labels = 255, others = 0
-        lut = np.zeros(num_labels, dtype=np.uint8)
-        
-        # Get indices of valid components (area >= min_area), skipping background (index 0)
-        valid_indices = np.where(areas >= min_area)[0]
-        if 0 in valid_indices:
-             valid_indices = valid_indices[valid_indices != 0]
-             
-        lut[valid_indices] = 255
-        
-        # Apply LUT
-        # Apply LUT to get Final Mask
-        final_mask = lut[labels]
-        log_and_save("Clean Mask (CCA+LUT)", final_mask, "05_clean_mask")
-        
-        # 6. Hybrid Apply: Use Mask to keep Grayscale pixels
-        # Mask: 255 (Text), 0 (BG)
-        # We want: Text->Gray, BG->White
-        
-        # Standard: Inverted Binary (Text=Black, BG=White) for OCR?
-        # RapidOCR prefers Black Text on White BG.
-        
-        # Create Output Canvas (White)
+        # Base: White Canvas
         final_cv = np.full_like(processed_cv, 255)
         
-        # Copy Grayscale pixels where Mask is White (Text)
-        # processed_cv holds the Grayscale image from Step 3
-        final_cv = cv2.bitwise_and(processed_cv, processed_cv, mask=final_mask)
+        # A. Apply Dark Text (Keep Original Grayscale)
+        # Where mask_dark is white -> Copy source pixel
+        dark_text_pixels = cv2.bitwise_and(processed_cv, processed_cv, mask=mask_dark)
+        # We need to put these into final_cv. 
+        # final_cv is 255. We want to overwrite with dark_text_pixels where mask is set.
+        # Logic: (Final & ~Mask) | (Source & Mask)
+        # Since Final is all 1s: (~Mask) | (Source & Mask)
         
-        # But wait, bitwise_and with mask=0 puts 0 (Black). We want White BG.
-        # So: Final = (Gray AND Mask) + (NOT Mask)
-        # Gray AND Mask -> Text is Gray, BG is Black(0)
-        # NOT Mask -> Text is Black(0), BG is White(255)
-        # Add them -> Text is Gray, BG is White.
+        fg_dark = cv2.bitwise_and(processed_cv, processed_cv, mask=mask_dark)
+        bg_mask_dark_inv = cv2.bitwise_not(mask_dark)
+        final_cv = cv2.bitwise_and(final_cv, final_cv, mask=bg_mask_dark_inv) # Clear holes
+        final_cv = cv2.add(final_cv, fg_dark) # Fill text
         
-        bg_white = cv2.bitwise_not(final_mask)
-        final_cv = cv2.add(final_cv, bg_white)
+        # B. Apply Light Text (INVERT Original Grayscale -> Becomes Dark)
+        # Where mask_light is white -> Copy INVERTED source pixel
+        src_inv = cv2.bitwise_not(processed_cv)
+        fg_light = cv2.bitwise_and(src_inv, src_inv, mask=mask_light)
+        
+        bg_mask_light_inv = cv2.bitwise_not(mask_light)
+        final_cv = cv2.bitwise_and(final_cv, final_cv, mask=bg_mask_light_inv) # Clear holes 
+        # Note: If overlaps occur, this might overwrite dark text. 
+        # But thresh and ~thresh are disjoint. So masks shouldn't overlap pixels.
+        
+        final_cv = cv2.add(final_cv, fg_light)
+
+        log_and_save("Dual-Polarity Output", final_cv, "06_dual_final")
         
         # 7. Padding
         padding_color = [255,255,255] if len(final_cv.shape) == 3 else 255
