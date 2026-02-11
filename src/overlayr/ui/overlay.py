@@ -172,6 +172,10 @@ class ResultOverlay:
             # User said "Result text overflow", so maybe allow wider?
             # Let's try width=box_w first.
             
+            # --- AUTO-FIT LOGIC ---
+            min_font_size = 10
+            
+            # Create text initially
             text_id = self.canvas.create_text(
                 cx, cy,
                 text=text,
@@ -181,6 +185,24 @@ class ResultOverlay:
                 width=box_w, # Wrap at original width
                 tags="result"
             )
+            
+            # Measure
+            t_bbox = self.canvas.bbox(text_id)
+            if t_bbox:
+                text_h = t_bbox[3] - t_bbox[1]
+                
+                # If text height exceeds box height, shrink font
+                while text_h > box_h and font_size > min_font_size:
+                    font_size -= 2 # Step down
+                    font = ("Segoe UI Semibold", font_size)
+                    
+                    self.canvas.itemconfig(text_id, font=font)
+                    t_bbox = self.canvas.bbox(text_id)
+                    if t_bbox:
+                        text_h = t_bbox[3] - t_bbox[1]
+                    else:
+                        break # Should not happen
+
             
             # Get actual bounding box of the drawn text
             t_bbox = self.canvas.bbox(text_id)

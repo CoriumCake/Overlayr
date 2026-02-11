@@ -546,56 +546,125 @@ class AsyncEngine(metaclass=SingletonMeta):
             }
 
         if mode == "line":
-            # Improved Line Merging
-            # 1. Sort by Y
+            # --- IMPROVED DOCUMENT MODE: Smart Paragraphs ---
+            # 1. First, merge HORIZONTAL fragments into strict lines (as old logic did partially)
             elements.sort(key=lambda x: x["bbox"][1])
             
-            merged = []
+            lines = []
             visited = [False] * len(elements)
             
+            # Step 1: Form Lines
             for i in range(len(elements)):
                 if visited[i]: continue
-                group = [elements[i]]
+                line_group = [elements[i]]
                 visited[i] = True
                 
-                # Look for horizontal neighbors
                 changed = True
                 while changed:
                     changed = False
                     for j in range(len(elements)):
-                         if visited[j]: continue
-                         
-                         # Check against any item in group
-                         is_close = False
-                         for existing in group:
+                        if visited[j]: continue
+                        
+                        # Check strictly horizontal
+                        is_same_line = False
+                        for existing in line_group:
                              b1 = existing["bbox"]
                              b2 = elements[j]["bbox"]
                              
-                             # Strict vertical alignment check (Must be same "line")
-                             # Centers must represent the same physical line
+                             # Vertical center check
                              cy1 = (b1[1]+b1[3])/2
                              cy2 = (b2[1]+b2[3])/2
                              
-                             # If vertical center diff is small (< 15px)
-                             if abs(cy1 - cy2) < 15:
-                                 # And horizontal gap is not too wide (e.g. < 200px)
-                                 # This handles spaces between words, giving a full sentence
+                             if abs(cy1 - cy2) < 15: # Same line
+                                 # Horizontal proximity
                                  h_gap = max(0, min(abs(b1[2]-b2[0]), abs(b2[2]-b1[0])))
-                                 
-                                 # Or check overlap if they are badly segmented
                                  overlap_w = max(0, min(b1[2], b2[2]) - max(b1[0], b2[0]))
                                  
                                  if h_gap < 150 or overlap_w > 0:
-                                     is_close = True
+                                     is_same_line = True
                                      break
-                         
-                         if is_close:
-                             group.append(elements[j])
-                             visited[j] = True
-                             changed = True
+                        
+                        if is_same_line:
+                            line_group.append(elements[j])
+                            visited[j] = True
+                            changed = True
                 
-                merged.append(merge_cluster(group))
-            return merged
+                # Merge fragments into a single "Line" object
+                lines.append(merge_cluster(line_group))
+
+            # Step 2: Merge Lines into Paragraphs (But respect Headers/Sections)
+            if not lines: return []
+            
+            lines.sort(key=lambda x: x["bbox"][1])
+            paragraphs = []
+            
+            current_para = [lines[0]]
+            
+            for i in range(1, len(lines)):
+                prev = current_para[-1]
+                curr = lines[i]
+                
+                # Metrics
+                # 1. Vertical Gap
+                gap = curr["bbox"][1] - prev["bbox"][3]
+                
+                # 2. Height difference (Header vs Body?)
+                h_prev = prev["bbox"][3] - prev["bbox"][1]
+                h_curr = curr["bbox"][3] - curr["bbox"][1]
+                avg_h = (h_prev + h_curr) / 2
+                
+                # 3. Font Size Ratio
+                ratio = max(h_prev, h_curr) / (min(h_prev, h_curr) + 0.1)
+
+                # 4. Horizontal Overlap (Column Check)
+                # Overlap X range
+                p_x1, p_x2 = prev["bbox"][0], prev["bbox"][2]
+                c_x1, c_x2 = curr["bbox"][0], curr["bbox"][2]
+                
+                overlap_x = max(0, min(p_x2, c_x2) - max(p_x1, c_x1))
+                # Horizontal Gap (if no overlap)
+                if overlap_x > 0:
+                    h_gap = 0
+                else:
+                    h_gap = max(0, c_x1 - p_x2, p_x1 - c_x2)
+                
+                # Decisions:
+                is_same_para = False
+                
+                # CONDITION A: Must align horizontally (Same column)
+                # Significant overlap OR very small horizontal gap (indentation/bullet)
+                # Let's say overlap > 0 OR h_gap < 50 (to allow small bullets)
+                is_same_column = (overlap_x > 0) or (h_gap < 50)
+                
+                if is_same_column:
+                    # CONDITION B: Must be vertically close (Same paragraph flow)
+                    # Allow gap up to 1.5x height for same paragraph
+                    if gap < avg_h * 1.5:
+                        # CONDITION C: Similar Font Size (Body text)
+                        if ratio < 1.3:
+                            is_same_para = True
+                        else:
+                            # Font size changed -> Header vs Content
+                            is_same_para = False
+                    else:
+                        # Large vertical gap -> New paragraph
+                        is_same_para = False
+                else:
+                    # Different Column -> New paragraph/block
+                    is_same_para = False
+                
+                if is_same_para:
+                    current_para.append(curr)
+                else:
+                    # Flush current para
+                    paragraphs.append(merge_cluster(current_para))
+                    current_para = [curr]
+            
+            # Flush last
+            if current_para:
+                paragraphs.append(merge_cluster(current_para))
+                
+            return paragraphs
 
         # ---- PARAGRAPH / MANGA MODE (Clustering) ----
         # 1. Sort by Y initially

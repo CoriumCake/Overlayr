@@ -395,7 +395,11 @@ class MainWindow(ctk.CTk):
         
         # Grouping Mode
         ctk.CTkLabel(self.header_frame, text="Mode", font=("Segoe UI", 13, "bold"), text_color=colors["text_primary"]).pack(side="left", padx=(20, 5))
-        self.var_grouping_mode = ctk.StringVar(value=self.config_service.get("grouping_mode", "Group (Manga)") if self.config_service else "Group (Manga)")
+        
+        # Load from config, Default to Manga if missing
+        initial_group_mode = self.config_service.get("grouping_mode", "Group (Manga)") if self.config_service else "Group (Manga)"
+        self.var_grouping_mode = ctk.StringVar(value=initial_group_mode)
+
         self.opt_grouping_mode = ctk.CTkOptionMenu(
             self.header_frame,
             values=["Group (Manga)", "Document (Lines)"],
@@ -438,6 +442,13 @@ class MainWindow(ctk.CTk):
         self.tab_view.grid(row=0, column=0, sticky="nsew", padx=12, pady=(0, 6))
         self.tab_screens = self.tab_view.add("Screens")
         self.tab_apps = self.tab_view.add("Applications")
+        
+        # Restore Capture Mode (Tab Selection)
+        if self.config_service:
+            last_capture_mode = self.config_service.get("capture_mode", "Screens")
+            if last_capture_mode in ["Screens", "Applications"]:
+                 self.tab_view.set(last_capture_mode)
+
         
         # Set tab content backgrounds to match primary surface
         self.tab_screens.configure(fg_color=colors["bg_primary"])
@@ -933,6 +944,9 @@ class MainWindow(ctk.CTk):
              self.btn_stream.configure(state="disabled", fg_color="gray") # Keep disabled until ready
 
     def _on_tab_change(self):
+        if self.config_service:
+            self.config_service.set("capture_mode", self.tab_view.get())
+            
         self.refresh_sources()
 
     def _schedule_auto_refresh(self):

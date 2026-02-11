@@ -21,6 +21,9 @@ class ConfigService:
                     self.settings.update(loaded)
             except Exception as e:
                 print(f"Error loading config: {e}")
+        else:
+            # Create new config with defaults if not found
+            self.save()
 
     def save(self):
         """Save settings to JSON file"""
