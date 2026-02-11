@@ -1,6 +1,7 @@
 {
-    "appearance_mode": "Light",
-    "source_lang": "Japanese",
+    "appearance_mode": "Dark",
+    "source_lang": "English",
     "target_lang": "Thai",
-    "grouping_mode": "Document (Lines)"
+    "grouping_mode": "Document (Lines)",
+    "capture_mode": "Applications"
 }
