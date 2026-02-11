@@ -684,7 +684,7 @@ const homeUrl = getRelativeLocaleUrl(currentLang, "");
 
 				let photoURL = user.photoURL || fallbackUrl;
 				if (photoURL.includes("googleusercontent.com")) {
-					photoURL = photoURL.split("=")[0] + "=s192-c";
+					photoURL = photoURL.replace(/=s\d+(-c)?$/, "") + "=s192-c";
 				}
 				img.src = photoURL;
 				img.alt = "Profile";

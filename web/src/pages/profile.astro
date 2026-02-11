@@ -251,12 +251,13 @@ import Layout from "../layouts/Layout.astro";
     }
 
     .logout-btn {
-        background-color: rgba(255, 255, 255, 0.1);
-        color: var(--color-text-main);
+        background-color: #f3f4f6;
+        color: #374151;
+        border: 1px solid #e5e7eb;
     }
 
     .logout-btn:hover {
-        background-color: rgba(255, 255, 255, 0.2);
+        background-color: #e5e7eb;
     }
 
     .upgrade-btn {
@@ -332,13 +333,17 @@ import Layout from "../layouts/Layout.astro";
             let url = user.photoURL;
             if (url.includes("googleusercontent.com")) {
                 // Ensure high-resolution square crop for Google images
-                url = url.split("=")[0] + "=s384-c";
+                // Using a safer regex that replaces existing sizing or appends it
+                url = url.replace(/=s\d+(-c)?$/, "") + "=s384-c";
                 els.avatar.referrerPolicy = "no-referrer";
             }
             els.avatar.src = url;
             els.avatar.onerror = () => {
                 const fallback = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.email || "User")}&background=random`;
-                if (els.avatar.src !== fallback) els.avatar.src = fallback;
+                if (els.avatar.src !== fallback) {
+                    els.avatar.src = fallback;
+                    els.avatar.referrerPolicy = "no-referrer";
+                }
             };
         }
 
