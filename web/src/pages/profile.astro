@@ -111,7 +111,7 @@ import Layout from "../layouts/Layout.astro";
     .avatar {
         border-radius: 50%;
         border: 3px solid #ec4899; /* Pink-500 */
-        object-fit: contain;
+        object-fit: cover;
         background-color: #f3f4f6;
     }
 
@@ -329,10 +329,8 @@ import Layout from "../layouts/Layout.astro";
         if (els.name) els.name.innerText = user.displayName || "User";
         if (els.email) els.email.innerText = user.email || "";
         if (els.avatar && user.photoURL) {
-            // Get original uncropped image from Google by replacing sizing parameter with =s0
-            const photoURL = user.photoURL.includes("=")
-                ? user.photoURL.split("=")[0] + "=s0"
-                : user.photoURL;
+            // Use high-resolution square crop (=s384-c)
+            const photoURL = user.photoURL.split("=")[0] + "=s384-c";
             els.avatar.src = photoURL;
         }
 
