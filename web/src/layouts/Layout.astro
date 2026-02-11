@@ -682,11 +682,10 @@ const homeUrl = getRelativeLocaleUrl(currentLang, "");
 				const img = document.createElement("img");
 				const fallbackUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.email || "User")}&background=random`;
 
-				// Remove =sXX-c (cropping) from Google URLs if present
-				const photoURL = (user.photoURL || fallbackUrl).replace(
-					/=s\d+-c$/,
-					"=s192", // Use a clean high-res square version
-				);
+				// Get original uncropped image from Google by replacing sizing parameter with =s0
+				const photoURL = (user.photoURL || fallbackUrl).includes("=")
+					? (user.photoURL || fallbackUrl).split("=")[0] + "=s0"
+					: user.photoURL || fallbackUrl;
 				img.src = photoURL;
 				img.alt = "Profile";
 				img.className = "user-avatar";

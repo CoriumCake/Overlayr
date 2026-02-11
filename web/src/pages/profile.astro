@@ -329,9 +329,10 @@ import Layout from "../layouts/Layout.astro";
         if (els.name) els.name.innerText = user.displayName || "User";
         if (els.email) els.email.innerText = user.email || "";
         if (els.avatar && user.photoURL) {
-            // Remove =sXX-c (cropping) from Google URLs if present
-            // Also increase resolution since we're displaying it larger
-            const photoURL = user.photoURL.replace(/=s\d+-c$/, "=s384");
+            // Get original uncropped image from Google by replacing sizing parameter with =s0
+            const photoURL = user.photoURL.includes("=")
+                ? user.photoURL.split("=")[0] + "=s0"
+                : user.photoURL;
             els.avatar.src = photoURL;
         }
 
