@@ -329,9 +329,17 @@ import Layout from "../layouts/Layout.astro";
         if (els.name) els.name.innerText = user.displayName || "User";
         if (els.email) els.email.innerText = user.email || "";
         if (els.avatar && user.photoURL) {
-            // Use high-resolution square crop (=s384-c)
-            const photoURL = user.photoURL.split("=")[0] + "=s384-c";
-            els.avatar.src = photoURL;
+            let url = user.photoURL;
+            if (url.includes("googleusercontent.com")) {
+                // Ensure high-resolution square crop for Google images
+                url = url.split("=")[0] + "=s384-c";
+                els.avatar.referrerPolicy = "no-referrer";
+            }
+            els.avatar.src = url;
+            els.avatar.onerror = () => {
+                const fallback = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.email || "User")}&background=random`;
+                if (els.avatar.src !== fallback) els.avatar.src = fallback;
+            };
         }
 
         // 2. Fetch Firestore Data

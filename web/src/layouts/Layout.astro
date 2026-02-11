@@ -682,9 +682,10 @@ const homeUrl = getRelativeLocaleUrl(currentLang, "");
 				const img = document.createElement("img");
 				const fallbackUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.email || "User")}&background=random`;
 
-				// Use high-resolution square crop (=s192-c)
-				const photoURL =
-					(user.photoURL || fallbackUrl).split("=")[0] + "=s192-c";
+				let photoURL = user.photoURL || fallbackUrl;
+				if (photoURL.includes("googleusercontent.com")) {
+					photoURL = photoURL.split("=")[0] + "=s192-c";
+				}
 				img.src = photoURL;
 				img.alt = "Profile";
 				img.className = "user-avatar";
