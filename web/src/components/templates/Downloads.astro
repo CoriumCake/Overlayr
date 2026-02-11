@@ -8,7 +8,7 @@ interface Props {
     lang: "en" | "ja" | "es";
 }
 const { lang } = Astro.props;
-const t = useTranslations(lang);
+11: const t = useTranslations(lang);
 
 // This data could be fetched from GitHub API at build time
 // For now, we manually list releases or mock it
@@ -66,7 +66,7 @@ const releases = [
                                         href={
                                             release.isLatest
                                                 ? undefined
-                                                : `https://github.com/YOUR_GITHUB_USER/Overlayr/releases/download/v${release.version}/Overlayr.exe`
+                                                : `https://github.com/CoriumCake/Overlayr/releases/download/v${release.version}/Overlayr.exe`
                                         }
                                         version={release.version}
                                         checksum={release.checksum}

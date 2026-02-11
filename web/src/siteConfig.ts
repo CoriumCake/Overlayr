@@ -3,11 +3,12 @@ export const SITE = {
     title: "Overlayr",
     description: "Your Live Translation Overlay",
     email: "overlayr.catcode@gmail.com",
-    repo: "https://github.com/Overlayr/Overlayr",
+    repo: "https://github.com/CoriumCake/Overlayr",
+    issues: "https://github.com/CoriumCake/Overlayr-release/issues",
     discord: "https://discord.gg/overlayr",
 };
 
-export const GITHUB_LATEST_RELEASE = "https://github.com/Overlayr/Overlayr/releases/latest";
+export const GITHUB_LATEST_RELEASE = "https://github.com/CoriumCake/Overlayr-release/releases/latest";
 
 export const STRIPE_LINKS = {
     pro: "https://buy.stripe.com/test_bJedR32D45qV3m5cRn0ZW06", // Card Link
