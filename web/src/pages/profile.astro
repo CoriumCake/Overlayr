@@ -108,6 +108,13 @@ import Layout from "../layouts/Layout.astro";
         margin-bottom: 2rem;
     }
 
+    .avatar {
+        border-radius: 50%;
+        border: 3px solid #ec4899; /* Pink-500 */
+        object-fit: contain;
+        background-color: #f3f4f6;
+    }
+
     .name {
         font-size: 1.75rem;
         font-weight: 700;
@@ -131,8 +138,6 @@ import Layout from "../layouts/Layout.astro";
         margin-bottom: 1.5rem;
         color: #111;
     }
-
-    /* ... skipped ... */
 
     .logout-btn {
         background-color: #f3f4f6;
@@ -323,7 +328,12 @@ import Layout from "../layouts/Layout.astro";
         // 1. Show Basic Info
         if (els.name) els.name.innerText = user.displayName || "User";
         if (els.email) els.email.innerText = user.email || "";
-        if (els.avatar && user.photoURL) els.avatar.src = user.photoURL;
+        if (els.avatar && user.photoURL) {
+            // Remove =sXX-c (cropping) from Google URLs if present
+            // Also increase resolution since we're displaying it larger
+            const photoURL = user.photoURL.replace(/=s\d+-c$/, "=s384");
+            els.avatar.src = photoURL;
+        }
 
         // 2. Fetch Firestore Data
         try {
