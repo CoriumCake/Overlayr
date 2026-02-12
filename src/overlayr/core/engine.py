@@ -15,7 +15,7 @@ from .post_processing import TextPostProcessor
 class AsyncEngine(metaclass=SingletonMeta):
     """
     Orchestrates OCR and Translation asynchronously.
-    Pipeline: Resize (2x) -> FNLM -> AdaptiveThresh -> CCA -> Close -> RapidOCR.
+    Pipeline: Screen Capture -> Grayscale -> CLAHE -> OCR.
     """
     def __init__(self) -> None:
         print("AsyncEngine: Init start...", flush=True)
@@ -136,139 +136,30 @@ class AsyncEngine(metaclass=SingletonMeta):
         # 1. Smart Scaling (Optimize for Speed/Accuracy)
         w, h = image.size
         target_width = 1600 # Optimal width for OCR
-        scale_factor = 1.0
+        if open_cv_image is None or open_cv_image.size == 0:
+            print("Error: Empty image for preprocessing")
+            return None
+
+        # --- SIMPLIFIED PIPELINE: Screen Capture -> Grayscale -> CLAHE -> OCR ---
+        # 1. Grayscale
+        # Do not resize/scale if possible to keep original details
+        gray = cv2.cvtColor(open_cv_image, cv2.COLOR_BGR2GRAY)
+        # log_and_save("Grayscale", gray, "01_gray")
         
-        if w > target_width:
-            # Downscale (Speed up!)
-            scale_factor = target_width / w
-            new_w = int(w * scale_factor)
-            new_h = int(h * scale_factor)
-            processed_cv = cv2.resize(open_cv_image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-            log_and_save(f"Smart Scale (Down {scale_factor:.2f}x)", processed_cv, "01_scale")
-        elif w < 800:
-            # Upscale (Accuracy for small text)
-            scale_factor = 2.0
-            new_w = int(w * scale_factor)
-            new_h = int(h * scale_factor)
-            processed_cv = cv2.resize(open_cv_image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-            log_and_save(f"Smart Scale (Up {scale_factor:.2f}x)", processed_cv, "01_scale")
-        else:
-             # Keep original
-             scale_factor = 1.0
-             processed_cv = open_cv_image
-             log_and_save("Smart Scale (1.0x)", processed_cv, "01_scale")
-             
-        # 2. Grayscale & CLAHE
-        gray = cv2.cvtColor(processed_cv, cv2.COLOR_BGR2GRAY)
+        # 2. CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        # Enhances local contrast to make text pop against background
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         processed_cv = clahe.apply(gray)
-        # log_and_save("Grayscale & CLAHE", processed_cv, "02_clahe")
-
-        # --- AUTO-INVERT (Fix for White Text on Dark Background) ---
-        # Calculate mean brightness to detect Dark Mode / Inverted text
-        mean_brightness = np.mean(processed_cv)
-        is_dark_bg = mean_brightness < 127 # If mostly dark, assume white text
+        log_and_save("CLAHE Result", processed_cv, "02_clahe_final")
         
-        if is_dark_bg:
-             processed_cv = cv2.bitwise_not(processed_cv)
-             log_and_save("Auto-Invert (Dark BG)", processed_cv, "02a_invert")
-
-
-        # 3. Denoise: Median Blur (Adaptive)
-        # Only blur if we upscaled (likely noisy) or image is smallish to avoid destroying details on high-res downscaled
-        # 3. Denoise: Median Blur (Adaptive)
-        if scale_factor > 1.5:
-             processed_cv = cv2.medianBlur(processed_cv, 3)
-
-        # 4. Adaptive Thresholding
-        # Use a lower C (8) to be more inclusive
-        thresh_cv = cv2.adaptiveThreshold(processed_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 8)
-        
-        # --- DUAL POLARITY MASKING (Fix for Mixed Text) ---
-        # We need to capture both Dark Text (in light area) AND Light Text (in dark area).
-        # thresh_cv: 255=Light/BG, 0=Dark/Text (Logic A) OR 255=Text, 0=Dark/BG (Logic B)
-        #
-        # 1. Candidate Mask for DARK Text (Black on White)
-        # In this case, Text < LocalMean -> 0 in thresh_cv.
-        # So we want 0 values.
-        mask_dark_candidates = cv2.bitwise_not(thresh_cv) # 255 where Text is Dark
-        
-        # 2. Candidate Mask for LIGHT Text (White on Black)
-        # In this case, Text > LocalMean -> 255 in thresh_cv.
-        # So we want 255 values.
-        mask_light_candidates = thresh_cv # 255 where Text is Light
-        
-        # Function to Filter Noise & Huge BG using CCA
-        def filter_mask(mask, min_area=10, max_area_pct=0.6):
-            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-            
-            areas = stats[:, cv2.CC_STAT_AREA]
-            total_area = mask.shape[0] * mask.shape[1]
-            max_area = total_area * max_area_pct
-            
-            # Create LUT: 0=Ignore, 255=Keep
-            lut = np.zeros(num_labels, dtype=np.uint8)
-            
-            # Valid indices: Area >= min AND Area <= max 
-            # AND not background (checking index 0 usually sufficient if BG is largest, but we explicitly check area too)
-            valid_indices = np.where((areas >= min_area) & (areas <= max_area))[0]
-            
-            # Exclude label 0 (background/unconnected void) if it was selected? 
-            # Actually label 0 is "the zeros" in the mask. We are analyzing the "ones". 
-            # So label 0 is the "void" of the mask. We don't need to filter it, it's already 0.
-            # But we must ensure the "background blob" of the image isn't selected as text.
-            
-            if len(valid_indices) > 0:
-                lut[valid_indices] = 255
-                
-            return lut[labels]
-
-        # Filter both
-        mask_dark = filter_mask(mask_dark_candidates)
-        mask_light = filter_mask(mask_light_candidates)
-
-        # Merge Masks (Union)
-        # Ideally they shouldn't overlap (thresh is binary), but CCA stats might differ.
-        # But actually we treat them differently.
-        
-        # 6. Hybrid Construction (Normalize everything to Dark Text on White BG)
-        
-        # Base: White Canvas
-        final_cv = np.full_like(processed_cv, 255)
-        
-        # A. Apply Dark Text (Keep Original Grayscale)
-        # Where mask_dark is white -> Copy source pixel
-        dark_text_pixels = cv2.bitwise_and(processed_cv, processed_cv, mask=mask_dark)
-        # We need to put these into final_cv. 
-        # final_cv is 255. We want to overwrite with dark_text_pixels where mask is set.
-        # Logic: (Final & ~Mask) | (Source & Mask)
-        # Since Final is all 1s: (~Mask) | (Source & Mask)
-        
-        fg_dark = cv2.bitwise_and(processed_cv, processed_cv, mask=mask_dark)
-        bg_mask_dark_inv = cv2.bitwise_not(mask_dark)
-        final_cv = cv2.bitwise_and(final_cv, final_cv, mask=bg_mask_dark_inv) # Clear holes
-        final_cv = cv2.add(final_cv, fg_dark) # Fill text
-        
-        # B. Apply Light Text (INVERT Original Grayscale -> Becomes Dark)
-        # Where mask_light is white -> Copy INVERTED source pixel
-        src_inv = cv2.bitwise_not(processed_cv)
-        fg_light = cv2.bitwise_and(src_inv, src_inv, mask=mask_light)
-        
-        bg_mask_light_inv = cv2.bitwise_not(mask_light)
-        final_cv = cv2.bitwise_and(final_cv, final_cv, mask=bg_mask_light_inv) # Clear holes 
-        # Note: If overlaps occur, this might overwrite dark text. 
-        # But thresh and ~thresh are disjoint. So masks shouldn't overlap pixels.
-        
-        final_cv = cv2.add(final_cv, fg_light)
-
-        log_and_save("Dual-Polarity Output", final_cv, "06_dual_final")
+        # 3. OCR sees this image directly
+        final_cv = processed_cv
         
         # 7. Padding
         padding_color = [255,255,255] if len(final_cv.shape) == 3 else 255
         final_cv = cv2.copyMakeBorder(final_cv, padding, padding, padding, padding, cv2.BORDER_CONSTANT, value=padding_color)
         log_and_save("Final Hybrid (Gray+Mask)", final_cv, "06_final")
         
-        # Convert back to PIL
         # Convert back to PIL
         processed_pil = Image.fromarray(final_cv)
         
@@ -289,11 +180,11 @@ class AsyncEngine(metaclass=SingletonMeta):
             if not final_text: continue
             
             # Scale coordinates back to original image
-            # x_orig = (x_ocr - padding) / scale
+            # x_orig = (x_ocr - padding)  (No scale factor in simplified pipeline)
             scaled_bbox = []
             for point in bbox_points:
-                x = (point[0] - padding) / scale_factor
-                y = (point[1] - padding) / scale_factor
+                x = (point[0] - padding)
+                y = (point[1] - padding)
                 scaled_bbox.append([int(x), int(y)])
                 
             final_results.append((scaled_bbox, final_text, conf))
@@ -385,10 +276,10 @@ class AsyncEngine(metaclass=SingletonMeta):
             
             for item in items_to_draw:
                 bbox = item["bbox"] 
-                l = (bbox[0] * scale_factor) + padding
-                t = (bbox[1] * scale_factor) + padding
-                r = (bbox[2] * scale_factor) + padding
-                b = (bbox[3] * scale_factor) + padding
+                l = (bbox[0]) + padding
+                t = (bbox[1]) + padding
+                r = (bbox[2]) + padding
+                b = (bbox[3]) + padding
                 
                 draw.rectangle([l, t, r, b], outline="blue", width=4)
                 try:
@@ -398,10 +289,10 @@ class AsyncEngine(metaclass=SingletonMeta):
             # Draw Filtered Items (RED)
             for item in filtered_metadata:
                 bbox = item["bbox"]
-                l = (bbox[0] * scale_factor) + padding
-                t = (bbox[1] * scale_factor) + padding
-                r = (bbox[2] * scale_factor) + padding
-                b = (bbox[3] * scale_factor) + padding
+                l = (bbox[0]) + padding
+                t = (bbox[1]) + padding
+                r = (bbox[2]) + padding
+                b = (bbox[3]) + padding
                 
                 # Dashed or Thinner line for rejected? Just Red.
                 draw.rectangle([l, t, r, b], outline="red", width=2)
@@ -544,6 +435,73 @@ class AsyncEngine(metaclass=SingletonMeta):
                 "original": full_text,
                 "bg_color": bg_color
             }
+
+        # ---- DUPLICATE / NESTED FILTERING (Common for all modes, but critical for Manga) ----
+        # Remove small boxes that are fully contained within larger boxes
+        # (e.g. RapidOCR detecting a whole paragraph AND a line inside it)
+        if len(elements) > 1:
+            elements.sort(key=lambda x: (x["bbox"][2]-x["bbox"][0]) * (x["bbox"][3]-x["bbox"][1]), reverse=True) # Sort by Area Desc
+            filtered = []
+            
+            for i, item in enumerate(elements):
+                is_nested = False
+                ix, iy, iw, ih = get_vals(item)
+                item_area = iw * ih
+                
+                for kept in filtered:
+                    kx, ky, kw, kh = get_vals(kept)
+                    
+                    # Check if item is inside kept
+                    # Overlap Box
+                    oxa = max(ix, kx); oxb = min(ix+iw, kx+kw)
+                    oya = max(iy, ky); oyb = min(iy+ih, ky+kh)
+                    
+                    ow = max(0, oxb - oxa)
+                    oh = max(0, oyb - oya)
+                    overlap_area = ow * oh
+                    
+                    # If overlap is > 50% of item's area, it's nested/redundant
+                    if item_area > 0 and overlap_area / item_area > 0.50:
+                        is_nested = True
+                        
+                        # CRITICAL FIX: Ensure no text is lost!
+                        # Check if the small item's text is already in the kept item
+                        small_text = item['original'].strip()
+                        big_text = kept['original']
+                        
+                        # Simple substring check (or fuzzy?)
+                        # 1. Exact or Substring
+                        if small_text in big_text:
+                            # Already present perfectly (e.g. redundant detection)
+                            # print(f"[DEBUG] Removed redundant nested text: '{small_text}'")
+                            pass 
+                        else:
+                            # Text MIGHT be missing or different
+                            # Heuristic: If similarity is high, ignore.
+                            # But if completely different, APPEND it.
+                            # For safety, let's append if it's not a substring.
+                            # But avoid duplication like "Hello World Hello"
+                            
+                            # Check words
+                            small_words = set(small_text.split())
+                            big_words = set(big_text.split())
+                            
+                            # If most words are already there, skip
+                            common = small_words.intersection(big_words)
+                            if len(common) / len(small_words) > 0.8:
+                                # 80% of words overlap -> Likely duplicate
+                                pass 
+                            else:
+                                # Append missing text to big box
+                                # print(f"[DEBUG] Merging nested text: '{small_text}' into '{big_text}'")
+                                kept['original'] += " " + small_text
+                                
+                        break
+                
+                if not is_nested:
+                    filtered.append(item)
+            
+            elements = filtered
 
         if mode == "line":
             # --- IMPROVED DOCUMENT MODE: Smart Paragraphs ---
