@@ -452,12 +452,24 @@ const homeUrl = getRelativeLocaleUrl(currentLang, "");
 		color: var(--color-text-main);
 		transition: all 0.2s ease;
 		overflow: hidden;
+		padding: 0;
+	}
+
+	.dropdown-trigger.has-avatar {
+		border: none; /* Let the image handle the border */
+		padding: 0; /* Ensure no button padding */
+		box-shadow: 0 4px 12px rgba(236, 72, 153, 0.15);
 	}
 
 	.dropdown-trigger:hover,
 	.dropdown-trigger.active {
 		background: var(--glass-bg-hover);
-		border-color: var(--color-primary);
+		/* Only show border on hover if it DOESN'T have an avatar, or maybe just subtle shadow */
+	}
+
+	.dropdown-trigger.has-avatar:hover {
+		/* Specific hover state for avatar button if needed */
+		transform: translateY(-1px);
 	}
 
 	.dropdown-trigger svg {
@@ -468,8 +480,13 @@ const homeUrl = getRelativeLocaleUrl(currentLang, "");
 	.user-avatar {
 		width: 100%;
 		height: 100%;
+		border-radius: 50%;
+		border: 2px solid #ec4899; /* Pink-500 */
 		object-fit: cover;
-		background-color: var(--glass-bg-hover);
+		background-color: #f3f4f6; /* Gray-100 to match profile card */
+		padding: 3px; /* Match profile card padding */
+		box-sizing: border-box;
+		display: block;
 	}
 
 	.dropdown-menu {
@@ -684,19 +701,28 @@ const homeUrl = getRelativeLocaleUrl(currentLang, "");
 
 				let photoURL = user.photoURL || fallbackUrl;
 				if (photoURL.includes("googleusercontent.com")) {
-					photoURL = photoURL.replace(/=s\d+(-c)?$/, "") + "=s192-c";
+					// Remove crop flag (-c) to prevent zooming in too much
+					photoURL = photoURL.replace(/=s\d+(-c)?$/, "") + "=s96";
 				}
+
+				// CRITICAL: Set referrerPolicy BEFORE src to avoid 403
+				img.referrerPolicy = "no-referrer";
 				img.src = photoURL;
 				img.alt = "Profile";
 				img.className = "user-avatar";
 
-				// Fix for Google images returning 403 on some origins
-				img.referrerPolicy = "no-referrer";
+				// Ensure the button has the class for styling
+				menuBtn.classList.add("has-avatar");
 
 				// Fallback if image fails to load
 				img.onerror = () => {
+					console.warn(
+						"Avatar failed to load, using fallback",
+						photoURL,
+					);
 					if (img.src !== fallbackUrl) {
 						img.src = fallbackUrl;
+						img.referrerPolicy = "no-referrer";
 					}
 				};
 
@@ -710,6 +736,7 @@ const homeUrl = getRelativeLocaleUrl(currentLang, "");
 
 			// Reset Trigger to Person Icon
 			if (menuBtn) {
+				menuBtn.classList.remove("has-avatar");
 				menuBtn.innerHTML =
 					'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="person-icon"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>';
 			}

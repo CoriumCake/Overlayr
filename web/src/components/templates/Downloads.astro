@@ -8,7 +8,7 @@ interface Props {
     lang: "en" | "ja" | "es";
 }
 const { lang } = Astro.props;
-11: const t = useTranslations(lang);
+const t = useTranslations(lang);
 
 // This data could be fetched from GitHub API at build time
 // For now, we manually list releases or mock it

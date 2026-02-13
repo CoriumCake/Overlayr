@@ -61,6 +61,11 @@ export const ui = {
         'support.faq3.a': 'Open the Overlayr dashboard, navigate to Settings > Interpretation, and select your target language from the dropdown menu.',
         'support.faq4.q': 'My overlay isn\'t showing up.',
         'support.faq4.a': 'Ensure that your game is running in "Borderless Window" or "Windowed" mode for best compatibility. Exclusive Fullscreen support requires the "Hook Mode" enabled in settings.',
+        // Success Page
+        'success.title': 'Payment Successful!',
+        'success.message': 'Thank you for your purchase. We are activating your subscription...',
+        'success.received': 'It\'s taking a moment, but your payment was received.',
+        'success.profile': 'Go to Profile',
     },
     // ... (existing translations) ...
     th: {
@@ -116,6 +121,11 @@ export const ui = {
         'support.faq3.a': 'เปิด Dashboard ของโปรแกรม ไปที่เมนู Settings > Interpretation และเลือกภาษาที่ต้องการจากรายการ',
         'support.faq4.q': 'กรณี Overlay ไม่แสดงผล',
         'support.faq4.a': 'ตรวจสอบให้แน่ใจว่าแอปพลิเคชันทำงานในโหมด "Borderless Window" หรือ "Windowed" เพื่อความเข้ากันได้สูงสุด หากต้องการใช้งานในโหมด "Exclusive Fullscreen" จำเป็นต้องเปิดใช้งาน "Hook Mode" ในการตั้งค่า',
+        // Success Page
+        'success.title': 'การชำระเงินเสร็จสมบูรณ์!',
+        'success.message': 'ขอบคุณสำหรับการสั่งซื้อ เรากำลังเปิดใช้งานการเป็นสมาชิกของคุณ...',
+        'success.received': 'กำลังดำเนินการอยู่ แต่เราได้รับเงินที่ชำระแล้ว',
+        'success.profile': 'ไปที่หน้าโปรไฟล์',
     },
 
     ja: {
@@ -171,6 +181,11 @@ export const ui = {
         'support.faq3.a': 'ダッシュボードを開き、設定 > Interpretation に移動して、ドロップダウンメニューから目的の言語を選択してください。',
         'support.faq4.q': 'オーバーレイが表示されません。',
         'support.faq4.a': '互換性を高めるために、ゲームを「ボーダレスウィンドウ」または「ウィンドウ」モードで実行してください。排他的フルスクリーンのサポートには、設定で「フックモード」を有効にする必要があります。',
+        // Success Page
+        'success.title': 'お支払いが完了しました！',
+        'success.message': 'ご購入ありがとうございます。サブスクリプションを有効化しています...',
+        'success.received': '少し時間がかかっていますが、お支払いは受領されました。',
+        'success.profile': 'プロフィールへ',
     },
 
     es: {
@@ -226,6 +241,11 @@ export const ui = {
         'support.faq3.a': 'Abre el panel de Overlayr, ve a Configuración > Interpretación y selecciona tu idioma de destino en el menú desplegable.',
         'support.faq4.q': 'Mi superposición no aparece.',
         'support.faq4.a': 'Asegúrate de que tu juego se ejecute en modo "Ventana sin bordes" o "Ventana" para una mejor compatibilidad. El soporte exclusivo de pantalla completa requiere activar el "Modo Hook" en la configuración.',
+        // Success Page
+        'success.title': '¡Pago Exitoso!',
+        'success.message': 'Gracias por su compra. Estamos activando su suscripción...',
+        'success.received': 'Está tardando un momento, pero su pago fue recibido.',
+        'success.profile': 'Ir al Perfil',
     },
 } as const;
 

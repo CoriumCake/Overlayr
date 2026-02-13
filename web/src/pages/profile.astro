@@ -6,6 +6,7 @@ import Layout from "../layouts/Layout.astro";
     <div class="profile-section">
         <div class="container">
             <div class="profile-card">
+                <!-- User Header -->
                 <div class="header">
                     <img
                         id="avatar"
@@ -23,51 +24,251 @@ import Layout from "../layouts/Layout.astro";
 
                 <div class="divider"></div>
 
+                <!-- Subscription Status -->
                 <div class="subscription-status">
-                    <h2>Subscription Status</h2>
-                    <div id="loading-spinner" class="spinner"></div>
+                    <div class="section-header">
+                        <h2>Subscription</h2>
+                        <span id="status-badge" class="status-badge hidden"
+                            >Active</span
+                        >
+                    </div>
 
-                    <div id="plan-details" class="details hidden">
-                        <div class="status-row">
-                            <span class="label">Current Plan:</span>
-                            <span id="plan-name" class="value badge"
-                                >Checking...</span
+                    <!-- Loading Skeleton -->
+                    <div id="loading-skeleton" class="skeleton-container">
+                        <div class="skeleton-row">
+                            <div class="skeleton-bar w60"></div><div
+                                class="skeleton-bar w30"
+                            >
+                            </div>
+                        </div>
+                        <div class="skeleton-row">
+                            <div class="skeleton-bar w40"></div><div
+                                class="skeleton-bar w50"
+                            >
+                            </div>
+                        </div>
+                        <div class="skeleton-row">
+                            <div class="skeleton-bar w50"></div><div
+                                class="skeleton-bar w30"
+                            >
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Pro User Details -->
+                    <div id="plan-details" class="sub-card hidden">
+                        <div class="plan-header">
+                            <div class="plan-icon" id="plan-icon">⚡</div>
+                            <div class="plan-info">
+                                <span id="plan-name" class="plan-name">Pro</span
+                                >
+                                <span id="plan-price" class="plan-price"></span>
+                            </div>
+                        </div>
+
+                        <div class="detail-rows">
+                            <div class="detail-row">
+                                <span class="detail-label">Status</span>
+                                <span id="sub-status" class="detail-value">
+                                    <span class="dot dot-green"></span>
+                                    Active
+                                </span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Billing Period</span>
+                                <span id="billing-period" class="detail-value"
+                                    >Monthly</span
+                                >
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label" id="renewal-label"
+                                    >Next Renewal</span
+                                >
+                                <span id="renewal-date" class="detail-value"
+                                    >-</span
+                                >
+                            </div>
+                        </div>
+
+                        <!-- Features -->
+                        <div
+                            id="features-container"
+                            class="features-section hidden"
+                        >
+                            <h3>Included Features</h3>
+                            <ul id="features-list" class="features-list">
+                                <!-- Features populated via JS -->
+                            </ul>
+                        </div>
+
+                        <!-- Pro Action Buttons -->
+                        <div class="sub-actions">
+                            <button id="btn-manage" class="btn btn-manage">
+                                <svg
+                                    width="16"
+                                    height="16"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    ><rect
+                                        x="3"
+                                        y="4"
+                                        width="18"
+                                        height="18"
+                                        rx="2"
+                                        ry="2"></rect><line
+                                        x1="16"
+                                        y1="2"
+                                        x2="16"
+                                        y2="6"></line><line
+                                        x1="8"
+                                        y1="2"
+                                        x2="8"
+                                        y2="6"></line><line
+                                        x1="3"
+                                        y1="10"
+                                        x2="21"
+                                        y2="10"></line></svg
+                                >
+                                Manage Billing
+                            </button>
+                            <a href="/#pricing" class="btn btn-change">
+                                <svg
+                                    width="16"
+                                    height="16"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    ><polyline points="23 4 23 10 17 10"
+                                    ></polyline><polyline
+                                        points="1 20 1 14 7 14"></polyline><path
+                                        d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"
+                                    ></path></svg
+                                >
+                                Change Plan
+                            </a>
+                            <button id="btn-cancel" class="btn btn-cancel">
+                                <svg
+                                    width="16"
+                                    height="16"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    ><circle cx="12" cy="12" r="10"
+                                    ></circle><line
+                                        x1="15"
+                                        y1="9"
+                                        x2="9"
+                                        y2="15"></line><line
+                                        x1="9"
+                                        y1="9"
+                                        x2="15"
+                                        y2="15"></line></svg
+                                >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Cancel Confirmation Modal -->
+                    <div id="cancel-modal" class="modal-overlay hidden">
+                        <div class="modal-card">
+                            <div class="modal-icon">⚠️</div>
+                            <h3>Cancel Subscription?</h3>
+                            <p>
+                                You'll keep access until the end of your current
+                                billing period. After that, you'll be moved to
+                                the Free Tier.
+                            </p>
+                            <div id="cancel-end-date" class="modal-date"></div>
+                            <div class="modal-actions">
+                                <button
+                                    id="btn-cancel-confirm"
+                                    class="btn btn-danger">Yes, Cancel</button
+                                >
+                                <button
+                                    id="btn-cancel-dismiss"
+                                    class="btn btn-secondary">Keep Plan</button
+                                >
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Canceling Banner -->
+                    <div id="canceling-banner" class="canceling-banner hidden">
+                        <div class="banner-content">
+                            <span class="banner-icon">⏳</span>
+                            <div class="banner-text">
+                                <strong>Subscription canceling</strong>
+                                <span id="cancel-info"
+                                    >Access until <span id="cancel-date">-</span
+                                    ></span
+                                >
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Free Tier -->
+                    <div id="no-plan" class="sub-card sub-card-free hidden">
+                        <div class="free-header">
+                            <div class="plan-icon plan-icon-free">🆓</div>
+                            <div class="plan-info">
+                                <span class="plan-name">Free Tier</span>
+                                <span class="plan-price-free">No cost</span>
+                            </div>
+                        </div>
+
+                        <div id="trial-info" class="trial-info hidden">
+                            <div class="trial-progress-bar">
+                                <div id="trial-fill" class="trial-fill"></div>
+                            </div>
+                            <span id="trial-text" class="trial-text"
+                                >Trial: 7 days remaining</span
                             >
                         </div>
-                        <div class="status-row">
-                            <span class="label">Status:</span>
-                            <span id="sub-status" class="value">Active</span>
-                        </div>
-                        <div class="status-row">
-                            <span class="label">Expires:</span>
-                            <span id="expiry-date" class="value">-</span>
-                        </div>
-                    </div>
 
-                    <div
-                        id="features-container"
-                        class="features-section hidden"
-                    >
-                        <h3>Included Features</h3>
-                        <ul id="features-list" class="features-list">
-                            <!-- Features populated via JS -->
-                        </ul>
-                    </div>
+                        <div class="free-features">
+                            <p class="free-desc">Unlock premium features:</p>
+                            <ul class="tease-list">
+                                <li>🔓 Advanced OCR Engine</li>
+                                <li>🔓 Unlimited Translations</li>
+                                <li>🔓 Zero Latency Mode</li>
+                                <li>🔓 Priority Support</li>
+                            </ul>
+                        </div>
 
-                    <div id="no-plan" class="details hidden">
-                        <p>
-                            You are currently on the <strong>Free Tier</strong>.
-                        </p>
-                        <a href="/#pricing" class="upgrade-btn"
-                            >Upgrade to Pro</a
-                        >
+                        <a href="/#pricing" class="btn btn-upgrade">
+                            <span>Upgrade to Pro</span>
+                            <svg
+                                width="16"
+                                height="16"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                ><line x1="5" y1="12" x2="19" y2="12"
+                                ></line><polyline points="12 5 19 12 12 19"
+                                ></polyline></svg
+                            >
+                        </a>
                     </div>
                 </div>
 
+                <!-- Sign Out -->
                 <div class="actions">
-                    <button id="btn-logout" class="logout-btn">Sign Out</button>
-                    <button id="btn-manage" class="manage-btn hidden"
-                        >Manage Subscription</button
+                    <button id="btn-logout" class="btn btn-logout"
+                        >Sign Out</button
                     >
                 </div>
             </div>
@@ -82,7 +283,6 @@ import Layout from "../layouts/Layout.astro";
         align-items: center;
         justify-content: center;
         padding: 2rem;
-        /* Revert to default/transparent so global noise and orbs show through */
         position: relative;
         z-index: 1;
     }
@@ -93,14 +293,15 @@ import Layout from "../layouts/Layout.astro";
     }
 
     .profile-card {
-        background-color: #ffffff; /* White Card */
-        border: 1px solid rgba(0, 0, 0, 0.1);
+        background-color: #ffffff;
+        border: 1px solid rgba(0, 0, 0, 0.08);
         border-radius: 1.5rem;
         padding: 2.5rem;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.05);
-        color: #1a1a1a; /* Force dark text for contrast on white */
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.06);
+        color: #1a1a1a;
     }
 
+    /* ── Header ── */
     .header {
         display: flex;
         align-items: center;
@@ -110,9 +311,11 @@ import Layout from "../layouts/Layout.astro";
 
     .avatar {
         border-radius: 50%;
-        border: 3px solid #ec4899; /* Pink-500 */
+        border: 3px solid #ec4899;
         object-fit: cover;
         background-color: #f3f4f6;
+        padding: 3px;
+        box-sizing: border-box;
     }
 
     .name {
@@ -133,51 +336,214 @@ import Layout from "../layouts/Layout.astro";
         margin-block: 2rem;
     }
 
-    .subscription-status h2 {
+    /* ── Section Header ── */
+    .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 1.25rem;
+    }
+
+    .section-header h2 {
         font-size: 1.25rem;
-        margin-bottom: 1.5rem;
+        margin: 0;
         color: #111;
     }
 
-    .logout-btn {
-        background-color: #f3f4f6;
-        color: #374151;
-        border: 1px solid #e5e7eb;
-    }
-
-    .logout-btn:hover {
-        background-color: #e5e7eb;
-    }
-
-    .manage-btn {
-        background-color: #111827; /* Dark Gray / Black */
-        color: white;
-        padding: 0.75rem 1.5rem;
-        border-radius: 0.5rem;
+    .status-badge {
+        font-size: 0.75rem;
         font-weight: 600;
-        cursor: pointer;
-        transition: all 0.2s;
-        border: none;
-        flex: 1;
+        padding: 0.25rem 0.75rem;
+        border-radius: 999px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
     }
 
-    .manage-btn:hover {
-        background-color: #000;
-        transform: translateY(-1px);
+    .status-badge.active {
+        background-color: #ecfdf5;
+        color: #059669;
     }
 
+    .status-badge.canceling {
+        background-color: #fffbeb;
+        color: #d97706;
+    }
+
+    .status-badge.past_due {
+        background-color: #fef2f2;
+        color: #dc2626;
+    }
+
+    .status-badge.trialing {
+        background-color: #eff6ff;
+        color: #2563eb;
+    }
+
+    /* ── Loading Skeleton ── */
+    .skeleton-container {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        padding: 1.5rem;
+        background: #fafafa;
+        border-radius: 1rem;
+    }
+
+    .skeleton-row {
+        display: flex;
+        justify-content: space-between;
+    }
+
+    .skeleton-bar {
+        height: 14px;
+        background: linear-gradient(
+            90deg,
+            #e5e7eb 25%,
+            #f3f4f6 50%,
+            #e5e7eb 75%
+        );
+        background-size: 200% 100%;
+        border-radius: 6px;
+        animation: shimmer 1.5s ease-in-out infinite;
+    }
+
+    .w30 {
+        width: 30%;
+    }
+    .w40 {
+        width: 40%;
+    }
+    .w50 {
+        width: 50%;
+    }
+    .w60 {
+        width: 60%;
+    }
+
+    @keyframes shimmer {
+        0% {
+            background-position: 200% 0;
+        }
+        100% {
+            background-position: -200% 0;
+        }
+    }
+
+    /* ── Subscription Card ── */
+    .sub-card {
+        background: #fafafa;
+        border: 1px solid #f0f0f0;
+        border-radius: 1rem;
+        padding: 1.5rem;
+    }
+
+    .plan-header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1.25rem;
+    }
+
+    .plan-icon {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #ec4899, #8b5cf6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.25rem;
+    }
+
+    .plan-icon-free {
+        background: linear-gradient(135deg, #6b7280, #9ca3af);
+    }
+
+    .plan-info {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .plan-name {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: #111;
+    }
+
+    .plan-price {
+        font-size: 0.85rem;
+        color: #6b7280;
+    }
+
+    .plan-price-free {
+        font-size: 0.85rem;
+        color: #9ca3af;
+    }
+
+    /* ── Detail Rows ── */
+    .detail-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+    }
+
+    .detail-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.65rem 0;
+        border-bottom: 1px solid #f0f0f0;
+    }
+
+    .detail-row:last-child {
+        border-bottom: none;
+    }
+
+    .detail-label {
+        font-size: 0.875rem;
+        color: #6b7280;
+    }
+
+    .detail-value {
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: #111;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+    }
+
+    .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+    }
+
+    .dot-green {
+        background-color: #10b981;
+    }
+    .dot-amber {
+        background-color: #f59e0b;
+    }
+    .dot-red {
+        background-color: #ef4444;
+    }
+
+    /* ── Features ── */
     .features-section {
-        margin-top: 2rem;
-        padding-top: 1.5rem;
-        border-top: 1px solid #f3f4f6;
+        margin-top: 1.25rem;
+        padding-top: 1rem;
+        border-top: 1px solid #f0f0f0;
     }
 
     .features-section h3 {
-        font-size: 0.9rem;
+        font-size: 0.8rem;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: #6b7280;
-        margin-bottom: 1rem;
+        letter-spacing: 0.06em;
+        color: #9ca3af;
+        margin-bottom: 0.75rem;
+        margin-top: 0;
     }
 
     .features-list {
@@ -186,107 +552,299 @@ import Layout from "../layouts/Layout.astro";
         margin: 0;
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 0.5rem;
+        gap: 0.4rem;
     }
 
     .features-list li {
-        font-size: 0.875rem;
+        font-size: 0.825rem;
         color: #374151;
         display: flex;
         align-items: center;
-        gap: 0.5rem;
+        gap: 0.4rem;
     }
 
     .features-list li::before {
         content: "✓";
         color: #10b981;
         font-weight: bold;
+        font-size: 0.75rem;
     }
 
-    .status-row {
+    /* ── Subscription Actions ── */
+    .sub-actions {
         display: flex;
-        justify-content: space-between;
+        gap: 0.5rem;
+        margin-top: 1.25rem;
+        flex-wrap: wrap;
+    }
+
+    .btn {
+        display: inline-flex;
         align-items: center;
-        padding-block: 0.75rem;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-    }
-
-    .status-row:last-child {
-        border-bottom: none;
-    }
-
-    .label {
-        color: #666; /* Muted text for white bg */
-    }
-
-    .value {
-        font-weight: 600;
-        color: #000; /* Dark text for white bg */
-    }
-
-    .badge {
-        background-color: rgba(236, 72, 153, 0.1);
-        color: #f472b6;
-        padding: 0.25rem 0.75rem;
-        border-radius: 999px;
-        font-size: 0.875rem;
-    }
-
-    .actions {
-        margin-top: 2.5rem;
-        display: flex;
-        gap: 1rem;
-    }
-
-    .logout-btn,
-    .upgrade-btn {
-        padding: 0.75rem 1.5rem;
+        justify-content: center;
+        gap: 0.4rem;
+        padding: 0.6rem 1rem;
         border-radius: 0.5rem;
         font-weight: 600;
+        font-size: 0.825rem;
         cursor: pointer;
         transition: all 0.2s;
         text-decoration: none;
-        display: inline-block;
         border: none;
+        white-space: nowrap;
     }
 
-    .logout-btn {
+    .btn svg {
+        flex-shrink: 0;
+    }
+
+    .btn-manage {
+        background-color: #111827;
+        color: white;
+        flex: 1;
+    }
+
+    .btn-manage:hover {
+        background-color: #000;
+        transform: translateY(-1px);
+    }
+
+    .btn-change {
         background-color: #f3f4f6;
         color: #374151;
         border: 1px solid #e5e7eb;
+        flex: 1;
     }
 
-    .logout-btn:hover {
+    .btn-change:hover {
+        background-color: #e5e7eb;
+        transform: translateY(-1px);
+    }
+
+    .btn-cancel {
+        background-color: transparent;
+        color: #9ca3af;
+        flex: 0;
+        padding: 0.6rem 0.75rem;
+    }
+
+    .btn-cancel:hover {
+        color: #ef4444;
+        background-color: #fef2f2;
+    }
+
+    .btn-upgrade {
+        display: flex;
+        width: 100%;
+        background: linear-gradient(135deg, #ec4899, #8b5cf6);
+        color: white;
+        text-align: center;
+        margin-top: 1rem;
+    }
+
+    .btn-upgrade:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(236, 72, 153, 0.3);
+    }
+
+    .btn-logout {
+        background-color: #f3f4f6;
+        color: #374151;
+        border: 1px solid #e5e7eb;
+        width: 100%;
+    }
+
+    .btn-logout:hover {
         background-color: #e5e7eb;
     }
 
-    .upgrade-btn {
-        background: linear-gradient(to right, #ec4899, #8b5cf6);
-        color: white;
-        text-align: center;
+    .btn-secondary {
+        background-color: #f3f4f6;
+        color: #374151;
+        border: 1px solid #e5e7eb;
+        flex: 1;
     }
 
-    .upgrade-btn:hover {
-        transform: scale(1.05);
+    .btn-secondary:hover {
+        background-color: #e5e7eb;
+    }
+
+    .btn-danger {
+        background-color: #ef4444;
+        color: white;
+        flex: 1;
+    }
+
+    .btn-danger:hover {
+        background-color: #dc2626;
+    }
+
+    /* ── Cancel Modal ── */
+    .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(4px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+        animation: fadeIn 0.2s ease-out;
+    }
+
+    .modal-card {
+        background: white;
+        border-radius: 1.25rem;
+        padding: 2rem;
+        max-width: 420px;
+        width: 90%;
+        text-align: center;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+    }
+
+    .modal-icon {
+        font-size: 2.5rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .modal-card h3 {
+        font-size: 1.25rem;
+        margin: 0 0 0.5rem;
+        color: #111;
+    }
+
+    .modal-card p {
+        color: #6b7280;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        margin: 0 0 1rem;
+    }
+
+    .modal-date {
+        font-size: 0.85rem;
+        color: #d97706;
+        font-weight: 600;
+        margin-bottom: 1.25rem;
+    }
+
+    .modal-actions {
+        display: flex;
+        gap: 0.75rem;
+    }
+
+    /* ── Canceling Banner ── */
+    .canceling-banner {
+        background: linear-gradient(135deg, #fffbeb, #fef3c7);
+        border: 1px solid #fde68a;
+        border-radius: 0.75rem;
+        padding: 1rem;
+        margin-top: 0.75rem;
+    }
+
+    .banner-content {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+    }
+
+    .banner-icon {
+        font-size: 1.25rem;
+    }
+
+    .banner-text {
+        display: flex;
+        flex-direction: column;
+        font-size: 0.85rem;
+        color: #92400e;
+    }
+
+    .banner-text strong {
+        font-size: 0.9rem;
+    }
+
+    /* ── Free Tier ── */
+    .sub-card-free {
+        background: linear-gradient(135deg, #fafafa, #f5f5f5);
+    }
+
+    .trial-info {
+        margin-bottom: 1rem;
+    }
+
+    .trial-progress-bar {
+        height: 6px;
+        background: #e5e7eb;
+        border-radius: 3px;
+        overflow: hidden;
+        margin-bottom: 0.4rem;
+    }
+
+    .trial-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #ec4899, #8b5cf6);
+        border-radius: 3px;
+        transition: width 0.5s ease;
+    }
+
+    .trial-text {
+        font-size: 0.8rem;
+        color: #6b7280;
+    }
+
+    .free-features {
+        margin-top: 0.75rem;
+    }
+
+    .free-desc {
+        font-size: 0.825rem;
+        color: #6b7280;
+        margin: 0 0 0.5rem;
+    }
+
+    .tease-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.35rem;
+    }
+
+    .tease-list li {
+        font-size: 0.8rem;
+        color: #9ca3af;
+    }
+
+    /* ── Actions ── */
+    .actions {
+        margin-top: 2rem;
     }
 
     .hidden {
-        display: none;
+        display: none !important;
     }
 
-    .spinner {
-        width: 30px;
-        height: 30px;
-        border: 3px solid rgba(255, 255, 255, 0.1);
-        border-radius: 50%;
-        border-top-color: #ec4899;
-        animation: spin 1s ease-in-out infinite;
-        margin: 0 auto;
-    }
-
-    @keyframes spin {
+    @keyframes fadeIn {
+        from {
+            opacity: 0;
+        }
         to {
-            transform: rotate(360deg);
+            opacity: 1;
+        }
+    }
+
+    @media (max-width: 480px) {
+        .profile-card {
+            padding: 1.5rem;
+        }
+
+        .sub-actions {
+            flex-direction: column;
+        }
+
+        .features-list,
+        .tease-list {
+            grid-template-columns: 1fr;
         }
     }
 </style>
@@ -300,25 +858,123 @@ import Layout from "../layouts/Layout.astro";
         name: document.getElementById("user-name"),
         email: document.getElementById("user-email"),
         avatar: document.getElementById("avatar") as HTMLImageElement,
-        spinner: document.getElementById("loading-spinner"),
+        skeleton: document.getElementById("loading-skeleton"),
         planDetails: document.getElementById("plan-details"),
         noPlan: document.getElementById("no-plan"),
         planName: document.getElementById("plan-name"),
-        expiry: document.getElementById("expiry-date"),
-        logoutBtn: document.getElementById("btn-logout"),
-        manageBtn: document.getElementById("btn-manage"),
+        planPrice: document.getElementById("plan-price"),
+        planIcon: document.getElementById("plan-icon"),
+        statusBadge: document.getElementById("status-badge"),
+        subStatus: document.getElementById("sub-status"),
+        billingPeriod: document.getElementById("billing-period"),
+        renewalLabel: document.getElementById("renewal-label"),
+        renewalDate: document.getElementById("renewal-date"),
         featuresContainer: document.getElementById("features-container"),
         featuresList: document.getElementById("features-list"),
+        manageBtn: document.getElementById("btn-manage"),
+        cancelBtn: document.getElementById("btn-cancel"),
+        logoutBtn: document.getElementById("btn-logout"),
+        cancelModal: document.getElementById("cancel-modal"),
+        cancelConfirm: document.getElementById("btn-cancel-confirm"),
+        cancelDismiss: document.getElementById("btn-cancel-dismiss"),
+        cancelEndDate: document.getElementById("cancel-end-date"),
+        cancelingBanner: document.getElementById("canceling-banner"),
+        cancelDate: document.getElementById("cancel-date"),
+        trialInfo: document.getElementById("trial-info"),
+        trialFill: document.getElementById("trial-fill") as HTMLElement,
+        trialText: document.getElementById("trial-text"),
     };
 
     const FEATURE_LABELS: Record<string, string> = {
-        advanced_ocr: "Advanced OCR Engine",
+        advanced_ocr: "Advanced OCR",
         priority_support: "Priority Support",
         premium_ai: "Premium AI Models",
         no_watermark: "No Watermark",
         unlimited_translations: "Unlimited Translations",
-        zero_latency: "Zero Latency Mode",
+        zero_latency: "Zero Latency",
     };
+
+    const PLAN_ICONS: Record<string, string> = {
+        pro: "⚡",
+        plus: "🚀",
+        ultimate: "👑",
+    };
+
+    function formatDate(dateStr: string | number): string {
+        return new Date(dateStr).toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+        });
+    }
+
+    async function fetchSubscriptionDetails(subscriptionId: string) {
+        try {
+            const res = await fetch("/api/subscription-details", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ subscriptionId }),
+            });
+            if (!res.ok) return null;
+            return await res.json();
+        } catch {
+            return null;
+        }
+    }
+
+    async function cancelSubscription(subscriptionId: string, uid: string) {
+        const res = await fetch("/api/cancel-subscription", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ subscriptionId, uid }),
+        });
+        if (!res.ok) throw new Error("Cancel failed");
+        return await res.json();
+    }
+
+    function showStatusBadge(status: string) {
+        if (!els.statusBadge) return;
+        els.statusBadge.classList.remove(
+            "hidden",
+            "active",
+            "canceling",
+            "past_due",
+            "trialing",
+        );
+
+        const labels: Record<string, string> = {
+            active: "Active",
+            canceling: "Canceling",
+            past_due: "Past Due",
+            trialing: "Trial",
+            canceled: "Canceled",
+        };
+
+        const cls = status === "canceled" ? "past_due" : status;
+        els.statusBadge.classList.add(cls);
+        els.statusBadge.textContent = labels[status] || status;
+    }
+
+    function showSubStatus(status: string) {
+        if (!els.subStatus) return;
+
+        const dotClass =
+            status === "active"
+                ? "dot-green"
+                : status === "canceling"
+                  ? "dot-amber"
+                  : "dot-red";
+        const label =
+            status === "active"
+                ? "Active"
+                : status === "canceling"
+                  ? "Canceling"
+                  : status === "past_due"
+                    ? "Past Due"
+                    : status;
+
+        els.subStatus.innerHTML = `<span class="dot ${dotClass}"></span> ${label.charAt(0).toUpperCase() + label.slice(1)}`;
+    }
 
     onAuthStateChanged(auth, async (user) => {
         if (!user) {
@@ -326,15 +982,13 @@ import Layout from "../layouts/Layout.astro";
             return;
         }
 
-        // 1. Show Basic Info
+        // Show Basic Info
         if (els.name) els.name.innerText = user.displayName || "User";
         if (els.email) els.email.innerText = user.email || "";
         if (els.avatar && user.photoURL) {
             let url = user.photoURL;
             if (url.includes("googleusercontent.com")) {
-                // Ensure high-resolution square crop for Google images
-                // Using a safer regex that replaces existing sizing or appends it
-                url = url.replace(/=s\d+(-c)?$/, "") + "=s384-c";
+                url = url.replace(/=s\d+(-c)?$/, "") + "=s384";
                 els.avatar.referrerPolicy = "no-referrer";
             }
             els.avatar.src = url;
@@ -347,12 +1001,12 @@ import Layout from "../layouts/Layout.astro";
             };
         }
 
-        // 2. Fetch Firestore Data
+        // Fetch Firestore Data
         try {
             const docRef = doc(db, "users", user.uid);
             const docSnap = await getDoc(docRef);
 
-            if (els.spinner) els.spinner.classList.add("hidden");
+            if (els.skeleton) els.skeleton.classList.add("hidden");
 
             if (docSnap.exists()) {
                 const data = docSnap.data();
@@ -361,17 +1015,87 @@ import Layout from "../layouts/Layout.astro";
                 if (isPro) {
                     if (els.planDetails)
                         els.planDetails.classList.remove("hidden");
+
+                    const planKey = (data.plan || "pro").toLowerCase();
                     if (els.planName)
                         els.planName.innerText = (
                             data.plan || "Pro"
                         ).toUpperCase();
+                    if (els.planIcon)
+                        els.planIcon.textContent = PLAN_ICONS[planKey] || "⚡";
 
-                    if (data.expiryDate && els.expiry) {
-                        const date = new Date(data.expiryDate);
-                        els.expiry.innerText = date.toLocaleDateString();
+                    // Fetch live Stripe details
+                    let stripeDetails: any = null;
+                    if (data.subscriptionId) {
+                        stripeDetails = await fetchSubscriptionDetails(
+                            data.subscriptionId,
+                        );
                     }
 
-                    // 3. Show Features
+                    if (stripeDetails) {
+                        // Status
+                        const isCanceling = stripeDetails.cancelAtPeriodEnd;
+                        const displayStatus = isCanceling
+                            ? "canceling"
+                            : stripeDetails.status;
+                        showStatusBadge(displayStatus);
+                        showSubStatus(displayStatus);
+
+                        // Price
+                        if (els.planPrice && stripeDetails.amount) {
+                            const amt = (
+                                stripeDetails.amount / 100
+                            ).toLocaleString();
+                            const cur = (
+                                stripeDetails.currency || "thb"
+                            ).toUpperCase();
+                            const interval = stripeDetails.interval || "month";
+                            els.planPrice.textContent = `${cur === "THB" ? "฿" : cur + " "}${amt} / ${interval}`;
+                        }
+
+                        // Billing Period
+                        if (els.billingPeriod) {
+                            const interval = stripeDetails.interval || "month";
+                            els.billingPeriod.textContent =
+                                interval.charAt(0).toUpperCase() +
+                                interval.slice(1) +
+                                "ly";
+                        }
+
+                        // Renewal / Cancellation Date
+                        if (isCanceling) {
+                            if (els.renewalLabel)
+                                els.renewalLabel.textContent = "Access Until";
+                            if (els.renewalDate)
+                                els.renewalDate.textContent = formatDate(
+                                    stripeDetails.currentPeriodEnd,
+                                );
+                            if (els.cancelingBanner)
+                                els.cancelingBanner.classList.remove("hidden");
+                            if (els.cancelDate)
+                                els.cancelDate.textContent = formatDate(
+                                    stripeDetails.currentPeriodEnd,
+                                );
+                            if (els.cancelBtn)
+                                els.cancelBtn.classList.add("hidden");
+                        } else {
+                            if (els.renewalDate)
+                                els.renewalDate.textContent = formatDate(
+                                    stripeDetails.currentPeriodEnd,
+                                );
+                        }
+                    } else {
+                        // Fallback to Firestore data
+                        showStatusBadge("active");
+                        showSubStatus("active");
+                        if (data.expiryDate && els.renewalDate) {
+                            els.renewalDate.textContent = formatDate(
+                                data.expiryDate,
+                            );
+                        }
+                    }
+
+                    // Features
                     const features = data.features || [];
                     if (
                         features.length > 0 &&
@@ -387,17 +1111,22 @@ import Layout from "../layouts/Layout.astro";
                         els.featuresContainer.classList.remove("hidden");
                     }
 
-                    // 4. Show Manage Button
+                    // Manage Billing Button
                     if (data.stripeCustomerId && els.manageBtn) {
-                        els.manageBtn.classList.remove("hidden");
-                        els.manageBtn.onclick = async () => {
+                        els.manageBtn.addEventListener("click", async () => {
                             if (els.manageBtn)
-                                els.manageBtn.innerText = "Opening...";
+                                (els.manageBtn as HTMLButtonElement).disabled =
+                                    true;
+                            if (els.manageBtn)
+                                els.manageBtn.textContent = "Opening...";
                             try {
                                 const res = await fetch(
                                     "/api/create-portal-session",
                                     {
                                         method: "POST",
+                                        headers: {
+                                            "Content-Type": "application/json",
+                                        },
                                         body: JSON.stringify({
                                             customerId: data.stripeCustomerId,
                                         }),
@@ -408,15 +1137,129 @@ import Layout from "../layouts/Layout.astro";
                             } catch (e) {
                                 console.error("Portal error:", e);
                                 if (els.manageBtn)
-                                    els.manageBtn.innerText =
-                                        "Error opening portal";
+                                    els.manageBtn.textContent =
+                                        "Error — try again";
+                                if (els.manageBtn)
+                                    (
+                                        els.manageBtn as HTMLButtonElement
+                                    ).disabled = false;
                             }
-                        };
+                        });
+                    }
+
+                    // Cancel Subscription Button
+                    if (
+                        data.subscriptionId &&
+                        els.cancelBtn &&
+                        stripeDetails &&
+                        !stripeDetails.cancelAtPeriodEnd
+                    ) {
+                        els.cancelBtn.addEventListener("click", () => {
+                            if (els.cancelEndDate && stripeDetails) {
+                                els.cancelEndDate.textContent = `Access until ${formatDate(stripeDetails.currentPeriodEnd)}`;
+                            }
+                            if (els.cancelModal)
+                                els.cancelModal.classList.remove("hidden");
+                        });
+
+                        els.cancelConfirm?.addEventListener(
+                            "click",
+                            async () => {
+                                if (els.cancelConfirm) {
+                                    (
+                                        els.cancelConfirm as HTMLButtonElement
+                                    ).disabled = true;
+                                    els.cancelConfirm.textContent =
+                                        "Canceling...";
+                                }
+                                try {
+                                    const result = await cancelSubscription(
+                                        data.subscriptionId,
+                                        user.uid,
+                                    );
+                                    if (els.cancelModal)
+                                        els.cancelModal.classList.add("hidden");
+
+                                    // Update UI to show canceling state
+                                    showStatusBadge("canceling");
+                                    showSubStatus("canceling");
+                                    if (els.renewalLabel)
+                                        els.renewalLabel.textContent =
+                                            "Access Until";
+                                    if (els.cancelingBanner)
+                                        els.cancelingBanner.classList.remove(
+                                            "hidden",
+                                        );
+                                    if (els.cancelDate)
+                                        els.cancelDate.textContent = formatDate(
+                                            result.cancelAt,
+                                        );
+                                    if (els.cancelBtn)
+                                        els.cancelBtn.classList.add("hidden");
+                                } catch (e) {
+                                    console.error("Cancel error:", e);
+                                    if (els.cancelConfirm) {
+                                        els.cancelConfirm.textContent =
+                                            "Error — try again";
+                                        (
+                                            els.cancelConfirm as HTMLButtonElement
+                                        ).disabled = false;
+                                    }
+                                }
+                            },
+                        );
+
+                        els.cancelDismiss?.addEventListener("click", () => {
+                            if (els.cancelModal)
+                                els.cancelModal.classList.add("hidden");
+                        });
+                    } else if (els.cancelBtn) {
+                        // Hide cancel if already canceling or no subscription
+                        if (
+                            !data.subscriptionId ||
+                            (stripeDetails && stripeDetails.cancelAtPeriodEnd)
+                        ) {
+                            els.cancelBtn.classList.add("hidden");
+                        }
                     }
                 } else {
+                    // Free Tier
                     if (els.noPlan) els.noPlan.classList.remove("hidden");
-                    if (els.featuresContainer)
-                        els.featuresContainer.classList.add("hidden");
+                    showStatusBadge("active");
+                    if (els.statusBadge) {
+                        els.statusBadge.textContent = "Free";
+                        els.statusBadge.className = "status-badge";
+                    }
+
+                    // Trial Info
+                    if (data.trialStartDate && els.trialInfo) {
+                        const trialStart = new Date(data.trialStartDate);
+                        const trialEnd = new Date(
+                            trialStart.getTime() + 7 * 24 * 60 * 60 * 1000,
+                        );
+                        const now = new Date();
+                        const totalMs = 7 * 24 * 60 * 60 * 1000;
+                        const elapsedMs = now.getTime() - trialStart.getTime();
+                        const remainingDays = Math.max(
+                            0,
+                            Math.ceil(
+                                (trialEnd.getTime() - now.getTime()) /
+                                    (24 * 60 * 60 * 1000),
+                            ),
+                        );
+
+                        if (remainingDays > 0) {
+                            const pct = Math.min(
+                                100,
+                                (elapsedMs / totalMs) * 100,
+                            );
+                            els.trialInfo.classList.remove("hidden");
+                            if (els.trialFill)
+                                els.trialFill.style.width = `${pct}%`;
+                            if (els.trialText)
+                                els.trialText.textContent = `Trial: ${remainingDays} day${remainingDays !== 1 ? "s" : ""} remaining`;
+                        }
+                    }
                 }
             } else {
                 // No doc = Free Tier
@@ -424,11 +1267,19 @@ import Layout from "../layouts/Layout.astro";
             }
         } catch (e) {
             console.error("Error fetching profile:", e);
-            if (els.spinner) els.spinner.classList.add("hidden");
+            if (els.skeleton) els.skeleton.classList.add("hidden");
         }
     });
 
+    // Sign Out
     els.logoutBtn?.addEventListener("click", () => {
         signOut(auth).then(() => (window.location.href = "/"));
+    });
+
+    // Close modal on overlay click
+    els.cancelModal?.addEventListener("click", (e) => {
+        if (e.target === els.cancelModal) {
+            els.cancelModal.classList.add("hidden");
+        }
     });
 </script>
