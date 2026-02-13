@@ -444,8 +444,8 @@ const homeUrl = getRelativeLocaleUrl(currentLang, "");
 		border: 1px solid var(--glass-border);
 		border-radius: 50%;
 		cursor: pointer;
-		width: 40px;
-		height: 40px;
+		width: 44px;
+		height: 44px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -477,14 +477,16 @@ const homeUrl = getRelativeLocaleUrl(currentLang, "");
 		height: 20px;
 	}
 
-	.user-avatar {
+	:global(.user-avatar) {
 		width: 100%;
 		height: 100%;
 		border-radius: 50%;
-		border: 2px solid #ec4899; /* Pink-500 */
 		object-fit: cover;
-		background-color: #f3f4f6; /* Gray-100 to match profile card */
-		padding: 3px; /* Match profile card padding */
+		object-position: center top;
+		background-color: #f3f4f6;
+		padding: 0;
+		border: none;
+		box-shadow: inset 0 0 0 2px #ec4899;
 		box-sizing: border-box;
 		display: block;
 	}
