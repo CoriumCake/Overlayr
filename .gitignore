@@ -1,6 +1,10 @@
 # Node
 node_modules/
 .pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
 # Python
 __pycache__/
@@ -8,6 +12,8 @@ __pycache__/
 *$py.class
 venv/
 .env
+.env.local
+.env.production
 
 # PyInstaller
 *.manifest
@@ -18,14 +24,29 @@ dist/
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # OS
 Thumbs.db
 Desktop.ini
+.DS_Store
 
 # Vercel & Astro
 .vercel/
 .output/
+.astro/
+
+# Web Specific
+web/node_modules/
+web/dist/
+web/.astro/
+web/npm-debug.log*
+web/yarn-debug.log*
+web/pnpm-debug.log*
 
 # Debug Images
 debug_images/
+
+# Test output
+test_output.txt
