@@ -1,74 +1,61 @@
-# รายละเอียดกระบวนการทำงาน (Pipeline Detail) 🛠️🚀
-อัปเดตล่าสุด: 2026-02-12
+# รายละเอียดกระบวนการทำงานหลักของโปรแกรม (Pipeline Detail) 🛠️🚀
+อัปเดตล่าสุด: 2026-02-23
 
-ระบบทำงานเป็นลำดับขั้น (Sequential Pipeline) ดังนี้ครับ:
+ระบบทำงานเป็นลำดับขั้น (Sequential Pipeline) แต่มีการนำการประมวลผลแบบขนาน (Parallel Processing) มาใช้ในส่วนของการอ่านข้อความเพื่อให้ได้ความแม่นยำสูงสุด ดังนี้ครับ:
 
 ## 1. การจับภาพ (Screen Capture) 📸
-- **Module:** `wgc_capture.py`
+- **Module:** `wgc_capture.py` -> `main_window.py`
 - **Technology:** Windows Graphics Capture (WGC)
 - **Process:**
-  - จับภาพหน้าต่างที่เลือกแบบ Real-time (60fps แต่ดึงมาใช้จริงตามจังหวะ Loop)
-  - ตัดส่วนขอบหน้าต่าง (Client Area) ออกเพื่อให้ได้เฉพาะเนื้อหา
-  - ส่งภาพ `PIL.Image` เข้าสู่ระบบประมวลผล
+  - จับภาพหน้าต่างที่เลือกแบบ Real-time ด้วยความเร็วสูง
+  - ตัดส่วนขอบหน้าต่าง (Client Area) ออกเพื่อให้ได้เฉพาะเนื้อหาของโปรแกรมหรือเกมจริงๆ
+  - แปลงภาพเป็น `PIL.Image` และส่งเข้าสู่ระบบประมวลผลหลัก
 
-## 2. การเตรียมภาพ (Preprocessing) 🧹
-**เป้าหมาย:** ทำภาพให้ "สะอาดที่สุด" และ "ตัวหนังสือชัดที่สุด" ก่อนส่งให้ OCR
-- **Module:** `engine.py` -> `process_image`
+## 2. การประมวลผลและการอ่านข้อความ (Parallel OCR Pipeline) 👁️⚡
+**เป้าหมาย:** อ่านตัวหนังสือให้ได้แม่นยำที่สุดผ่านการทำ Image Processing 10 รูปแบบพร้อมกัน
+- **Module:** `windows_ocr.py` (WindowsOCREngine)
+- **Engine:** **Windows 10/11 Built-in OCR** (winsdk.windows.media.ocr)
+- **Process:** ทำงานแบบ Concurrent (Asynchronous) แบ่งออกเป็น 10 งานย่อยที่จำลองมุมมองภาพที่ต่างกัน:
+  1. **Baseline:** ภาพดั้งเดิม + ปรับขนาด 2x + Sharpen
+  2. **Threshold:** แปลงเป็นภาพขาว-ดำแบบ Adaptive (Gaussian C) ตัดพื้นหลัง
+  3. **Simple Threshold:** ขาว-ดำแบบมาตรฐาน (Otsu)
+  4. **CLAHE:** ดึง Contrast ภาพให้ตัวหนังสือเด้งออกมา
+  5. **Inverted:** กลับสีภาพ (ตัวหนังสือขาว พื้นดำ) เพื่อแก้ปัญหา Text สีสว่าง
+  6. **Thicken:** ทำตัวหนังสือให้หนาขึ้น (Erosion) ช่วยเรื่องตัวอักษรบางๆ
+  7. **Shear:** บิดภาพเอียงไปทางซ้าย (ช่วยอ่านตัวพิมพ์อิตาลิก)
+  8. **Shear Right:** บิดภาพเอียงไปทางขวา
+  9. **Rotate:** หมุนภาพ 5 องศา (ทวนเข็ม)
+  10. **Rotate CW:** หมุนภาพ 5 องศา (ตามเข็ม)
 
-### 2.1 Smart Scaling (ปรับขนาดอัจฉริยะ)
-- **ภาพใหญ่ (>1600px):** ย่อลง (Downscale) เพื่อความเร็ว (ประมวลผลไวขึ้น 3-4 เท่า)
-- **ภาพเล็ก (<800px):** ขยายขึ้น (Upscale 2x) เพื่อให้ OCR อ่านตัวหนังสือเล็กๆ ออก
-- **ภาพปกติ:** ใช้ขนาดเดิม
+## 3. การกรองและรวมผลลัพธ์ข้อความ (Geometry Deduplication & Merging) 🧩
+- **Module:** `windows_ocr.py`
+- **Process:**
+  - นำผลลัพธ์จากรูปแบบที่ 1 (Baseline) เป็นตัวตั้งต้น
+  - นำผลการอ่านจากแบบที่ 2-10 มาคำนวณพิกัด (Coordinates) กลับให้ตรงกับหน้าจอจริง (เช่น ถอยองศาการหมุนกลับ, ถอยการบิดกลับ)
+  - ทาบ Bounding Box ลงไป หากตรวจพบว่าทับซ้อนกันเกิน 30-90% (Overlap) และมีข้อความคล้ายคลึงกัน (SequenceMatcher > 80%) ระบบจะ **ยุบรวม (Merge)** เป็นคำเดียว 
+  - หากได้คำหรือประโยคที่ยาวสมบูรณ์กว่าจากการหมุนภาพ ระบบจะสลับไปใช้ข้อความนั้นแทน
+  - สรุปผลลัพธ์ส่งออกเป็นรายการของ `(Bounding Box, Text, Confidence)`
 
-### 2.2 Simplified Pipeline (Requested)
-- **Grayscale:** ภาพต้นฉบับแปลงเป็นขาว-ดำ
-- **CLAHE:** ปรับ Contrast ให้ชัด
-- **ส่งตรงเข้า OCR:** ใช้งานภาพที่สะอาดที่สุดโดยไม่ผ่าน Thresholding หรือ Dual Mask เพื่อเก็บรายละเอียดตัวอักษรให้ดีที่สุด
-- (ยกเลิก Dual Polarity Masking ที่ซับซ้อนออก เพื่อความรวดเร็วและความเที่ยงตรงของ OCR ตัวอักษรดั้งเดิม)
+## 4. การกรองและจัดกลุ่มอีกชั้น (Post-Processing & Logical Grouping) 📦
+- **Module:** `engine.py` -> `_merge_text_blocks` และ `TextPostProcessor`
+- **Process:**
+  - **Spelling Correction:** ระบบจะเช็คคำด้วย `SymSpell` หรือ `FuzzyMatching` เพื่อแก้คำที่ OCR อาจอ่านงงๆ (ลด Noise)
+  - **Deduplication ระดับ Block:** กรองกล่องข้อความที่มีคำซ้ำซ้อนหรือกล่องเล็กที่ซ้อนอยู่ในกล่องใหญ่ (Overlap > 50%) ออกเพื่อลดขยะ 
+  - จัดเรียงลำดับการอ่าน (Top-Down) เพื่อให้คำแปลออกมาสมดุลที่สุด
 
-## 3. การแปลงภาพเป็นข้อความ (OCR) 👁️
-- **Engine:** **RapidOCR** (OnnxRuntime)
-- **Input:** ภาพขาวดำที่ผ่านการ Preprocess แล้ว
-- **Output:** รายการของ `(Bounding Box, Text, Confidence)`
-
-## 4. การจัดกลุ่มข้อความ (Text Grouping / Clustering) 📦
-- **Module:** `engine.py` -> `_merge_text_blocks`
-- ระบบเลือกใช้ Logic ตามโหมดที่ผู้ใช้เลือก:
-
-### 4.1 โหมด Document (Lines) - สำหรับเอกสาร/เกม
-- **Line Forming:** รวมเศษคำที่อยู่ในแนวเดียวกันเป๊ะๆ (ห่างกันไม่เกิน 15px) ให้เป็นบรรทัดเดียว
-- **Smart Paragraph:**
-  - รวมบรรทัดเข้าเป็นย่อหน้า (Paragraph) ถ้าบรรทัดอยู่ชิดกัน
-  - **ตัดจบย่อหน้า** ถ้าเจอช่องว่างบรรทัดกว้างผิดปกติ
-  - **แยกหัวข้อ (Header)** ถ้าเจอตัวอักษรที่ขนาดใหญ่/เล็กต่างกันชัดเจน
-
-### 4.2 โหมด Manga (Groups) - สำหรับการ์ตูน
-- **Clustering:** มองหา "กลุ่มก้อน" ของข้อความ
-- รวมข้อความเข้าด้วยกันถ้า:
-  - มีส่วนที่ซ้อนทับกันในแนวนอน (Horizontal Overlap)
-  - อยู่ใกล้กันในแนวตั้ง (ไม่เกิน 2 เท่าของความสูงบรรทัด)
-- ผลลัพธ์คือได้ text ทั้งก้อนบับเบิ้ลมาแปลรวดเดียว
-
-## 5. การแปลภาษา (Translation) 🌍
+## 5. การแปลภาษา (Translation & Caching) 🌍
 - **Module:** `google_translate.py` & `engine.py`
-
-### 5.1 Caching (ระบบจำคำแปล)
-- ก่อนแปล จะเช็คใน Cache 100 คำล่าสุด
-- **Logic ใหม่:** เช็คคู่กับ "ภาษาปลายทาง" ด้วย (Original Text + Target Language)
-- ถ้าเจอ (Hit): ดึงคำแปลเดิมมาแสดงทันที (0ms delay)
-- ถ้าไม่เจอ (Miss): ส่งไปแปลใหม่
-
-### 5.2 Translation Service
-- ส่งข้อความไปที่ Google Translate API (Async)
-- รับคำแปลกลับมา
+- **Caching (ระบบจำคำแปลระดับ LRU):**
+  - ก่อนแปล จะเช็คใน Cache 100 คำล่าสุด 
+  - หากข้อความเคยแปลไปแล้ว (ดึงค่าจาก Memory) ระบบจะแสดงผลแปลทันที (0ms delay) และดันลำดับอายุ Cache ขึ้น
+  - หากข้อความยาวหรือหลุด Cache (Miss): ส่งไปขอคำแปลใหม่จาก Google Translate API แบบรวดเดียว (Batch Translation)
 
 ## 6. การแสดงผล (Overlay Display) 🖼️
 - **Module:** `overlay.py` -> `OverlayWindow`
-- วาดกล่องข้อความทับลงบนตำแหน่งเดิมในหน้าจอ (Coordinates ตรงเป๊ะ)
-- **Transparent Fix:** เช็คค่าสี ถ้าเป็น 'transparent' จะไม่วาดเส้นขอบ เพื่อความสวยงามและกันโปรแกรม Crash
-- แสดงผลด้วย Tkinter (TopMost Window) ที่เจาะทะลุ Click-through ได้
+- วาดกล่องข้อความทับลงบนตำแหน่งเดิมในหน้าจอ
+- หน้าต่างแสดงผล (Tkinter) ถูกปรับค่า Windows API เป็น Transparent และ Click-through หมายความว่าเมาส์จะสามารถคลิกทะลุตัวแปลภาษาไปยังเกมหรือโปรแกรมด้านหลังได้ 100% โดยไม่ติดขัด
 
 ---
 
-**สรุป Flow:**
-`Capture` -> `Preprocess (Dual Mask)` -> `OCR` -> `Grouping (Smart)` -> `Translate (Cache check)` -> `Overlay Update`
+**สรุป Flow การทำงานปัจจุบัน:**
+`WGC Capture` -> `10-Technique Parallel OCR (Windows OCR)` -> `Geometry Deduplicate/Merge` -> `Spelling & Final Grouping` -> `LRU Cache Check / Translate` -> `Overlay Draw`

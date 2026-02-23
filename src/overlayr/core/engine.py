@@ -3,7 +3,6 @@ from typing import Optional, Tuple, Callable, List, Dict, Any
 from PIL import Image
 import numpy as np
 from ..services.windows_ocr import WindowsOCREngine
-from ..services.rapid_ocr import RapidOCREngine
 from ..services.google_translate import GoogleTranslateService
 from ..services.validation_service import ValidationService
 from ..utils.singleton import SingletonMeta
@@ -19,9 +18,8 @@ class AsyncEngine(metaclass=SingletonMeta):
     """
     def __init__(self) -> None:
         print("AsyncEngine: Init start...", flush=True)
-        # self.ocr_service = WindowsOCREngine()
-        self.ocr_service = RapidOCREngine()
-        print("AsyncEngine: RapidOCR initialized.", flush=True)
+        self.ocr_service = WindowsOCREngine()
+        print("AsyncEngine: Windows OCR initialized.", flush=True)
         self.translator_service = GoogleTranslateService()
         print("AsyncEngine: Google Translate initialized.", flush=True)
         self.post_processor = TextPostProcessor()
@@ -135,59 +133,25 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         # 1. Smart Scaling (Optimize for Speed/Accuracy)
         w, h = image.size
-        target_width = 1600 # Optimal width for OCR
-        if open_cv_image is None or open_cv_image.size == 0:
-            print("Error: Empty image for preprocessing")
-            return None
-
-        # --- SIMPLIFIED PIPELINE: Screen Capture -> Grayscale -> CLAHE -> OCR ---
-        # 1. Grayscale
-        # Do not resize/scale if possible to keep original details
-        gray = cv2.cvtColor(open_cv_image, cv2.COLOR_BGR2GRAY)
-        # log_and_save("Grayscale", gray, "01_gray")
-        
-        # 2. CLAHE (Contrast Limited Adaptive Histogram Equalization)
-        # Enhances local contrast to make text pop against background
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        processed_cv = clahe.apply(gray)
-        log_and_save("CLAHE Result", processed_cv, "02_clahe_final")
-        
-        # 3. OCR sees this image directly
-        final_cv = processed_cv
-        
-        # 7. Padding
-        padding_color = [255,255,255] if len(final_cv.shape) == 3 else 255
-        final_cv = cv2.copyMakeBorder(final_cv, padding, padding, padding, padding, cv2.BORDER_CONSTANT, value=padding_color)
-        log_and_save("Final Hybrid (Gray+Mask)", final_cv, "06_final")
-        
-        # Convert back to PIL
-        processed_pil = Image.fromarray(final_cv)
+        # The new WindowsOCREngine handles its own preprocessing (Grayscale, CLAHE, etc.)
+        # so we just pass the original PIL image to it.
         
         # Execute OCR
         ocr_start = time.perf_counter()
-        results = await self.ocr_service.extract_text(processed_pil)
+        results = await self.ocr_service.extract_text(image)
         ocr_dur = (time.perf_counter() - ocr_start) * 1000
         print(f"[DEBUG] OCR Processing: {ocr_dur:.2f} ms", flush=True)
         t1 = time.time()
         
-        # Scale back coordinates & Post-Process
+        # Post-Process Text
         final_results = []
         for bbox_points, text, conf in results:
-            # Post-Process Text
             cleaned_text = self.post_processor.clean_text(text)
             final_text = self.post_processor.correct_text(cleaned_text)
             
             if not final_text: continue
             
-            # Scale coordinates back to original image
-            # x_orig = (x_ocr - padding)  (No scale factor in simplified pipeline)
-            scaled_bbox = []
-            for point in bbox_points:
-                x = (point[0] - padding)
-                y = (point[1] - padding)
-                scaled_bbox.append([int(x), int(y)])
-                
-            final_results.append((scaled_bbox, final_text, conf))
+            final_results.append((bbox_points, final_text, conf))
             
         results = final_results
         
@@ -256,69 +220,13 @@ class AsyncEngine(metaclass=SingletonMeta):
             })
 
         # --- DEBUG SAVE: Processed Image + Grouped Boxes ---
-        try:
-            import os
-            from PIL import ImageDraw, ImageFont
-            
-            debug_img = processed_pil.convert("RGB")
-            draw = ImageDraw.Draw(debug_img)
-            
-            try:
-                font = ImageFont.truetype("arial.ttf", 24)
-            except:
-                font = ImageFont.load_default()
-
-            # Draw Valid Items (BLUE)
-            items_to_draw = []
-            if metadata:
-                 merged = self._merge_text_blocks(metadata, mode=merge_mode)
-                 items_to_draw = merged
-            
-            for item in items_to_draw:
-                bbox = item["bbox"] 
-                l = (bbox[0]) + padding
-                t = (bbox[1]) + padding
-                r = (bbox[2]) + padding
-                b = (bbox[3]) + padding
-                
-                draw.rectangle([l, t, r, b], outline="blue", width=4)
-                try:
-                    draw.text((l, max(0, t - 30)), item["original"], fill="blue", font=font)
-                except: pass
-
-            # Draw Filtered Items (RED)
-            for item in filtered_metadata:
-                bbox = item["bbox"]
-                l = (bbox[0]) + padding
-                t = (bbox[1]) + padding
-                r = (bbox[2]) + padding
-                b = (bbox[3]) + padding
-                
-                # Dashed or Thinner line for rejected? Just Red.
-                draw.rectangle([l, t, r, b], outline="red", width=2)
-                try:
-                    # Draw text in red
-                    draw.text((l, max(0, t - 30)), f"[X] {item['original']}", fill="red", font=font)
-                except: pass
-            
-            debug_dir = os.path.join(os.getcwd(), "debug_images")
-            if SAVE_FINAL_DEBUG and not os.path.exists(debug_dir): 
-                os.makedirs(debug_dir, exist_ok=True)
-            
-            timestamp = int(time.time() * 1000)
-            save_path = os.path.join(debug_dir, f"proc_grouped_{timestamp}.png")
-            
-            if SAVE_FINAL_DEBUG:
-                debug_img.save(save_path)
-                print(f"[DEBUG] Saved debug image to: {save_path}", flush=True)
-            
-        except Exception as e:
-             print(f"Failed to save debug image: {e}", flush=True)
+        # Removed as WindowsOCREngine handles its own debug images if needed.
 
         if not metadata:
             return [], raw_text
 
-        # Merge spatially close blocks (Real logic for return)
+        # In WinOCR, the engine has already handled merging spatially close blocks and overlapping geometry
+        # but the returns are just flat boxes. We keep this to group them into paragraphs if requested.
         merged_metadata = self._merge_text_blocks(metadata, mode=merge_mode)  
         # DEBUG CALLBACK: MERGE DONE
         if step_callback:

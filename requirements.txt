@@ -15,6 +15,5 @@ python-Levenshtein
 symspellpy
 requests
 winsdk
-rapidocr_onnxruntime
-comtypes
+
 onnxruntime-directml
