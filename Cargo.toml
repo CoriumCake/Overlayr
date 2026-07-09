@@ -1,0 +1,48 @@
+[package]
+name = "overlayr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = { version = "0.26.2", features = ["persistence"] }
+egui = "0.26.2"
+ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
+ndarray = "0.17.2"
+image = "0.24.7"
+imageproc = "0.23.0"
+ureq = { version = "2.9.6", features = ["json"] }
+serde = { version = "1.0.193", features = ["derive"] }
+serde_json = "1.0.108"
+lru = "0.12.1"
+anyhow = "1.0.75"
+rayon = "1.8.0"
+raw-window-handle = "0.5.2"
+
+[dependencies.windows]
+version = "0.52.0"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_System_Threading",
+    "Graphics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Storage_Streams",
+    "Foundation",
+]
+
+[build-dependencies]
+embed-resource = "2.4.0"
+
+[profile.release]
+opt-level = 0
