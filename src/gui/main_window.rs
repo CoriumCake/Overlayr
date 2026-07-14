@@ -31,6 +31,7 @@ pub struct MainWindow {
     is_loading_models: bool,
     is_capturing: bool,
     capture_thread: Option<thread::JoinHandle<()>>,
+    status_rx: Option<std::sync::mpsc::Receiver<String>>,
     
     // Cached window icon textures
     icon_textures: std::collections::HashMap<isize, egui::TextureHandle>,
@@ -74,6 +75,7 @@ impl MainWindow {
             is_loading_models: true,
             is_capturing: false,
             capture_thread: None,
+            status_rx: None,
             icon_textures: std::collections::HashMap::new(),
         };
         
@@ -188,7 +190,11 @@ impl MainWindow {
 
         let overlay_clone = Arc::clone(&self.overlay);
         let roi_rect = self.roi_selector.final_rect;
+        
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.status_rx = Some(rx);
 
+        let tx_err = tx.clone();
         self.capture_thread = Some(thread::spawn(move || {
             // Initialize WinRT COM on the capture thread
             unsafe {
@@ -200,6 +206,7 @@ impl MainWindow {
             let mut capture = match WgcCapture::new() {
                 Ok(c) => c,
                 Err(e) => {
+                    let _ = tx_err.send(format!("Error: Capture Init Fail: {:?}", e));
                     eprintln!("Capture initialization error: {:?}", e);
                     return;
                 }
@@ -221,12 +228,15 @@ impl MainWindow {
             };
 
             if let Err(e) = start_res {
+                let _ = tx_err.send(format!("Error: Capture Start Fail: {:?}", e));
                 eprintln!("Failed to start capture source: {:?}", e);
                 return;
             }
 
+            let _ = tx_err.send("Streaming...".to_string());
             let mut translator = Translator::new(&src_lang, &tgt_lang);
             let mut prev_frame: Option<image::DynamicImage> = None;
+            let mut last_ocr_time = std::time::Instant::now();
 
             while unsafe { GLOBAL_CAPTURING } {
                 let frame = match capture.get_latest_frame() {
@@ -236,6 +246,7 @@ impl MainWindow {
                         continue;
                     }
                     Err(e) => {
+                        let _ = tx_err.send(format!("Error: Frame Grab: {:?}", e));
                         eprintln!("Frame grab error: {:?}", e);
                         break;
                     }
@@ -281,11 +292,12 @@ impl MainWindow {
                     }
                 }
 
-                if is_similar {
+                if is_similar && last_ocr_time.elapsed() < Duration::from_millis(1500) {
                     thread::sleep(Duration::from_millis(150));
                     continue;
                 }
                 prev_frame = Some(process_img.clone());
+                last_ocr_time = std::time::Instant::now();
 
                 // Run OCR and translation
                 let mut results = Vec::new();
@@ -366,6 +378,13 @@ impl eframe::App for MainWindow {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Receive background thread status updates
+        if let Some(ref rx) = self.status_rx {
+            while let Ok(msg) = rx.try_recv() {
+                self.status = msg;
+            }
+        }
+
         // Dynamic state updates from loading thread
         if self.is_loading_models && unsafe { GLOBAL_OCR_LOADED } {
             self.is_loading_models = false;
@@ -578,6 +597,40 @@ impl eframe::App for MainWindow {
                     }
                 });
             });
+
+            if self.is_capturing {
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("📖 Live Readings (Debug Window):").strong().color(get_accent_color()));
+                ui.add_space(2.0);
+                
+                egui::Frame::none()
+                    .fill(get_panel_bg_color())
+                    .rounding(4.0)
+                    .inner_margin(egui::Margin::same(6.0))
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(80.0).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            let results = {
+                                let overlay = self.overlay.lock().unwrap();
+                                overlay.results.clone()
+                            };
+                            if results.is_empty() {
+                                ui.label(egui::RichText::new("Waiting for text detection...").italics());
+                            } else {
+                                for item in results {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(egui::RichText::new("OCR:").strong().color(egui::Color32::LIGHT_BLUE));
+                                        ui.label(&item.text);
+                                        ui.label(egui::RichText::new("→").color(egui::Color32::GRAY));
+                                        ui.label(egui::RichText::new(&item.translated).color(egui::Color32::WHITE));
+                                    });
+                                }
+                            }
+                        });
+                    });
+            }
         });
     }
 }

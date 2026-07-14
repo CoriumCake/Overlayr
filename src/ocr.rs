@@ -223,6 +223,7 @@ impl RustOCREngine {
             
             // Pad width to a multiple of 32 for model alignment
             let padded_w = ((new_w + 31) / 32) * 32;
+            println!("[OCR DEBUG] Crop box: {}x{} | new_w: {} | padded_w: {}", box_w, box_h, new_w, padded_w);
             
             // Initialize padded white background image
             let mut padded_img = ImageBuffer::from_pixel(padded_w, new_h, Rgb([255, 255, 255]));
@@ -283,5 +284,33 @@ impl RustOCREngine {
         }
 
         Ok(output_results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_ocr() {
+        let det_path = Path::new("assets/models/Detec_Manga-English.onnx");
+        let rec_path = Path::new("assets/models/PaddleOCR.onnx");
+        let dict_path = Path::new("assets/models/en_dict.txt");
+        
+        let mut engine = RustOCREngine::new(det_path, rec_path, dict_path).unwrap();
+        
+        // Load a debug image
+        let img_path = Path::new("debug_images/proc_grouped_1770912594847.png");
+        assert!(img_path.exists(), "Debug image not found!");
+        let img = image::open(img_path).unwrap();
+        
+        println!("Input image size: {}x{}", img.width(), img.height());
+        let results = engine.extract_text(&img).unwrap();
+        println!("OCR results count: {}", results.len());
+        for (i, (bbox, text, conf)) in results.iter().enumerate() {
+            println!("  [{}] conf={:.3} text='{}' bbox={:?}", i, conf, text, bbox);
+        }
+        assert!(!results.is_empty(), "No text detected!");
     }
 }

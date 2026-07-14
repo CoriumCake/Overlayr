@@ -27,9 +27,10 @@ fn main() -> Result<(), eframe::Error> {
     let mut options = eframe::NativeOptions::default();
     options.viewport = egui::ViewportBuilder::default()
         .with_title("Overlayr")
-        .with_inner_size([550.0, 500.0])
+        .with_inner_size([550.0, 600.0])
         .with_resizable(false)
         .with_maximize_button(false)
+        .with_transparent(true)
         .with_icon(load_window_icon());
 
     eframe::run_native(

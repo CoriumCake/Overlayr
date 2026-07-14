@@ -70,7 +70,7 @@ impl OverlayState {
             |ctx, class| {
                 if class == egui::ViewportClass::Immediate {
                     egui::CentralPanel::default()
-                        .frame(egui::Frame::none().fill(egui::Color32::from_black_alpha(0))) // Fully transparent panel background
+                        .frame(egui::Frame::none().fill(egui::Color32::from_black_alpha(0))) // Fully transparent background
                         .show(ctx, |ui| {
                             // Draw results
                             for item in &self.results {
