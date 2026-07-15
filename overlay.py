@@ -19,8 +19,15 @@ class OverlayWindow:
         
     def enable_click_through(self):
         try:
-            hwnd = self.top.winfo_id()
+            # Ensure window has been mapped
+            self.top.update_idletasks()
+            
             user32 = ctypes.windll.user32
+            # On Windows, Toplevel HWND corresponds to the child frame; 
+            # We must target the actual OS container window parent handle.
+            hwnd = user32.GetParent(self.top.winfo_id())
+            if not hwnd:
+                hwnd = self.top.winfo_id()
             
             # Hide from capture (WDA_EXCLUDEFROMCAPTURE = 0x00000011) to avoid feedback loops
             user32.SetWindowDisplayAffinity(hwnd, 0x00000011)
