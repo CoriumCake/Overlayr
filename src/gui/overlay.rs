@@ -31,6 +31,22 @@ fn find_overlay_hwnd() -> Option<HWND> {
     }
 }
 
+#[repr(C)]
+struct DwmMargins {
+    left: i32,
+    right: i32,
+    top: i32,
+    bottom: i32,
+}
+
+#[link(name = "dwmapi")]
+extern "system" {
+    fn DwmExtendFrameIntoClientArea(
+        hwnd: HWND,
+        margins: *const DwmMargins,
+    ) -> windows::core::HRESULT;
+}
+
 fn configure_overlay_window(hwnd: HWND) {
     unsafe {
         // Hide from screen capture (Set Display Affinity) to prevent feedback loops
@@ -38,7 +54,17 @@ fn configure_overlay_window(hwnd: HWND) {
             hwnd,
             windows::Win32::UI::WindowsAndMessaging::WDA_EXCLUDEFROMCAPTURE,
         );
-        println!("Overlay window capture invisibility configured (HWND: {:?})", hwnd.0);
+
+        // Extend DWM frame into client area to enable true GPU window transparency
+        let margins = DwmMargins {
+            left: -1,
+            right: -1,
+            top: -1,
+            bottom: -1,
+        };
+        let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+        
+        println!("Overlay window capture invisibility and DWM transparency configured (HWND: {:?})", hwnd.0);
     }
 }
 
@@ -74,10 +100,6 @@ impl OverlayState {
                         .show(ctx, |ui| {
                             // Draw results
                             for item in &self.results {
-                                if item.translated.is_empty() {
-                                    continue;
-                                }
-
                                 // Calculate dimensions relative to captured area (relative to overlay origin)
                                 // bbox: [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
                                 let x1 = item.bbox[0][0] as f32;
@@ -90,27 +112,11 @@ impl OverlayState {
                                     egui::pos2(x2, y2),
                                 );
 
-                                // Heuristics to compute dynamic font size based on bounding box height
-                                let box_h = (y2 - y1).abs();
-                                let font_size = (box_h * 0.85).max(10.0).min(75.0);
-
-                                // 1. Draw rounded background box behind translation text
-                                ui.painter().rect_filled(
-                                    rect.expand(2.0),
-                                    4.0,
-                                    egui::Color32::from_black_alpha(210), // Semi-transparent black background
-                                );
-
-                                // 2. Put text inside the rect with word wrapping enabled
-                                ui.put(
+                                // Draw outline rectangle at the text location
+                                ui.painter().rect_stroke(
                                     rect,
-                                    egui::Label::new(
-                                        egui::RichText::new(&item.translated)
-                                            .color(egui::Color32::WHITE)
-                                            .size(font_size)
-                                            .strong()
-                                    )
-                                    .wrap(true)
+                                    2.0,
+                                    egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 255, 255)), // Cyan highlight border
                                 );
                             }
                         });

@@ -1,0 +1,5 @@
+exe_dir: "D:\\NotWork\\NewWork\\Overlayr"
+python_path exists: true
+alt_path exists: true
+main_py exists: true
+spawn pythonw result: Ok(Child { stdin: None, stdout: None, stderr: None, .. })

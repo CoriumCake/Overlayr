@@ -147,7 +147,11 @@ impl WgcCapture {
             None => return Ok(None),
         };
 
-        let frame = pool.TryGetNextFrame()?;
+        let frame = match pool.TryGetNextFrame() {
+            Ok(f) => f,
+            Err(e) if e.code().0 == 0 => return Ok(None),
+            Err(e) => return Err(e),
+        };
         let surface = match frame.Surface() {
             Ok(s) => s,
             Err(_) => return Ok(None),

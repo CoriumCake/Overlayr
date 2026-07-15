@@ -401,6 +401,10 @@ impl eframe::App for MainWindow {
         }
 
         // Render transparent overlay viewport
+        {
+            let mut overlay_state = self.overlay.lock().unwrap();
+            overlay_state.is_active = self.is_capturing;
+        }
         if self.is_capturing {
             self.overlay.lock().unwrap().show(ctx);
         }
