@@ -277,6 +277,7 @@ def merge_text_lines(base_lines, new_lines):
                  dist = math.sqrt((nx_c - ex_c)**2 + (ny_c - ey_c)**2)
                  tolerance = max(20.0, min(nh, eh))
                  if new_text == ex_text and dist < tolerance:
+                     print(f"[DEBUG-MERGE] MERGED (Duplicate): '{new_text}' -> '{ex_text}'", flush=True)
                      ex_line.sources.update(new_line.sources)
                      is_new = False
                      break
@@ -311,6 +312,7 @@ def merge_text_lines(base_lines, new_lines):
                  if y_dist < avg_h * 1.5: should_merge = True
                      
              if should_merge:
+                 print(f"[DEBUG-MERGE] MERGED (Overlap/Sim): '{new_text}' -> '{ex_text}'", flush=True)
                  ex_line.sources.update(new_line.sources)
                  if len(new_text) > len(ex_text):
                      if ex_text in new_text:
@@ -320,6 +322,7 @@ def merge_text_lines(base_lines, new_lines):
                  is_new = False
                  break
         if is_new:
+            print(f"[DEBUG-MERGE] KEPT (NEW): '{new_text}'", flush=True)
             merged.append(new_line)
     return merged
 
@@ -393,9 +396,11 @@ def filter_redundant_geometry(base_lines, geom_lines, technique_name="Geometry")
                     b_text = b_line.text.strip()
                     similarity = SequenceMatcher(None, r_text, b_text).ratio()
                     if similarity < 0.4:
+                        print(f"[DEBUG-MERGE] DISCARDED (Bad Geometry): '{r_text}' overlap with '{b_text}'", flush=True)
                         keep = False
                         break
                     if r_text in b_text or similarity > 0.8:
+                        print(f"[DEBUG-MERGE] DISCARDED (Redundant Geometry): '{r_text}' in '{b_text}'", flush=True)
                         keep = False
                         break
         if keep: filtered.append(r_line)
@@ -524,7 +529,13 @@ class WindowsOCREngine:
         def process_result(res, tech, scale, processed, mode='auto'):
             if res:
                  shape = processed.shape if processed is not None else cv_img.shape
-                 return correct_geometry(res, tech, scale, shape, matrix_mode=mode)
+                 lines = correct_geometry(res, tech, scale, shape, matrix_mode=mode)
+                 print(f"[DEBUG-OCR] Preprocessing '{tech}' found {len(lines)} lines:", flush=True)
+                 for idx, line in enumerate(lines):
+                     if line.words:
+                         lx, ly = min(w.x for w in line.words), min(w.y for w in line.words)
+                         print(f"  -> [{idx}] '{line.text}' at ({lx:.1f}, {ly:.1f})", flush=True)
+                 return lines
             return []
 
         # Reconstruct and merge based on WinOCR logic
@@ -537,36 +548,36 @@ class WindowsOCREngine:
                 
         reference_lines = list(final_lines) 
         
-        if results[7][0]: # shear_right
-            shear_r_lines = process_result(results[7][0], 'shear_right', results[7][1], results[7][2])
-            filtered_shear_r = filter_redundant_geometry(final_lines, shear_r_lines, technique_name="Shear_Right")
-            final_lines = merge_text_lines(final_lines, filtered_shear_r)
+        # if results[7][0]: # shear_right
+        #     shear_r_lines = process_result(results[7][0], 'shear_right', results[7][1], results[7][2])
+        #     filtered_shear_r = filter_redundant_geometry(final_lines, shear_r_lines, technique_name="Shear_Right")
+        #     final_lines = merge_text_lines(final_lines, filtered_shear_r)
+        #     
+        # reference_lines = list(final_lines)
+        #     
+        # if results[4][0]: # shear
+        #     shear_lines = process_result(results[4][0], 'shear', results[4][1], results[4][2])
+        #     filtered_shear = filter_redundant_geometry(final_lines, shear_lines, technique_name="Shear")
+        #     final_lines = merge_text_lines(final_lines, filtered_shear)
             
-        reference_lines = list(final_lines)
-            
-        if results[4][0]: # shear
-            shear_lines = process_result(results[4][0], 'shear', results[4][1], results[4][2])
-            filtered_shear = filter_redundant_geometry(final_lines, shear_lines, technique_name="Shear")
-            final_lines = merge_text_lines(final_lines, filtered_shear)
-            
-        # Rotate (Tech 6 & 7)
-        for idx_res, tech_name in [(5, 'rotate'), (6, 'rotate_cw')]:
-            if results[idx_res][0]:
-                lines_fwd = process_result(results[idx_res][0], tech_name, results[idx_res][1], results[idx_res][2], mode='forward')
-                lines_inv = process_result(results[idx_res][0], tech_name, results[idx_res][1], results[idx_res][2], mode='inverse')
-                
-                score_fwd = calculate_match_score(lines_fwd, reference_lines)
-                score_inv = calculate_match_score(lines_inv, reference_lines)
-                
-                if score_fwd > score_inv * 1.2:
-                    best_score, best_lines = score_fwd, lines_fwd
-                else:
-                    best_score, best_lines = score_inv, lines_inv
-                    
-                threshold = max(3, len(reference_lines) * 0.20)
-                if best_score >= threshold:
-                    filtered_lines = filter_redundant_geometry(final_lines, best_lines, technique_name=tech_name)
-                    final_lines = merge_text_lines(final_lines, filtered_lines)
+        # Rotate (Tech 6 & 7) - Temporarily Disabled
+        # for idx_res, tech_name in [(5, 'rotate'), (6, 'rotate_cw')]:
+        #     if results[idx_res][0]:
+        #         lines_fwd = process_result(results[idx_res][0], tech_name, results[idx_res][1], results[idx_res][2], mode='forward')
+        #         lines_inv = process_result(results[idx_res][0], tech_name, results[idx_res][1], results[idx_res][2], mode='inverse')
+        #         
+        #         score_fwd = calculate_match_score(lines_fwd, reference_lines)
+        #         score_inv = calculate_match_score(lines_inv, reference_lines)
+        #         
+        #         if score_fwd > score_inv * 1.2:
+        #             best_score, best_lines = score_fwd, lines_fwd
+        #         else:
+        #             best_score, best_lines = score_inv, lines_inv
+        #             
+        #         threshold = max(3, len(reference_lines) * 0.20)
+        #         if best_score >= threshold:
+        #             filtered_lines = filter_redundant_geometry(final_lines, best_lines, technique_name=tech_name)
+        #             final_lines = merge_text_lines(final_lines, filtered_lines)
                     
         final_lines.sort(key=lambda line: line.words[0].y if line.words else 0)
         

@@ -1,0 +1,16 @@
+[package]
+name = "rust_ocr"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "rust_ocr"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29.0", features = ["extension-module"] }
+numpy = "0.29.0"
+rapidocr-core = { version = "0.2.2", features = ["model-download"] }
+tokio = { version = "1.0", features = ["full"] }
+image = "0.25.5"
+lazy_static = "1.5.0"

@@ -33,6 +33,12 @@ class SettingsDialog(ctk.CTkToplevel):
             self.focus_set()
 
     def _build_ui(self):
+        from ...services.config_service import ConfigService
+        from ...core.engine import AsyncEngine
+        
+        self.config = ConfigService()
+        self.engine = AsyncEngine()
+
         # Title
         ctk.CTkLabel(
             self, 
@@ -40,15 +46,10 @@ class SettingsDialog(ctk.CTkToplevel):
             font=("Segoe UI", 20, "bold")
         ).pack(pady=(20, 10))
         
-        # Placeholder content
         content_frame = ctk.CTkFrame(self, fg_color="transparent")
         content_frame.pack(fill="both", expand=True, padx=20, pady=10)
         
-        ctk.CTkLabel(
-            content_frame,
-            text="Settings options coming soon...",
-            text_color="gray70"
-        ).pack(pady=20)
+        # Settings content goes here
         
         # Close Button
         ctk.CTkButton(

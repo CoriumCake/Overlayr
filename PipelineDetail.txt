@@ -1,6 +1,6 @@
 ================================================================================
   OVERLAYR — รายละเอียดฟังก์ชันทั้งหมด (ภาษาไทย)
-  อัปเดต: 2026-07-16
+  อัปเดต: 2026-07-20
 ================================================================================
 
 โครงสร้างโปรเจกต์
@@ -22,7 +22,8 @@ src/overlayr/
   │   ├── source_manager.py     — รายการหน้าต่างและจอแสดงผล
   │   ├── translator.py         — TranslatorService (Google, Legacy)
   │   ├── validation_service.py — ตรวจกรองข้อความ OCR ที่ไม่ต้องการ
-  │   └── windows_ocr.py        — Windows 10/11 OCR (10 เทคนิคขนาน)
+  │   └── windows_ocr.py        — (ถูกถอดออก) เปลี่ยนไปใช้ rust_ocr แทน
+  ├── rust_ocr_src/             — Source code ของ Rust OCR (ใช้ ONNX Runtime)
   └── utils/
       ├── image_utils.py      — เปรียบเทียบภาพ (RMS Diff)
       ├── single_instance.py  — ป้องกันรันโปรแกรมซ้ำ (Named Pipe)
@@ -53,7 +54,7 @@ src/overlayr/
   หน้าที่: ควบคุมการทำงาน OCR → แปลภาษา → ส่งผลลัพธ์ไปแสดงผล
 
   __init__()
-    → สร้าง WindowsOCREngine, GoogleTranslateService, TextPostProcessor
+    → สร้าง RustOCREngine (ผ่าน wrapper สำหรับเรียกใช้โมดูล rust_ocr), GoogleTranslateService, TextPostProcessor
     → สร้าง Translation Cache แบบ LRU (OrderedDict, ขนาด 100)
     → ตั้ง _is_running = False
 
@@ -78,7 +79,9 @@ src/overlayr/
   async process_image(image, step_callback, skip_translation, merge_mode)
     → Pipeline หลักของระบบ:
       1. แปลง PIL Image → OpenCV BGR
-      2. รัน OCR ด้วย WindowsOCREngine.extract_text()
+      1.1 [ใหม่] Smart Frame Skipping: คำนวณความเหมือนภาพ (Similarity > 90%) 
+          ข้าม OCR และหน่วงเวลา CPU (Sleep 0.3s) หากภาพไม่เปลี่ยนแปลง
+      2. รัน OCR ด้วย rust_ocr (ONNX Runtime / C-Bridge)
       3. ทำความสะอาดข้อความด้วย TextPostProcessor
       4. กรองข้อความด้วย ValidationService.is_valid_text()
       5. ดึงสีพื้นหลังของแต่ละ bbox (bg_color)

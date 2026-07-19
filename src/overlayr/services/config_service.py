@@ -8,7 +8,8 @@ class ConfigService:
             "appearance_mode": "Dark",
             "source_lang": "Japanese",
             "target_lang": "Thai",
-            "grouping_mode": "Group (Manga)"
+            "grouping_mode": "Group (Manga)",
+            "ocr_engine": "WindowsOCR"
         }
         self.load()
 

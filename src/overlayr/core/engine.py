@@ -2,7 +2,7 @@ import asyncio
 from typing import Optional, Tuple, Callable, List, Dict, Any
 from PIL import Image
 import numpy as np
-from ..services.windows_ocr import WindowsOCREngine
+# WindowsOCREngine import removed
 from ..services.google_translate import GoogleTranslateService
 from ..services.validation_service import ValidationService
 from ..utils.singleton import SingletonMeta
@@ -18,8 +18,11 @@ class AsyncEngine(metaclass=SingletonMeta):
     """
     def __init__(self) -> None:
         print("AsyncEngine: Init start...", flush=True)
-        self.ocr_service = WindowsOCREngine()
-        print("AsyncEngine: Windows OCR initialized.", flush=True)
+        from ..services.config_service import ConfigService
+        self.config = ConfigService()
+        from ..services.rust_ocr_service import RustOCREngine
+        self.ocr_service = RustOCREngine()
+        print(f"AsyncEngine: Rust RapidOCR initialized.", flush=True)
         self.translator_service = GoogleTranslateService()
         print("AsyncEngine: Google Translate initialized.", flush=True)
         self.post_processor = TextPostProcessor()
@@ -34,6 +37,12 @@ class AsyncEngine(metaclass=SingletonMeta):
         self.CACHE_SIZE = 100
         
         self._loop_counter = 0
+
+    def update_ocr_engine(self, engine_name: str = None):
+        print(f"AsyncEngine: Initializing Rust RapidOCR Engine...", flush=True)
+        from ..services.rust_ocr_service import RustOCREngine
+        self.ocr_service = RustOCREngine()
+        print(f"AsyncEngine: OCR Engine set to Rust RapidOCR.", flush=True)
 
     def set_status_callback(self, callback):
         """Pass UI status callback to services."""
@@ -99,13 +108,12 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         # Helper to log time and save debug images
         last_time = time.perf_counter()
-        debug_dir = os.path.join(os.getcwd(), "debug_images")
-        # if not os.path.exists(debug_dir): os.makedirs(debug_dir) # Only create if needed
+        debug_dir = r"d:\NotWork\NewWork\Overlayr\debug_images"
         timestamp = int(time.time() * 1000)
         
         # TOGGLE: Debug Image Saving
         SAVE_INTERMEDIATE_DEBUG = False
-        SAVE_FINAL_DEBUG = False
+        SAVE_FINAL_DEBUG = True
 
         if SAVE_INTERMEDIATE_DEBUG or SAVE_FINAL_DEBUG:
             if not os.path.exists(debug_dir):
@@ -131,6 +139,27 @@ class AsyncEngine(metaclass=SingletonMeta):
         open_cv_image = np.array(image.convert('RGB')) 
         open_cv_image = open_cv_image[:, :, ::-1].copy()
         
+        import cv2
+        import asyncio
+        gray_image = cv2.cvtColor(open_cv_image, cv2.COLOR_BGR2GRAY)
+        
+        if hasattr(self, 'last_gray_image') and self.last_gray_image is not None:
+            if self.last_gray_image.shape == gray_image.shape:
+                diff = cv2.absdiff(self.last_gray_image, gray_image)
+                _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
+                non_zero = cv2.countNonZero(thresh)
+                total_pixels = gray_image.shape[0] * gray_image.shape[1]
+                diff_percent = (non_zero / total_pixels) * 100.0
+                sim_percent = 100.0 - diff_percent
+                print(f"[DEBUG] Image Similarity: {sim_percent:.2f}%", flush=True)
+                
+                if sim_percent >= 90.0:
+                    if hasattr(self, 'last_process_result'):
+                        await asyncio.sleep(0.3)
+                        return self.last_process_result
+        
+        self.last_gray_image = gray_image
+        
         # 1. Smart Scaling (Optimize for Speed/Accuracy)
         w, h = image.size
         # The new WindowsOCREngine handles its own preprocessing (Grayscale, CLAHE, etc.)
@@ -138,7 +167,14 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         # Execute OCR
         ocr_start = time.perf_counter()
-        results = await self.ocr_service.extract_text(image)
+        
+        import inspect
+        import asyncio
+        if inspect.iscoroutinefunction(self.ocr_service.extract_text):
+            results = await self.ocr_service.extract_text(image)
+        else:
+            # EasyOCR is synchronous and CPU-bound, run it in a background thread
+            results = await asyncio.to_thread(self.ocr_service.extract_text, image)
         ocr_dur = (time.perf_counter() - ocr_start) * 1000
         print(f"[DEBUG] OCR Processing: {ocr_dur:.2f} ms", flush=True)
         t1 = time.time()
@@ -219,9 +255,6 @@ class AsyncEngine(metaclass=SingletonMeta):
                 "bg_color": bg_color_hex
             })
 
-        # --- DEBUG SAVE: Processed Image + Grouped Boxes ---
-        # Removed as WindowsOCREngine handles its own debug images if needed.
-
         if not metadata:
             return [], raw_text
 
@@ -231,6 +264,29 @@ class AsyncEngine(metaclass=SingletonMeta):
         # DEBUG CALLBACK: MERGE DONE
         if step_callback:
             await step_callback("MERGED", merged_metadata)
+            
+        # --- DEBUG SAVE: Processed Image + Grouped Boxes ---
+        if SAVE_FINAL_DEBUG:
+            try:
+                debug_img = open_cv_image.copy()
+                for i, item in enumerate(merged_metadata):
+                    try:
+                        b = item["bbox"]
+                        x1, y1, x2, y2 = int(b[0]), int(b[1]), int(b[2]), int(b[3])
+                        cv2.rectangle(debug_img, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                        
+                        # Try drawing text, if it fails (e.g. unicode error), ignore
+                        safe_text = str(item["original"]).encode('ascii', 'ignore').decode('ascii')
+                        cv2.putText(debug_img, safe_text, (x1, max(0, y1-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+                    except Exception as inner_e:
+                        print(f"[DEBUG] Failed to draw box {i}: {inner_e}", flush=True)
+                
+                fname = f"final_grouped_{timestamp}.png"
+                success = cv2.imwrite(os.path.join(debug_dir, fname), debug_img)
+                if not success:
+                    print(f"[DEBUG] cv2.imwrite returned False for {fname}", flush=True)
+            except Exception as e:
+                print(f"[DEBUG] Failed to save final debug image: {e}", flush=True)
         
         texts_to_translate = [m["original"] for m in merged_metadata]
 
@@ -301,6 +357,7 @@ class AsyncEngine(metaclass=SingletonMeta):
         t2 = time.time()
         print(f"OCR: {t1-t0:.2f}s | Translate: {t2-t1:.2f}s | Items: {len(final_results)}", flush=True)
         
+        self.last_process_result = (final_results, raw_text)
         return final_results, raw_text
 
     def _merge_text_blocks(self, elements: List[Dict[str, Any]], mode: str = "paragraph") -> List[Dict[str, Any]]:
@@ -413,7 +470,6 @@ class AsyncEngine(metaclass=SingletonMeta):
 
         if mode == "line":
             # --- IMPROVED DOCUMENT MODE: Smart Paragraphs ---
-            # 1. First, merge HORIZONTAL fragments into strict lines (as old logic did partially)
             elements.sort(key=lambda x: x["bbox"][1])
             
             lines = []
@@ -431,22 +487,24 @@ class AsyncEngine(metaclass=SingletonMeta):
                     for j in range(len(elements)):
                         if visited[j]: continue
                         
-                        # Check strictly horizontal
                         is_same_line = False
                         for existing in line_group:
                              b1 = existing["bbox"]
                              b2 = elements[j]["bbox"]
                              
-                             # Vertical center check
-                             cy1 = (b1[1]+b1[3])/2
-                             cy2 = (b2[1]+b2[3])/2
+                             h1 = b1[3] - b1[1]
+                             h2 = b2[3] - b2[1]
+                             min_h = min(h1, h2)
                              
-                             if abs(cy1 - cy2) < 15: # Same line
-                                 # Horizontal proximity
+                             # Vertical overlap check (continuity instead of strict center alignment)
+                             overlap_y = max(0, min(b1[3], b2[3]) - max(b1[1], b2[1]))
+                             
+                             if overlap_y > min_h * 0.4:
+                                 # Horizontal proximity relative to height
                                  h_gap = max(0, min(abs(b1[2]-b2[0]), abs(b2[2]-b1[0])))
                                  overlap_w = max(0, min(b1[2], b2[2]) - max(b1[0], b2[0]))
                                  
-                                 if h_gap < 150 or overlap_w > 0:
+                                 if h_gap < min_h * 4.0 or overlap_w > 0:
                                      is_same_line = True
                                      break
                         
@@ -458,7 +516,7 @@ class AsyncEngine(metaclass=SingletonMeta):
                 # Merge fragments into a single "Line" object
                 lines.append(merge_cluster(line_group))
 
-            # Step 2: Merge Lines into Paragraphs (But respect Headers/Sections)
+            # Step 2: Merge Lines into Paragraphs (Respect Headers/Sections/Bullets)
             if not lines: return []
             
             lines.sort(key=lambda x: x["bbox"][1])
@@ -470,132 +528,119 @@ class AsyncEngine(metaclass=SingletonMeta):
                 prev = current_para[-1]
                 curr = lines[i]
                 
-                # Metrics
-                # 1. Vertical Gap
                 gap = curr["bbox"][1] - prev["bbox"][3]
-                
-                # 2. Height difference (Header vs Body?)
                 h_prev = prev["bbox"][3] - prev["bbox"][1]
                 h_curr = curr["bbox"][3] - curr["bbox"][1]
                 avg_h = (h_prev + h_curr) / 2
-                
-                # 3. Font Size Ratio
                 ratio = max(h_prev, h_curr) / (min(h_prev, h_curr) + 0.1)
-
-                # 4. Horizontal Overlap (Column Check)
-                # Overlap X range
+                
                 p_x1, p_x2 = prev["bbox"][0], prev["bbox"][2]
                 c_x1, c_x2 = curr["bbox"][0], curr["bbox"][2]
                 
                 overlap_x = max(0, min(p_x2, c_x2) - max(p_x1, c_x1))
-                # Horizontal Gap (if no overlap)
                 if overlap_x > 0:
                     h_gap = 0
                 else:
                     h_gap = max(0, c_x1 - p_x2, p_x1 - c_x2)
                 
-                # Decisions:
                 is_same_para = False
                 
-                # CONDITION A: Must align horizontally (Same column)
-                # Significant overlap OR very small horizontal gap (indentation/bullet)
-                # Let's say overlap > 0 OR h_gap < 50 (to allow small bullets)
-                is_same_column = (overlap_x > 0) or (h_gap < 50)
+                # Check for bullet points or lists
+                text_stripped = curr["original"].strip()
+                is_bullet = text_stripped.startswith(('-', '*', '•', '>', '1.', '2.', '3.'))
                 
-                if is_same_column:
-                    # CONDITION B: Must be vertically close (Same paragraph flow)
-                    # Allow gap up to 1.5x height for same paragraph
-                    if gap < avg_h * 1.5:
-                        # CONDITION C: Similar Font Size (Body text)
-                        if ratio < 1.3:
-                            is_same_para = True
-                        else:
-                            # Font size changed -> Header vs Content
-                            is_same_para = False
-                    else:
-                        # Large vertical gap -> New paragraph
-                        is_same_para = False
-                else:
-                    # Different Column -> New paragraph/block
-                    is_same_para = False
+                # Check for indentation (large X jump)
+                is_indented = abs(c_x1 - p_x1) > avg_h * 2.0
+                
+                if not is_bullet and not is_indented:
+                    is_same_column = (overlap_x > 0) or (h_gap < avg_h * 1.5)
+                    if is_same_column:
+                        if gap < avg_h * 1.5:
+                            if ratio < 1.3:
+                                is_same_para = True
                 
                 if is_same_para:
                     current_para.append(curr)
                 else:
-                    # Flush current para
                     paragraphs.append(merge_cluster(current_para))
                     current_para = [curr]
             
-            # Flush last
             if current_para:
                 paragraphs.append(merge_cluster(current_para))
                 
             return paragraphs
 
         # ---- PARAGRAPH / MANGA MODE (Clustering) ----
-        # 1. Sort by Y initially
-        elements.sort(key=lambda x: x["bbox"][1])
+        import math
         
+        def rect_distance(b1, b2):
+            left1, top1, right1, bottom1 = b1
+            left2, top2, right2, bottom2 = b2
+            
+            if left1 < right2 and right1 > left2 and top1 < bottom2 and bottom1 > top2:
+                return 0.0
+                
+            x_dist = 0
+            if right1 < left2: x_dist = left2 - right1
+            elif right2 < left1: x_dist = left1 - right2
+                
+            y_dist = 0
+            if bottom1 < top2: y_dist = top2 - bottom1
+            elif bottom2 < top1: y_dist = top1 - bottom2
+                
+            return math.sqrt(x_dist**2 + y_dist**2)
+
+        elements.sort(key=lambda x: x["bbox"][1])
         clusters = []
         
         for item in elements:
             x, y, w, h = get_vals(item)
+            item_bbox = item["bbox"]
             added = False
             
             for cluster in clusters:
-                # Calculate cluster bbox
-                cl = [i["bbox"][0] for i in cluster]
-                ct = [i["bbox"][1] for i in cluster]
-                cr = [i["bbox"][2] for i in cluster]
-                cb = [i["bbox"][3] for i in cluster] # Bottom of each item
+                heights = [i["bbox"][3] - i["bbox"][1] for i in cluster]
+                heights.sort()
+                med_h = heights[len(heights)//2] if heights else h
                 
-                c_min_x = min(cl); c_max_x = max(cr)
-                c_min_y = min(ct); c_max_y = max(cb) # Max bottom
+                min_dist = float('inf')
+                for c_item in cluster:
+                    d = rect_distance(item_bbox, c_item["bbox"])
+                    if d < min_dist:
+                        min_dist = d
                 
-                # Check horizontal overlap
-                # item x range: [x, x+w]
-                # cluster x range: [c_min_x, c_max_x]
-                item_r = x + w
-                
-                overlap_w = max(0, min(item_r, c_max_x) - max(x, c_min_x))
-                
-                # Significant X overlap (> 0 is basically enough for bubbles)
-                if overlap_w > 0:
-                    # Check vertical distance
-                    # Dist from bottom of cluster to top of item
-                    # We need the bottom-most point of the cluster effectively
-                    
-                    v_dist = max(0, y - c_max_y)
-                    
-                    # Heuristic: If v_dist is small relative to line height
-                    # item height: h
-                    if v_dist < h * 2.0:
-                        cluster.append(item)
-                        added = True
-                        break
+                if min_dist < med_h * 1.2:
+                    cluster.append(item)
+                    added = True
+                    break
             
             if not added:
                 clusters.append([item])
                 
         # 2. Sort Clusters (Row-Column Sort)
-        # Helper to get top-left of cluster
         def get_cluster_pos(c):
             ts = [i["bbox"][1] for i in c]
             ls = [i["bbox"][0] for i in c]
             return min(ls), min(ts)
+            
+        def get_cluster_median_h(c):
+            heights = [i["bbox"][3] - i["bbox"][1] for i in c]
+            heights.sort()
+            return heights[len(heights)//2] if heights else 20
 
-        # Sort by Y first
         clusters.sort(key=lambda c: get_cluster_pos(c)[1])
         
         sorted_clusters = []
-        row_threshold = 100 # If Y diff < 100, treat as same row (Matched WindowsOCRTool)
         
         while clusters:
             current = clusters.pop(0)
             cx, cy = get_cluster_pos(current)
+            med_h = get_cluster_median_h(current)
             
             row = [current]
             others = []
+            
+            row_threshold = med_h * 1.5
             
             for other in clusters:
                 ox, oy = get_cluster_pos(other)

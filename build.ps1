@@ -24,11 +24,15 @@ pyinstaller `
     --onefile `
     --name "Overlayr" `
     --icon "icon.ico" `
+    --paths "src" `
     --add-data "assets;assets" `
     --add-data "src;src" `
-    --collect-all "rapidocr_onnxruntime" `
+    --collect-all "rust_ocr" `
     --collect-all "symspellpy" `
     --collect-all "customtkinter" `
+    --collect-all "cv2" `
+    --collect-all "deep_translator" `
+    --collect-all "PIL" `
     main.py
 
 Write-Host "Build complete. Check dist/Overlayr.exe"

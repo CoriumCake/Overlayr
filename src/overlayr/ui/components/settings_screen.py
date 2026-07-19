@@ -350,6 +350,8 @@ class SettingsScreen(ctk.CTkFrame):
         self.appearance_content.configure(fg_color=colors["bg_card"])
         self.appearance_header_row.configure(fg_color=colors["bg_card"])
         self.appearance_label.configure(text_color=colors["text_primary"])
+        if hasattr(self, 'engine_label'):
+            self.engine_label.configure(text_color=colors["text_primary"])
         # theme_switch handles its own colors via segmented button defaults usually,
         # but we can configure it if needed
         # self.theme_switch.configure(...) 
