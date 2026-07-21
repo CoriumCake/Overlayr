@@ -20,9 +20,9 @@ class AsyncEngine(metaclass=SingletonMeta):
         print("AsyncEngine: Init start...", flush=True)
         from ..services.config_service import ConfigService
         self.config = ConfigService()
-        from ..services.rust_ocr_service import RustOCREngine
-        self.ocr_service = RustOCREngine()
-        print(f"AsyncEngine: Rust RapidOCR initialized.", flush=True)
+        from ..services.windows_ocr import WindowsOCREngine
+        self.ocr_service = WindowsOCREngine()
+        print(f"AsyncEngine: WindowsOCR initialized.", flush=True)
         self.translator_service = GoogleTranslateService()
         print("AsyncEngine: Google Translate initialized.", flush=True)
         self.post_processor = TextPostProcessor()
@@ -39,10 +39,10 @@ class AsyncEngine(metaclass=SingletonMeta):
         self._loop_counter = 0
 
     def update_ocr_engine(self, engine_name: str = None):
-        print(f"AsyncEngine: Initializing Rust RapidOCR Engine...", flush=True)
-        from ..services.rust_ocr_service import RustOCREngine
-        self.ocr_service = RustOCREngine()
-        print(f"AsyncEngine: OCR Engine set to Rust RapidOCR.", flush=True)
+        print(f"AsyncEngine: Initializing WindowsOCR Engine...", flush=True)
+        from ..services.windows_ocr import WindowsOCREngine
+        self.ocr_service = WindowsOCREngine()
+        print(f"AsyncEngine: OCR Engine set to WindowsOCR.", flush=True)
 
     def set_status_callback(self, callback):
         """Pass UI status callback to services."""
@@ -571,95 +571,9 @@ class AsyncEngine(metaclass=SingletonMeta):
             return paragraphs
 
         # ---- PARAGRAPH / MANGA MODE (Clustering) ----
-        import math
-        
-        def rect_distance(b1, b2):
-            left1, top1, right1, bottom1 = b1
-            left2, top2, right2, bottom2 = b2
-            
-            if left1 < right2 and right1 > left2 and top1 < bottom2 and bottom1 > top2:
-                return 0.0
-                
-            x_dist = 0
-            if right1 < left2: x_dist = left2 - right1
-            elif right2 < left1: x_dist = left1 - right2
-                
-            y_dist = 0
-            if bottom1 < top2: y_dist = top2 - bottom1
-            elif bottom2 < top1: y_dist = top1 - bottom2
-                
-            return math.sqrt(x_dist**2 + y_dist**2)
-
-        elements.sort(key=lambda x: x["bbox"][1])
-        clusters = []
-        
-        for item in elements:
-            x, y, w, h = get_vals(item)
-            item_bbox = item["bbox"]
-            added = False
-            
-            for cluster in clusters:
-                heights = [i["bbox"][3] - i["bbox"][1] for i in cluster]
-                heights.sort()
-                med_h = heights[len(heights)//2] if heights else h
-                
-                min_dist = float('inf')
-                for c_item in cluster:
-                    d = rect_distance(item_bbox, c_item["bbox"])
-                    if d < min_dist:
-                        min_dist = d
-                
-                if min_dist < med_h * 1.2:
-                    cluster.append(item)
-                    added = True
-                    break
-            
-            if not added:
-                clusters.append([item])
-                
-        # 2. Sort Clusters (Row-Column Sort)
-        def get_cluster_pos(c):
-            ts = [i["bbox"][1] for i in c]
-            ls = [i["bbox"][0] for i in c]
-            return min(ls), min(ts)
-            
-        def get_cluster_median_h(c):
-            heights = [i["bbox"][3] - i["bbox"][1] for i in c]
-            heights.sort()
-            return heights[len(heights)//2] if heights else 20
-
-        clusters.sort(key=lambda c: get_cluster_pos(c)[1])
-        
-        sorted_clusters = []
-        
-        while clusters:
-            current = clusters.pop(0)
-            cx, cy = get_cluster_pos(current)
-            med_h = get_cluster_median_h(current)
-            
-            row = [current]
-            others = []
-            
-            row_threshold = med_h * 1.5
-            
-            for other in clusters:
-                ox, oy = get_cluster_pos(other)
-                if abs(oy - cy) < row_threshold:
-                    row.append(other)
-                else:
-                    others.append(other)
-            
-            # Sort row by X
-            row.sort(key=lambda c: get_cluster_pos(c)[0])
-            sorted_clusters.extend(row)
-            clusters = others
-            
-        # 3. Final Merge
-        final_results = []
-        for cluster in sorted_clusters:
-            final_results.append(merge_cluster(cluster))
-            
-        return final_results
+        # Grouping is now natively handled by DBNet within windows_ocr.py
+        # Therefore, elements returned from extract_text are already clustered.
+        return elements
                         
 
 

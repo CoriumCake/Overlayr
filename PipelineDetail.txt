@@ -18,11 +18,11 @@ src/overlayr/
   │   ├── google_translate.py   — แปลภาษาด้วย Google Translate (Async)
   │   ├── local_translator.py   — แปลภาษาด้วยโมเดล M2M100 (ออฟไลน์)
   │   ├── ocr.py                — OCR ด้วย EasyOCR (เก่า/สำรอง)
-  │   ├── ocr_preprocessor.py   — เตรียมภาพสำหรับ OCR (OpenCV)
+  │   ├── ocr_preprocessor.py   — เตรียมภาพสำหรับ OCR (OpenCV) และ Bubble Detection
   │   ├── source_manager.py     — รายการหน้าต่างและจอแสดงผล
   │   ├── translator.py         — TranslatorService (Google, Legacy)
   │   ├── validation_service.py — ตรวจกรองข้อความ OCR ที่ไม่ต้องการ
-  │   └── windows_ocr.py        — (ถูกถอดออก) เปลี่ยนไปใช้ rust_ocr แทน
+  │   └── windows_ocr.py        — คลาส WindowsOCREngine ทำงานแบบขนาน 4 เทคนิค (เน้นความเร็วสูงสุด)
   ├── rust_ocr_src/             — Source code ของ Rust OCR (ใช้ ONNX Runtime)
   └── utils/
       ├── image_utils.py      — เปรียบเทียบภาพ (RMS Diff)
@@ -54,7 +54,7 @@ src/overlayr/
   หน้าที่: ควบคุมการทำงาน OCR → แปลภาษา → ส่งผลลัพธ์ไปแสดงผล
 
   __init__()
-    → สร้าง RustOCREngine (ผ่าน wrapper สำหรับเรียกใช้โมดูล rust_ocr), GoogleTranslateService, TextPostProcessor
+    → สร้าง WindowsOCREngine, GoogleTranslateService, TextPostProcessor
     → สร้าง Translation Cache แบบ LRU (OrderedDict, ขนาด 100)
     → ตั้ง _is_running = False
 
@@ -81,7 +81,7 @@ src/overlayr/
       1. แปลง PIL Image → OpenCV BGR
       1.1 [ใหม่] Smart Frame Skipping: คำนวณความเหมือนภาพ (Similarity > 90%) 
           ข้าม OCR และหน่วงเวลา CPU (Sleep 0.3s) หากภาพไม่เปลี่ยนแปลง
-      2. รัน OCR ด้วย rust_ocr (ONNX Runtime / C-Bridge)
+      2. รัน OCR ด้วย WindowsOCREngine พร้อมจัดกลุ่ม Paragraph อัตโนมัติด้วย DBNet
       3. ทำความสะอาดข้อความด้วย TextPostProcessor
       4. กรองข้อความด้วย ValidationService.is_valid_text()
       5. ดึงสีพื้นหลังของแต่ละ bbox (bg_color)
@@ -93,7 +93,7 @@ src/overlayr/
 
   _merge_text_blocks(elements, mode)
     → รวมกลุ่ม text box ที่อยู่ใกล้กัน
-    → mode="paragraph" (Manga): Clustering แนวตั้ง+แนวนอน
+    → mode="paragraph" (Manga): ข้ามการจัดกลุ่มซ้ำซ้อน เพราะ WindowsOCREngine จัดกลุ่มผ่าน DBNet มาให้แล้ว (นำผลมาใช้โดยตรงเพื่อความแม่นยำและรวดเร็ว)
     → mode="line" (Document): จัดกลุ่มบรรทัด → จัดกลุ่มย่อหน้า
     → ขั้นแรกกรอง box ซ้อนกัน (>50% overlap = nested, รวมหรือทิ้ง)
     → inner function get_vals(el): คืน (x, y, w, h) จาก bbox dict
@@ -475,6 +475,11 @@ src/overlayr/
     → Grayscale → Scale 2x (INTER_CUBIC) → Sharpen (kernel 3x3)
     → คืน (processed_img, scale_factor=2.0)
 
+  detect_text_regions_dbnet(image_source)
+    → [ใหม่] โหลดโมเดล Deep Learning 'Detec_Manga-English.onnx' ผ่าน ONNX Runtime
+    → ใช้ DBNet สร้าง Text Regions (Polygon) เพื่อจัดกลุ่มประโยคได้อย่างแม่นยำโดยเฉพาะกับมังงะ
+    → ส่งคืน Polygon Regions
+
   detect_text_regions(image_source, bubbles)
     → ตรวจหาบริเวณที่น่าจะมีข้อความด้วย Morphological Dilation
     → ถ้ามี bubbles: แยกประมวลผลภายใน/ภายนอก bubble แต่ละอัน
@@ -592,6 +597,31 @@ src/overlayr/
 
     warmup()
       → stub ว่างๆ
+
+
+================================================================================
+ services/windows_ocr.py — WindowsOCREngine
+================================================================================
+  คลาส: WindowsOCREngine
+  หน้าที่: เรียกใช้งาน WindowsOCR โดยใช้ 4 เทคนิคขนาน (Baseline, Thicken, Simple Threshold, CLAHE)
+
+  __init__()
+    → เตรียมระบบ WindowsOCR
+
+  async extract_text(image)
+    → รัน OCR 4 เทคนิคพร้อมกันผ่าน asyncio.gather (Baseline, Thicken, Simple Threshold, CLAHE)
+    → รวมผลลัพธ์ (Merge Text Lines)
+    → ส่งผลลัพธ์ไปที่ group_text_lines() เพื่อจัดกลุ่มระดับคำ (Word-level) เข้าสู่ Polygon Region ที่ได้จาก DBNet
+    → คืนผลลัพธ์เป็น list ของ group dict {type, id, lines}
+
+
+================================================================================
+ services/ocr_preprocessor.py — Image Processing & Bubble Detection
+================================================================================
+  detect_speech_bubbles(image)
+    → ใช้ Morphological operations และ Topological Analysis
+    → ค้นหาและแยก Speech Bubble (Watershed, Convexity Defects)
+    → ส่งคืนลิสต์ของ Contour
 
 
 ================================================================================
@@ -746,15 +776,14 @@ src/overlayr/
 
   [ประมวลผลภาพ]
   AsyncEngine.process_image(image)
+    ├── [Smart Frame Skipping] ตรวจสอบความเหมือนของภาพ ถ้า >90% ข้ามไปใช้ผลลัพธ์เดิม
     ├── WindowsOCREngine.extract_text(image)
-    │     ├── run_ocr (10 เทคนิขนาน: baseline/threshold/CLAHE/shear/rotate/...)
-    │     ├── correct_geometry (แปลงพิกัดกลับ)
-    │     ├── merge_text_lines (รวม duplicate ข้ามเทคนิค)
-    │     └── filter_redundant_geometry (ลบ duplicate)
+    │     ├── รัน 4 เทคนิคพร้อมกัน และรวมผลลัพธ์ (เน้นความเร็ว)
+    │     └── จัดกลุ่มคำ (Word-level) ลง Paragraph ด้วย DBNet (Deep Learning)
     ├── TextPostProcessor.clean_text() — regex cleanup
     ├── TextPostProcessor.correct_text() — SymSpell + custom rules
     ├── ValidationService.is_valid_text() — กรองเนื้อหาที่ไม่ใช่ข้อความจริง
-    ├── _merge_text_blocks() — จัดกลุ่ม text blocks (paragraph/line mode)
+    ├── _merge_text_blocks() — ข้ามการจัดกลุ่มซ้ำซ้อนหากเป็น paragraph mode นำโครงสร้างจาก DBNet มาใช้
     └── GoogleTranslateService.translate() — แปลภาษา (parallel, cached)
 
   [แสดงผล]

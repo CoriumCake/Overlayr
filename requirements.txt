@@ -17,3 +17,6 @@ requests
 winsdk
 
 onnxruntime-directml
+
+onnxruntime
+pyclipper

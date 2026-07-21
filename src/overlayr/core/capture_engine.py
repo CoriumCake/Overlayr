@@ -77,7 +77,7 @@ class CaptureEngine(metaclass=SingletonMeta):
                 # Usually entire window including borders.
                 
                 img = self.wgc.get_latest_frame()
-                if img:
+                if img is not None:
                     # Get Window Position from WGC? No, WGC returns image. 
                     # We still need Window Position to draw the Overlay correctly!
                     # So we still need gw/pygetwindow to track the "Target Location" on screen!

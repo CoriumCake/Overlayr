@@ -1190,7 +1190,9 @@ class MainWindow(ctk.CTk):
             # self.after(0, self.overlay.hide)
 
         except Exception as e:
+            import traceback
             print(f"Proc Error: {e}")
+            traceback.print_exc()
 
     def _update_overlay_safe(self, results, raw_text, x, y, geometry, visible=True):
         if not self.is_streaming:
