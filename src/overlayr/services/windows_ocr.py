@@ -232,7 +232,8 @@ class TextLine:
         self.sources = {source} if source else set()
 
 class Rect:
-    def __init__(self, x, y, w, h):
+    def __init__(self, text, x, y, w, h):
+        self.text = text
         self.x, self.y, self.width, self.height = x, y, w, h
 
 
@@ -327,7 +328,7 @@ def correct_geometry(ocr_result, technique, scale, img_shape, matrix_mode='auto'
             min_y, max_y = min(ys), max(ys)
             
             # Normalize to original scale immediately
-            new_rect = Rect(min_x / scale, min_y / scale, (max_x - min_x) / scale, (max_y - min_y) / scale)
+            new_rect = Rect(word.text, min_x / scale, min_y / scale, (max_x - min_x) / scale, (max_y - min_y) / scale)
             new_words.append(new_rect)
             
         lines.append(TextLine(line.text, new_words, source=technique))
@@ -876,7 +877,13 @@ def group_text_lines(final_lines, image_source):
                 cv2.rectangle(debug_img, (x, y_pos - text_h - 5), (x + text_w, y_pos), (0, 0, 255), -1)
                 cv2.putText(debug_img, text, (x, y_pos - 5), font, font_scale, (255, 255, 255), thickness)
 
-            pass
+            import time
+            debug_dir = r"d:\NotWork\NewWork\Overlayr\debug_images"
+            if not os.path.exists(debug_dir):
+                os.makedirs(debug_dir, exist_ok=True)
+            timestamp = int(time.time() * 1000)
+            debug_out_path = os.path.join(debug_dir, f"dbnet_regions_{timestamp}.png")
+            cv2.imwrite(debug_out_path, debug_img)
     except Exception as e:
         print(f"Failed to save debug regions image: {e}")
     

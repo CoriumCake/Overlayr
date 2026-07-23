@@ -3,6 +3,6 @@
     "source_lang": "English",
     "target_lang": "Thai",
     "grouping_mode": "Group (Manga)",
-    "ocr_engine": "WindowsOCR",
+    "ocr_engine": "RapidOCR",
     "capture_mode": "Applications"
 }

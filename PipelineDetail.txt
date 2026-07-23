@@ -1,6 +1,6 @@
 ================================================================================
   OVERLAYR — รายละเอียดฟังก์ชันทั้งหมด (ภาษาไทย)
-  อัปเดต: 2026-07-20
+  อัปเดต: 2026-07-23
 ================================================================================
 
 โครงสร้างโปรเจกต์
@@ -22,8 +22,9 @@ src/overlayr/
   │   ├── source_manager.py     — รายการหน้าต่างและจอแสดงผล
   │   ├── translator.py         — TranslatorService (Google, Legacy)
   │   ├── validation_service.py — ตรวจกรองข้อความ OCR ที่ไม่ต้องการ
-  │   └── windows_ocr.py        — คลาส WindowsOCREngine ทำงานแบบขนาน 4 เทคนิค (เน้นความเร็วสูงสุด)
-  ├── rust_ocr_src/             — Source code ของ Rust OCR (ใช้ ONNX Runtime)
+  │   ├── windows_ocr.py        — คลาส WindowsOCREngine (เครื่องยนต์สำรอง)
+  │   ├── rapid_ocr.py          — คลาส RapidOCREngine ทำงานแบบเบ็ดเสร็จ (เครื่องยนต์หลัก)
+  │   └── ocr_postprocessor.py  — กฎแก้คำผิดเพิ่มเติม (ไม่ได้ถูกเปิดใช้งานในปัจจุบัน)
   └── utils/
       ├── image_utils.py      — เปรียบเทียบภาพ (RMS Diff)
       ├── single_instance.py  — ป้องกันรันโปรแกรมซ้ำ (Named Pipe)
@@ -54,7 +55,9 @@ src/overlayr/
   หน้าที่: ควบคุมการทำงาน OCR → แปลภาษา → ส่งผลลัพธ์ไปแสดงผล
 
   __init__()
-    → สร้าง WindowsOCREngine, GoogleTranslateService, TextPostProcessor
+    → ดึงการตั้งค่า OCR จาก ConfigService
+    → สร้าง RapidOCREngine (ค่าเริ่มต้น) หรือ WindowsOCREngine (ตัวสำรอง)
+    → สร้าง GoogleTranslateService, TextPostProcessor
     → สร้าง Translation Cache แบบ LRU (OrderedDict, ขนาด 100)
     → ตั้ง _is_running = False
 
@@ -81,7 +84,7 @@ src/overlayr/
       1. แปลง PIL Image → OpenCV BGR
       1.1 [ใหม่] Smart Frame Skipping: คำนวณความเหมือนภาพ (Similarity > 90%) 
           ข้าม OCR และหน่วงเวลา CPU (Sleep 0.3s) หากภาพไม่เปลี่ยนแปลง
-      2. รัน OCR ด้วย WindowsOCREngine พร้อมจัดกลุ่ม Paragraph อัตโนมัติด้วย DBNet
+      2. รัน OCR ด้วย RapidOCREngine (เครื่องยนต์หลัก ไม่ใช้ DBNet) หรือ WindowsOCREngine (สำรอง พร้อม DBNet)
       3. ทำความสะอาดข้อความด้วย TextPostProcessor
       4. กรองข้อความด้วย ValidationService.is_valid_text()
       5. ดึงสีพื้นหลังของแต่ละ bbox (bg_color)
@@ -515,6 +518,19 @@ src/overlayr/
 
 
 ================================================================================
+ services/rapid_ocr.py — RapidOCREngine
+================================================================================
+  คลาส: RapidOCREngine
+  หน้าที่: เรียกใช้งาน RapidOCR (เครื่องยนต์หลัก) ทำทั้งตรวจจับข้อความและอ่านข้อความเบ็ดเสร็จ
+  
+  __init__()
+    → โหลดโมเดล RapidOCR จาก rapidocr_onnxruntime
+
+  async extract_text(image)
+    → รัน OCR ใน Thread แยก (asyncio.to_thread)
+    → คืนผลลัพธ์เป็นรายการข้อความพร้อม Bounding Box และ Confidence Score
+
+================================================================================
  services/windows_ocr.py — WindowsOCREngine + helper functions
 ================================================================================
   คลาส: TextLine
@@ -777,9 +793,11 @@ src/overlayr/
   [ประมวลผลภาพ]
   AsyncEngine.process_image(image)
     ├── [Smart Frame Skipping] ตรวจสอบความเหมือนของภาพ ถ้า >90% ข้ามไปใช้ผลลัพธ์เดิม
-    ├── WindowsOCREngine.extract_text(image)
-    │     ├── รัน 4 เทคนิคพร้อมกัน และรวมผลลัพธ์ (เน้นความเร็ว)
-    │     └── จัดกลุ่มคำ (Word-level) ลง Paragraph ด้วย DBNet (Deep Learning)
+    ├── RapidOCREngine.extract_text(image) [เครื่องยนต์หลัก]
+    │     └── ค้นหาขอบเขตข้อความและอ่านข้อความแบบเบ็ดเสร็จ (End-to-End) ในตัวเอง
+    ├── (ทางเลือกสำรอง) WindowsOCREngine.extract_text(image)
+    │     ├── รัน 4 เทคนิคพร้อมกัน และรวมผลลัพธ์
+    │     └── จัดกลุ่มคำลง Paragraph ด้วย DBNet
     ├── TextPostProcessor.clean_text() — regex cleanup
     ├── TextPostProcessor.correct_text() — SymSpell + custom rules
     ├── ValidationService.is_valid_text() — กรองเนื้อหาที่ไม่ใช่ข้อความจริง

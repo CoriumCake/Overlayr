@@ -51,9 +51,9 @@ class TextPostProcessor:
         """
         if not text: return ""
         
-        # 1. Remove isolated special characters often mistaken for I/l/1 or noise
-        # e.g. " | " " _ "
-        cleaned = re.sub(r'\s+[-_|+=\\\/]+\s+', ' ', text)
+        # 1. (ปิดการใช้งาน) ยกเลิกลบอักขระพิเศษโดดๆ ตามที่ผู้ใช้ต้องการ
+        # e.g. " | " " _ " จะถูกคงไว้
+        cleaned = text
         
         # 2. Fix common ligatures or spacing issues (basic)
         cleaned = cleaned.replace("ﬁ", "fi").replace("ﬂ", "fl")
@@ -74,9 +74,18 @@ class TextPostProcessor:
         text = re.sub(r'(?i)\bZ[0O]-', '30-', text)  # Z0-YEAR -> 30-YEAR
         
         # OlD -> OLD (Handle 0LD, O1D, etc.)
-        # Use lookbehind for word boundary OR hyphen
-        text = re.sub(r'(?i)(?<=[\s\b-])[0O][l1I]D\b', 'OLD', text)
-        text = re.sub(r'(?i)\bY[E3][A4]R\b', 'YEAR', text) # Y3AR -> YEAR
+        # Use word boundary
+        text = re.sub(r'(?i)\b[0O][l1I]D\b', 'OLD', text)
+        text = re.sub(r'(?i)\bY[E34][A4]R\b', 'YEAR', text) # Y3AR, Y4AR -> YEAR
+        
+        # YE5 -> YES
+        text = re.sub(r'(?i)\bYE5\b', 'YES', text)
+        
+        # 1 CAN -> I CAN
+        text = re.sub(r'(?i)\b1\s+CAN\b', 'I CAN', text)
+        
+        # PON'T -> DON'T
+        text = re.sub(r'(?i)\bP[O0]N\'T\b', "DON'T", text)
         
         # FIX: "OH...I" read backwards as "I"""HO"
         text = re.sub(r'(?i)I"+HO', "OH...I", text)

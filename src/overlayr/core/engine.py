@@ -20,14 +20,15 @@ class AsyncEngine(metaclass=SingletonMeta):
         print("AsyncEngine: Init start...", flush=True)
         from ..services.config_service import ConfigService
         self.config = ConfigService()
-        from ..services.windows_ocr import WindowsOCREngine
-        self.ocr_service = WindowsOCREngine()
-        print(f"AsyncEngine: WindowsOCR initialized.", flush=True)
+        ocr_engine_name = self.config.get("ocr_engine", "RapidOCR")
+        self.update_ocr_engine(ocr_engine_name)
         self.translator_service = GoogleTranslateService()
         print("AsyncEngine: Google Translate initialized.", flush=True)
         self.post_processor = TextPostProcessor()
         print("AsyncEngine: PostProcessor initialized.", flush=True)
         self._is_running = False
+        self.source = "en"
+        self.target = "th"
         self._loop_task: Optional[asyncio.Task] = None
         
         # Translation Cache: LRU (OrderedDict)
@@ -39,10 +40,20 @@ class AsyncEngine(metaclass=SingletonMeta):
         self._loop_counter = 0
 
     def update_ocr_engine(self, engine_name: str = None):
-        print(f"AsyncEngine: Initializing WindowsOCR Engine...", flush=True)
-        from ..services.windows_ocr import WindowsOCREngine
-        self.ocr_service = WindowsOCREngine()
-        print(f"AsyncEngine: OCR Engine set to WindowsOCR.", flush=True)
+        if engine_name is None:
+            engine_name = self.config.get("ocr_engine", "RapidOCR")
+            
+        print(f"AsyncEngine: Initializing {engine_name} Engine...", flush=True)
+        
+        if engine_name == "WindowsOCR":
+            from ..services.windows_ocr import WindowsOCREngine
+            self.ocr_service = WindowsOCREngine()
+        else:
+            # Default to RapidOCR
+            from ..services.rapid_ocr import RapidOCREngine
+            self.ocr_service = RapidOCREngine()
+            
+        print(f"AsyncEngine: OCR Engine set to {engine_name}.", flush=True)
 
     def set_status_callback(self, callback):
         """Pass UI status callback to services."""

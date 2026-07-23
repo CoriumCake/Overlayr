@@ -9,7 +9,7 @@ class ConfigService:
             "source_lang": "Japanese",
             "target_lang": "Thai",
             "grouping_mode": "Group (Manga)",
-            "ocr_engine": "WindowsOCR"
+            "ocr_engine": "RapidOCR"
         }
         self.load()
 
