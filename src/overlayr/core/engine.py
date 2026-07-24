@@ -66,7 +66,8 @@ class AsyncEngine(metaclass=SingletonMeta):
         self._loop_task: Optional[asyncio.Task] = None
         
         # Translation Cache: LRU (OrderedDict)
-        # Key: source_text, Value: translated_text
+        # Key: (source language, target language, domain, source text)
+        # Value: translated_text
         from collections import OrderedDict
         self._translation_cache = OrderedDict()
         self.CACHE_SIZE = 100
@@ -569,6 +570,9 @@ class AsyncEngine(metaclass=SingletonMeta):
             
         # We will save debug AFTER translation so we can include translation results in the text file.
         texts_to_translate = [m["original"] for m in merged_metadata]
+        translation_domain = self.translator_service.detect_domain(
+            texts_to_translate
+        )
 
         # --- Translation Caching (Last 2 Loops) ---
         self._loop_counter += 1
@@ -580,10 +584,16 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         # 1. Check Cache
         for i, text in enumerate(texts_to_translate):
-            if text in self._translation_cache:
-                trans = self._translation_cache[text]
+            cache_key = (
+                self.source,
+                self.target,
+                translation_domain,
+                text,
+            )
+            if cache_key in self._translation_cache:
+                trans = self._translation_cache[cache_key]
                 # Move to end (Recently Used)
-                self._translation_cache.move_to_end(text)
+                self._translation_cache.move_to_end(cache_key)
                 
                 final_translations[i] = trans
                 if self.debug_logging:
@@ -604,7 +614,10 @@ class AsyncEngine(metaclass=SingletonMeta):
             if skip_translation:
                  new_results = missing_texts
             else:
-                 new_results = await self.translator_service.translate(missing_texts)
+                 new_results = await self.translator_service.translate(
+                     missing_texts,
+                     context_texts=texts_to_translate,
+                 )
                  if isinstance(new_results, str): new_results = [new_results]
             
             for i, result in enumerate(new_results):
@@ -625,8 +638,14 @@ class AsyncEngine(metaclass=SingletonMeta):
                 
                 # Update Cache (LRU)
                 text_key = missing_texts[i]
-                self._translation_cache[text_key] = result
-                self._translation_cache.move_to_end(text_key)
+                cache_key = (
+                    self.source,
+                    self.target,
+                    translation_domain,
+                    text_key,
+                )
+                self._translation_cache[cache_key] = result
+                self._translation_cache.move_to_end(cache_key)
                 
                 # Prune if exceeding size
                 while len(self._translation_cache) > self.CACHE_SIZE:

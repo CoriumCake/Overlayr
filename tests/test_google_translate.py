@@ -120,3 +120,25 @@ class TestErrorHandling:
 
         assert result == ["สวัสดี", None]
         assert len(service._cache) == 1
+
+
+class TestDomainGlossary:
+    @pytest.mark.asyncio
+    async def test_minecraft_labels_use_glossary_without_network(self, service):
+        with patch.object(service, "_translate_single") as mock:
+            result = await service.translate(["Chest", "Minecraft"])
+
+        assert result == ["หีบ", "Minecraft"]
+        mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generic_chest_translation_does_not_reuse_game_cache(self, service):
+        await service.translate(["Chest", "Minecraft"])
+
+        with patch.object(service, "_translate_single", return_value="หน้าอก"):
+            result = await service.translate(
+                "Chest",
+                context_texts=["Chest pain", "Medical notes"],
+            )
+
+        assert result == "หน้าอก"

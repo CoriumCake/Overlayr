@@ -6,6 +6,11 @@ from typing import List, Optional, Union
 
 from deep_translator import GoogleTranslator
 
+from .translation_glossary import (
+    detect_translation_domain,
+    lookup_translation_override,
+)
+
 _MAX_CACHE_SIZE = 2000
 _BATCH_SEPARATOR = "__OVERLAYR_SPLIT_7F3A__"
 _MAX_BATCH_CHARS = 4500
@@ -29,6 +34,10 @@ class GoogleTranslateService:
     def warmup(self):
         """Warmup stub."""
         pass
+
+    @staticmethod
+    def detect_domain(texts: List[str]) -> str:
+        return detect_translation_domain(texts)
 
     async def load_model(self, src: str, tgt: str) -> None:
         """Update source/target languages."""
@@ -102,6 +111,8 @@ class GoogleTranslateService:
     async def translate(
         self,
         text: Union[str, List[str]],
+        *,
+        context_texts: Optional[List[str]] = None,
     ) -> Union[Optional[str], List[Optional[str]]]:
         """Translate text using Google Translate with parallel requests."""
         if not text:
@@ -113,15 +124,27 @@ class GoogleTranslateService:
 
         is_single = isinstance(text, str)
         texts = [text] if is_single else text
+        domain = detect_translation_domain(context_texts or texts)
 
         # Check cache
-        cache_prefix = f"{self.source}_{self.target}_"
+        cache_prefix = f"{self.source}_{self.target}_{domain}_"
         results = [None] * len(texts)
         texts_to_translate = []
         indices_to_translate = []
 
         for i, t in enumerate(texts):
             key = cache_prefix + t
+            override = lookup_translation_override(
+                t,
+                source=self.source,
+                target=self.target,
+                domain=domain,
+            )
+            if override is not None:
+                results[i] = override
+                self._cache[key] = override
+                self._cache.move_to_end(key)
+                continue
             if key in self._cache:
                 results[i] = self._cache[key]
                 self._cache.move_to_end(key)
