@@ -1,7 +1,11 @@
 """Helpers for DPI-stable multi-monitor overlay placement."""
 
 import os
+import re
 from typing import Any, Dict, Optional
+
+
+_GEOMETRY_PATTERN = re.compile(r"(\d+)x(\d+)([+-]\d+)([+-]\d+)")
 
 
 def format_tk_geometry(bounds: Dict[str, Any]) -> str:
@@ -11,6 +15,20 @@ def format_tk_geometry(bounds: Dict[str, Any]) -> str:
     left = int(round(bounds["left"]))
     top = int(round(bounds["top"]))
     return f"{width}x{height}{left:+d}{top:+d}"
+
+
+def parse_physical_geometry(geometry: str) -> Optional[Dict[str, int]]:
+    """Parse geometry generated from absolute virtual-desktop coordinates."""
+    match = _GEOMETRY_PATTERN.fullmatch(geometry)
+    if not match:
+        return None
+    width, height, left, top = (int(value) for value in match.groups())
+    return {
+        "left": left,
+        "top": top,
+        "width": width,
+        "height": height,
+    }
 
 
 def resolve_monitor_bounds(target: Dict[str, Any], monitors) -> Optional[Dict[str, int]]:

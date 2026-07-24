@@ -1,9 +1,8 @@
 import tkinter as tk
 import customtkinter as ctk # type: ignore
 import platform
-import re
 
-from ..utils.display_utils import tk_pixel_font
+from ..utils.display_utils import parse_physical_geometry, tk_pixel_font
 
 class ResultOverlay:
     def __init__(self, root: tk.Tk, include_in_capture: bool = False):
@@ -13,6 +12,7 @@ class ResultOverlay:
         self._capture_was_visible = False
         self._capture_affinity_changed = False
         self._hwnd = None
+        self._physical_bounds = None
         # Keep references alive for Tk photo images until the next redraw.
         self._photo_images = []
         self.top = tk.Toplevel(root)
@@ -66,6 +66,7 @@ class ResultOverlay:
         try:
             import ctypes
             from ctypes import wintypes
+            user32 = ctypes.windll.user32
             
             # Ensure window is partially mapped so it has an HWND
             self.top.update_idletasks()
@@ -113,6 +114,7 @@ class ResultOverlay:
         try:
             import ctypes
             from ctypes import wintypes
+            user32 = ctypes.windll.user32
 
             self.top.update_idletasks()
             hwnd = self._get_hwnd()
@@ -335,6 +337,8 @@ class ResultOverlay:
         """
         if visible:
             self.top.deiconify()
+            self.top.update_idletasks()
+            self._apply_physical_geometry()
         else:
             self.top.withdraw()
         self._is_visible = visible
@@ -535,31 +539,49 @@ class ResultOverlay:
                 )
 
     def set_geometry(self, geometry):
-        # Tk handles normal placement; SetWindowPos below guarantees that the
-        # final bounds remain physical pixels on mixed-DPI monitor layouts.
-        self.top.geometry(geometry)
-        if platform.system() != "Windows":
+        bounds = parse_physical_geometry(geometry)
+        if platform.system() != "Windows" or bounds is None:
+            self.top.geometry(geometry)
             return
 
-        match = re.fullmatch(r"(\d+)x(\d+)([+-]\d+)([+-]\d+)", geometry)
-        if not match:
-            return
+        self._physical_bounds = bounds
+        # Never give a negative virtual-desktop coordinate to Tk. In Tk's
+        # geometry grammar "-1920" means an offset from the right edge, not
+        # absolute X=-1920. Let Tk resize only, then place via Win32.
+        self.top.geometry(f"{bounds['width']}x{bounds['height']}")
+        self.top.update_idletasks()
+        self._apply_physical_geometry()
 
+    def _apply_physical_geometry(self):
+        """Place the overlay with absolute Win32 virtual-screen coordinates."""
+        if platform.system() != "Windows" or not self._physical_bounds:
+            return
         try:
             import ctypes
+            from ctypes import wintypes
 
-            width, height, left, top = (int(value) for value in match.groups())
+            bounds = self._physical_bounds
             hwnd = self._get_hwnd()
-            HWND_TOPMOST = -1
             SWP_NOACTIVATE = 0x0010
             SWP_NOOWNERZORDER = 0x0200
-            ctypes.windll.user32.SetWindowPos(
+            user32 = ctypes.windll.user32
+            user32.SetWindowPos.argtypes = [
+                wintypes.HWND,
+                wintypes.HWND,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                wintypes.UINT,
+            ]
+            user32.SetWindowPos.restype = wintypes.BOOL
+            user32.SetWindowPos(
                 hwnd,
-                HWND_TOPMOST,
-                left,
-                top,
-                width,
-                height,
+                wintypes.HWND(-1),  # HWND_TOPMOST
+                bounds["left"],
+                bounds["top"],
+                bounds["width"],
+                bounds["height"],
                 SWP_NOACTIVATE | SWP_NOOWNERZORDER,
             )
         except Exception:

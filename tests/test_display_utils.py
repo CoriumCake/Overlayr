@@ -1,5 +1,6 @@
 from overlayr.utils.display_utils import (
     format_tk_geometry,
+    parse_physical_geometry,
     resolve_monitor_bounds,
     should_show_window_overlay,
     tk_pixel_font,
@@ -15,6 +16,17 @@ def test_geometry_supports_monitor_left_of_primary_display():
     })
 
     assert geometry == "2560x1440-2560+0"
+
+
+def test_negative_geometry_is_preserved_as_absolute_physical_position():
+    bounds = parse_physical_geometry("1920x1009-1920+23")
+
+    assert bounds == {
+        "left": -1920,
+        "top": 23,
+        "width": 1920,
+        "height": 1009,
+    }
 
 
 def test_tk_font_size_is_physical_pixels():
