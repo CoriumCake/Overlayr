@@ -665,3 +665,25 @@ def detect_text_regions_dbnet(image_source):
         
     return polygons
 
+
+def preload_dbnet_model():
+    """
+    Preloads and warms up the DBNet model so the first inference frame is fast.
+    """
+    global _dbnet_session
+    if not HAS_ORT:
+        return
+    try:
+        if _dbnet_session is None:
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+            model_path = os.path.join(project_root, "models", "Detec_Manga-English.onnx")
+            if os.path.exists(model_path):
+                print(f"DBNet: Preloading model from {model_path}...", flush=True)
+                _dbnet_session = ort.InferenceSession(model_path, providers=['DmlExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider'])
+                # Warmup inference
+                dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+                detect_text_regions_dbnet(dummy)
+                print("DBNet: Model preloaded & warmed up successfully.", flush=True)
+    except Exception as e:
+        print(f"DBNet Preload Error: {e}", flush=True)
+

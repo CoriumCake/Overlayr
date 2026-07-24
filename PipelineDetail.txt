@@ -1,6 +1,6 @@
 ================================================================================
   OVERLAYR — รายละเอียดฟังก์ชันทั้งหมด (ภาษาไทย)
-  อัปเดต: 2026-07-24
+  อัปเดต: 2026-07-25
 ================================================================================
 
 โครงสร้างโปรเจกต์
@@ -788,24 +788,22 @@ src/overlayr/
   [จับภาพ]
   CaptureEngine.capture()
     ├── mode=screen → MSS grab (mss library)
-    └── mode=window → WGCCapture.get_latest_frame() (Windows Graphics Capture)
+    └── mode=window → WGCCapture.get_latest_frame() (ลูป Draining คิวเฟรมเก่าทิ้งทั้งหมด เอาเฉพาะเฟรมล่าสุดจาก DXGI)
 
   [ประมวลผลภาพ]
   AsyncEngine.process_image(image)
-    ├── [Smart Frame Skipping] ตรวจสอบความเหมือนของภาพ ถ้า >90% ข้ามไปใช้ผลลัพธ์เดิม
-    ├── RapidOCREngine.extract_text(image) [เครื่องยนต์หลัก]
-    │     └── ค้นหาขอบเขตข้อความและอ่านข้อความแบบเบ็ดเสร็จ (End-to-End) ในตัวเอง
-    ├── (ทางเลือกสำรอง) WindowsOCREngine.extract_text(image)
-    │     └── รัน 4 เทคนิคพร้อมกัน และรวมผลลัพธ์
+    ├── [Smart Frame Skipping] เปรียบเทียบภาพกับ last_translated_gray_image (ภาพที่แปลล่าสุดสมบูรณ์) หากเหมือน >=85% ข้าม OCR ทันที
+    ├── [Parallel Execution] รัน RapidOCR และ DBNet ควบคู่ขนานกันผ่าน asyncio.gather()
+    │     ├── RapidOCREngine.extract_text(image) [เครื่องยนต์หลัก]
+    │     └── DBNet Text Detection (ใช้โมเดลที่ Preload ล่วงหน้าตั้งแต่เริ่มแอป + GPU DirectML/CUDA)
     ├── TextPostProcessor.clean_text() — ทำความสะอาดสัญลักษณ์พื้นฐาน
     ├── TextPostProcessor.correct_text() — (ปิดการใช้งานชั่วคราว คืนค่าตรง)
     ├── ValidationService.is_valid_text() — กรองเนื้อหาที่ไม่ใช่ข้อความจริง
-    ├── _merge_text_blocks() (รันแบบ Async ผ่าน asyncio.to_thread เพื่อไม่ให้บล็อก UI)
-    │     └── โหมด Group (Manga): เรียกใช้ DBNet (ผ่าน GPU/DirectML/CUDA) จัดกลุ่มข้อความ RapidOCR ลง Paragraph
+    ├── _merge_text_blocks() — นำผลลัพธ์ DBNet โพลีกอนมาแมปพิกัดข้อความและจัดกลุ่มย่อหน้า (Grouping)
     ├── GoogleTranslateService.translate() — แปลภาษา (parallel, cached)
     └── [Enhanced Debug Save] (ถ้าเปิดใช้งาน SAVE_FINAL_DEBUG)
           ├── เซฟ .png: วาดกรอบสีฟ้า (OCR Raw), โพลีกอนสีเขียว (DBNet Region), และเลขลำดับสีแดง
-          └── เซฟ .txt: บันทึกเวลาประมวลผลของแต่ละระบบ (OCR, Correction, Grouping, Translation, Total) และ Log ข้อความทุกขั้นตอน
+          └── เซฟ .txt: บันทึกเวลาแยกรายการ (OCR Time, Text Detection Time, Grouping Time, Correction Time, Translation Time, Total) และ Log ข้อความทุกขั้นตอน
 
   [แสดงผล]
   Overlay (ui/overlay.py)

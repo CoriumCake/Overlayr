@@ -77,6 +77,8 @@ class AsyncEngine(metaclass=SingletonMeta):
         # Trigger model load / connection
         self.ocr_service.warmup()
         self.translator_service.warmup()
+        from ..services.ocr_preprocessor import preload_dbnet_model
+        preload_dbnet_model()
         print("AsyncEngine: Warmup complete.", flush=True)
 
     async def update_languages(self, source: str, target: str):
@@ -154,40 +156,60 @@ class AsyncEngine(metaclass=SingletonMeta):
         import asyncio
         gray_image = cv2.cvtColor(open_cv_image, cv2.COLOR_BGR2GRAY)
         
-        if hasattr(self, 'last_gray_image') and self.last_gray_image is not None:
-            if self.last_gray_image.shape == gray_image.shape:
-                diff = cv2.absdiff(self.last_gray_image, gray_image)
+        if hasattr(self, 'last_translated_gray_image') and self.last_translated_gray_image is not None:
+            if self.last_translated_gray_image.shape == gray_image.shape:
+                diff = cv2.absdiff(self.last_translated_gray_image, gray_image)
                 _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
                 non_zero = cv2.countNonZero(thresh)
                 total_pixels = gray_image.shape[0] * gray_image.shape[1]
                 diff_percent = (non_zero / total_pixels) * 100.0
                 sim_percent = 100.0 - diff_percent
-                print(f"[DEBUG] Image Similarity: {sim_percent:.2f}%", flush=True)
+                print(f"[DEBUG] Image Similarity (vs Last Translated): {sim_percent:.2f}%", flush=True)
                 
-                if sim_percent >= 90.0:
+                if sim_percent >= 85.0:
                     if hasattr(self, 'last_process_result'):
-                        await asyncio.sleep(0.3)
+                        await asyncio.sleep(0.2)
                         return self.last_process_result
-        
-        self.last_gray_image = gray_image
         
         # 1. Smart Scaling (Optimize for Speed/Accuracy)
         w, h = image.size
         # The new WindowsOCREngine handles its own preprocessing (Grayscale, CLAHE, etc.)
         # so we just pass the original PIL image to it.
         
-        # Execute OCR
-        ocr_start = time.perf_counter()
-        
+        # Execute OCR & DBNet in parallel if merge_mode == 'paragraph'
+        pipeline_start = time.perf_counter()
         import inspect
         import asyncio
-        if inspect.iscoroutinefunction(self.ocr_service.extract_text):
-            results = await self.ocr_service.extract_text(image)
+        from ..services.ocr_preprocessor import detect_text_regions_dbnet
+        
+        async def run_ocr():
+            start = time.perf_counter()
+            if inspect.iscoroutinefunction(self.ocr_service.extract_text):
+                res = await self.ocr_service.extract_text(image)
+            else:
+                res = await asyncio.to_thread(self.ocr_service.extract_text, image)
+            dur = time.perf_counter() - start
+            return res, dur
+
+        async def run_dbnet():
+            start = time.perf_counter()
+            regions = await asyncio.to_thread(detect_text_regions_dbnet, open_cv_image)
+            dur = time.perf_counter() - start
+            return regions, dur
+
+        if merge_mode == "paragraph":
+            (results, ocr_dur), (dbnet_regions, text_detection_dur) = await asyncio.gather(
+                run_ocr(),
+                run_dbnet()
+            )
+            self.last_dbnet_regions = dbnet_regions
         else:
-            # EasyOCR is synchronous and CPU-bound, run it in a background thread
-            results = await asyncio.to_thread(self.ocr_service.extract_text, image)
-        ocr_dur = time.perf_counter() - ocr_start
-        print(f"[DEBUG] OCR Processing: {ocr_dur*1000:.2f} ms", flush=True)
+            results, ocr_dur = await run_ocr()
+            dbnet_regions = None
+            text_detection_dur = 0.0
+            self.last_dbnet_regions = None
+
+        print(f"[DEBUG] OCR Processing: {ocr_dur*1000:.2f} ms | Text Detection (DBNet): {text_detection_dur*1000:.2f} ms", flush=True)
         
         correction_start = time.perf_counter()
         
@@ -274,12 +296,9 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         grouping_start = time.perf_counter()
         
-        # Reset last_dbnet_regions for this frame
-        self.last_dbnet_regions = None
-        
         # In WinOCR, the engine has already handled merging spatially close blocks and overlapping geometry
         # but the returns are just flat boxes. We keep this to group them into paragraphs if requested.
-        merged_metadata = await asyncio.to_thread(self._merge_text_blocks, metadata, merge_mode, open_cv_image)
+        merged_metadata = await asyncio.to_thread(self._merge_text_blocks, metadata, merge_mode, open_cv_image, dbnet_regions)
         
         grouping_dur = time.perf_counter() - grouping_start
         
@@ -358,7 +377,7 @@ class AsyncEngine(metaclass=SingletonMeta):
             final_results.append(meta)
             
         translation_dur = time.perf_counter() - translation_start
-        total_dur = time.perf_counter() - (ocr_start - 0) # approximation of total time
+        total_dur = time.perf_counter() - pipeline_start
         print(f"OCR: {ocr_dur:.2f}s | Group: {grouping_dur:.2f}s | Trans: {translation_dur:.2f}s | Items: {len(final_results)}", flush=True)
         
         # --- ENHANCED DEBUG SAVE: Processed Image + Text Logs ---
@@ -391,14 +410,15 @@ class AsyncEngine(metaclass=SingletonMeta):
                 cv2.imwrite(os.path.join(debug_dir, fname_img), debug_img)
                 
                 # 2. Save Debug Text (.txt)
-                fname_txt = f"debug_output_{timestamp}.txt"
+                fname_txt = f"debug_output_{timestamp}.png".replace(".png", ".txt")
                 with open(os.path.join(debug_dir, fname_txt), "w", encoding="utf-8") as f:
                     f.write("=== TIMING ===\n")
-                    f.write(f"OCR Time:         {ocr_dur:.4f} s\n")
-                    f.write(f"Correction Time:  {correction_dur:.4f} s\n")
-                    f.write(f"Grouping Time:    {grouping_dur:.4f} s\n")
-                    f.write(f"Translation Time: {translation_dur:.4f} s\n")
-                    f.write(f"Total Pipeline:   {total_dur:.4f} s\n\n")
+                    f.write(f"OCR Time:            {ocr_dur:.4f} s\n")
+                    f.write(f"Text Detection Time: {text_detection_dur:.4f} s (DBNet Inference)\n")
+                    f.write(f"Grouping Time:       {grouping_dur:.4f} s (Point Mapping & Sorting)\n")
+                    f.write(f"Correction Time:     {correction_dur:.4f} s\n")
+                    f.write(f"Translation Time:    {translation_dur:.4f} s\n")
+                    f.write(f"Total Pipeline:      {total_dur:.4f} s\n\n")
                     
                     f.write("=== OCR FOUND TEXT (RAW) ===\n")
                     for _, t, conf in results:
@@ -420,9 +440,10 @@ class AsyncEngine(metaclass=SingletonMeta):
                 print(f"[DEBUG] Failed to save enhanced debug info: {e}", flush=True)
         
         self.last_process_result = (final_results, raw_text)
+        self.last_translated_gray_image = gray_image
         return final_results, raw_text
 
-    def _merge_text_blocks(self, elements: List[Dict[str, Any]], mode: str = "paragraph", image_cv=None) -> List[Dict[str, Any]]:
+    def _merge_text_blocks(self, elements: List[Dict[str, Any]], mode: str = "paragraph", image_cv=None, dbnet_regions=None) -> List[Dict[str, Any]]:
         """
         Merges text boxes using clustering logic adapted from WindowsOCRTool.
         mode='paragraph': Groups using DBNet regions.
@@ -633,13 +654,16 @@ class AsyncEngine(metaclass=SingletonMeta):
             return paragraphs
 
         # ---- PARAGRAPH / MANGA MODE (Clustering with DBNet) ----
-        if mode == "paragraph" and image_cv is not None:
+        if mode == "paragraph":
             try:
                 from ..services.ocr_preprocessor import detect_text_regions_dbnet
                 import cv2
                 
-                regions = detect_text_regions_dbnet(image_cv)
-                self.last_dbnet_regions = regions # Expose to process_image
+                regions = dbnet_regions
+                if regions is None and image_cv is not None:
+                    regions = detect_text_regions_dbnet(image_cv)
+                    
+                self.last_dbnet_regions = regions
                 if not regions:
                     return elements
                     
