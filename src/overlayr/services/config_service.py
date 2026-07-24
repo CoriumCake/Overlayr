@@ -10,6 +10,7 @@ class ConfigService:
             "target_lang": "Thai",
             "grouping_mode": "Group (Manga)",
             "ocr_engine": "RapidOCR",
+            "ocr_use_angle_classifier": False,
             "include_overlay_in_capture": False,
             "save_debug_output": False
         }

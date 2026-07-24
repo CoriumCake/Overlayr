@@ -13,6 +13,8 @@ from .frame_pipeline import (
     build_frame_preview,
     build_region_fingerprints,
     evaluate_ocr_cache,
+    find_previous_translation,
+    stabilize_ocr_metadata,
 )
 from .post_processing import TextPostProcessor
 
@@ -95,7 +97,11 @@ class AsyncEngine(metaclass=SingletonMeta):
         else:
             # Default to RapidOCR
             from ..services.rapid_ocr import RapidOCREngine
-            self.ocr_service = RapidOCREngine()
+            self.ocr_service = RapidOCREngine(
+                use_angle_classifier=bool(
+                    self.config.get("ocr_use_angle_classifier", False)
+                )
+            )
             
         print(f"AsyncEngine: OCR Engine set to {engine_name}.", flush=True)
 
@@ -131,6 +137,7 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         # Update translator (async)
         await self.translator_service.load_model(source, target)
+        self._translation_cache.clear()
         
         # Update Windows OCR language
         # Windows OCR Engine handles mapping internally (e.g. ja->ja, zh->zh-Hans)
@@ -214,6 +221,11 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         cache_decision = None
         current_preview = None
+        previous_results = (
+            tuple(self.last_process_result[0])
+            if self.last_process_result is not None
+            else ()
+        )
         if self.last_translated_gray_image is not None:
             can_reuse_cache, changed_pixels, total_pixels = _can_reuse_frame_cache(
                 self.last_translated_gray_image,
@@ -231,11 +243,6 @@ class AsyncEngine(metaclass=SingletonMeta):
             if can_reuse_cache and self.last_process_result is not None:
                 return self.last_process_result
 
-            previous_results = (
-                self.last_process_result[0]
-                if self.last_process_result is not None
-                else []
-            )
             cache_age = max(
                 0.0,
                 time.perf_counter() - self._last_full_scan_at,
@@ -281,10 +288,18 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         async def run_ocr():
             start = time.perf_counter()
+            ocr_input = (
+                open_cv_image
+                if getattr(self.ocr_service, "accepts_bgr_numpy", False)
+                else image
+            )
             if inspect.iscoroutinefunction(self.ocr_service.extract_text):
-                res = await self.ocr_service.extract_text(image)
+                res = await self.ocr_service.extract_text(ocr_input)
             else:
-                res = await asyncio.to_thread(self.ocr_service.extract_text, image)
+                res = await asyncio.to_thread(
+                    self.ocr_service.extract_text,
+                    ocr_input,
+                )
             dur = time.perf_counter() - start
             return res, dur
 
@@ -329,7 +344,12 @@ class AsyncEngine(metaclass=SingletonMeta):
             text_detection_dur = 0.0
             self.last_dbnet_regions = None
 
-        print(f"[DEBUG] OCR Processing: {ocr_dur*1000:.2f} ms | Text Detection (DBNet): {text_detection_dur*1000:.2f} ms", flush=True)
+        if self.debug_logging:
+            print(
+                f"[DEBUG] OCR Processing: {ocr_dur*1000:.2f} ms | "
+                f"Text Detection (DBNet): {text_detection_dur*1000:.2f} ms",
+                flush=True,
+            )
         
         correction_start = time.perf_counter()
         
@@ -379,8 +399,13 @@ class AsyncEngine(metaclass=SingletonMeta):
             # ... (Spell Check) ...
             corrected_text = self.post_processor.correct_text(text)
             if corrected_text != text:
-                 print(f"[DEBUG] Speller Corrected: '{text}' -> '{corrected_text}'", flush=True)
-                 text = corrected_text
+                if self.debug_logging:
+                    print(
+                        f"[DEBUG] Speller Corrected: "
+                        f"'{text}' -> '{corrected_text}'",
+                        flush=True,
+                    )
+                text = corrected_text
 
             # ... (Calculate coordinates common for both) ...
             pts = np.array(bbox_points)
@@ -392,15 +417,22 @@ class AsyncEngine(metaclass=SingletonMeta):
             is_valid = ValidationService.is_valid_text(text, self.source)
             
             if not is_valid:
-                print(f"[DEBUG] Filtered out text: '{text}' (Conf: {conf})", flush=True)
+                if self.debug_logging:
+                    print(
+                        f"[DEBUG] Filtered out text: '{text}' (Conf: {conf})",
+                        flush=True,
+                    )
                 # Store filtered item
                 filtered_metadata.append({
                     "bbox": [left, top, right, bottom],
                     "original": text
                 })
                 continue
-            else:
-                 print(f"[DEBUG] Accepted text: '{text}' (Conf: {conf})", flush=True)
+            elif self.debug_logging:
+                print(
+                    f"[DEBUG] Accepted text: '{text}' (Conf: {conf})",
+                    flush=True,
+                )
             
             try:
                 ink_bbox = [left, top, right, bottom]
@@ -518,6 +550,13 @@ class AsyncEngine(metaclass=SingletonMeta):
         # In WinOCR, the engine has already handled merging spatially close blocks and overlapping geometry
         # but the returns are just flat boxes. We keep this to group them into paragraphs if requested.
         merged_metadata = await asyncio.to_thread(self._merge_text_blocks, metadata, merge_mode, open_cv_image, dbnet_regions)
+        merged_metadata = stabilize_ocr_metadata(
+            previous_results,
+            merged_metadata,
+            source_regions_changed=(
+                cache_decision is None or cache_decision.regions_changed
+            ),
+        )
         
         grouping_dur = time.perf_counter() - grouping_start
         
@@ -547,7 +586,8 @@ class AsyncEngine(metaclass=SingletonMeta):
                 self._translation_cache.move_to_end(text)
                 
                 final_translations[i] = trans
-                print(f"[DEBUG] CACHED: '{text}'", flush=True)
+                if self.debug_logging:
+                    print(f"[DEBUG] CACHED: '{text}'", flush=True)
                 continue
             
             # If miss
@@ -556,7 +596,11 @@ class AsyncEngine(metaclass=SingletonMeta):
 
         # 2. Batch Translate Missing
         if missing_texts:
-            print(f"[DEBUG] TRANSLATING (New/Expired): {missing_texts}", flush=True)
+            if self.debug_logging:
+                print(
+                    f"[DEBUG] TRANSLATING (New/Expired): {missing_texts}",
+                    flush=True,
+                )
             if skip_translation:
                  new_results = missing_texts
             else:
@@ -565,6 +609,18 @@ class AsyncEngine(metaclass=SingletonMeta):
             
             for i, result in enumerate(new_results):
                 original_idx = missing_indices[i]
+                metadata_item = merged_metadata[original_idx]
+                if result is None:
+                    result = (
+                        metadata_item.get("_stable_translation")
+                        or find_previous_translation(
+                            previous_results,
+                            metadata_item,
+                        )
+                    )
+                    final_translations[original_idx] = result
+                    continue
+
                 final_translations[original_idx] = result
                 
                 # Update Cache (LRU)

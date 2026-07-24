@@ -29,6 +29,14 @@ Overlayr is a Python-based screen translation tool that provides real-time Japan
     pip install -r requirements.txt
     ```
 
+3.  On Windows, enable GPU OCR through DirectML after the normal dependency
+    install:
+    ```powershell
+    .\scripts\install_gpu_runtime.ps1
+    ```
+    Overlayr detects `CUDAExecutionProvider` or `DmlExecutionProvider`
+    automatically and falls back to CPU when neither is installed.
+
 ## Usage
 
 1.  Run the application:

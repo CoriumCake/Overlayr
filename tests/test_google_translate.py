@@ -1,7 +1,9 @@
 """Tests for GoogleTranslateService — caching, parallel translation, error handling."""
+
+from unittest.mock import patch
+
 import pytest
-import asyncio
-from unittest.mock import patch, MagicMock
+
 from overlayr.services.google_translate import GoogleTranslateService
 
 
@@ -14,10 +16,10 @@ class TestCaching:
     @pytest.mark.asyncio
     async def test_cached_results_not_retranslated(self, service):
         """After translating text once, subsequent calls should use cache."""
-        with patch.object(service, '_translate_single', return_value="สวัสดี") as mock:
+        with patch.object(service, "_translate_single", return_value="สวัสดี") as mock:
             result1 = await service.translate("Hello")
             result2 = await service.translate("Hello")
-            
+
             assert result1 == "สวัสดี"
             assert result2 == "สวัสดี"
             assert mock.call_count == 1  # Only called once, second was cached
@@ -25,10 +27,10 @@ class TestCaching:
     @pytest.mark.asyncio
     async def test_cache_cleared_on_language_change(self, service):
         """Changing languages should clear the cache."""
-        with patch.object(service, '_translate_single', return_value="สวัสดี"):
+        with patch.object(service, "_translate_single", return_value="สวัสดี"):
             await service.translate("Hello")
             assert len(service._cache) == 1
-            
+
             await service.load_model("en", "ja")
             assert len(service._cache) == 0
 
@@ -36,8 +38,8 @@ class TestCaching:
     async def test_cache_bounded(self, service):
         """Cache should not grow beyond _MAX_CACHE_SIZE."""
         from overlayr.services.google_translate import _MAX_CACHE_SIZE
-        
-        with patch.object(service, '_translate_single', side_effect=lambda t: f"translated_{t}"):
+
+        with patch.object(service, "_translate_single", side_effect=lambda t: f"translated_{t}"):
             texts = [f"text_{i}" for i in range(_MAX_CACHE_SIZE + 100)]
             await service.translate(texts)
             assert len(service._cache) <= _MAX_CACHE_SIZE
@@ -64,22 +66,57 @@ class TestTranslation:
 
     @pytest.mark.asyncio
     async def test_single_string_returns_string(self, service):
-        with patch.object(service, '_translate_single', return_value="สวัสดี"):
+        with patch.object(service, "_translate_single", return_value="สวัสดี"):
             result = await service.translate("Hello")
             assert isinstance(result, str)
 
     @pytest.mark.asyncio
     async def test_list_returns_list(self, service):
-        with patch.object(service, '_translate_single', side_effect=["สวัสดี", "โลก"]):
+        with patch.object(
+            service,
+            "_translate_batch_single_request",
+            return_value=["สวัสดี", "โลก"],
+        ) as mock:
             result = await service.translate(["Hello", "World"])
             assert isinstance(result, list)
             assert len(result) == 2
+            assert mock.call_count == 1
 
 
 class TestErrorHandling:
     @pytest.mark.asyncio
-    async def test_translate_error_returns_original(self, service):
-        """On error, return original text instead of crashing."""
-        with patch.object(service, '_translate_single', side_effect=Exception("API Error")):
+    async def test_translate_error_returns_none_without_caching_source(self, service):
+        """A failed request must not make the English source look translated."""
+        service.max_attempts = 1
+        with patch.object(service, "_translate_single", side_effect=Exception("API Error")):
             result = await service.translate("Hello")
-            assert result == "Hello"
+            assert result is None
+            assert len(service._cache) == 0
+
+    @pytest.mark.asyncio
+    async def test_transient_error_is_retried_then_cached(self, service):
+        service.retry_backoff_seconds = 0
+        with patch.object(
+            service,
+            "_translate_single",
+            side_effect=[ConnectionError("temporary"), "สวัสดี"],
+        ) as mock:
+            result = await service.translate("Hello")
+
+        assert result == "สวัสดี"
+        assert mock.call_count == 2
+        assert len(service._cache) == 1
+
+    @pytest.mark.asyncio
+    async def test_partial_batch_failure_preserves_successful_items(self, service):
+        service.max_attempts = 1
+        service.batch_translation = False
+        with patch.object(
+            service,
+            "_translate_single",
+            side_effect=["สวัสดี", ConnectionError("temporary")],
+        ):
+            result = await service.translate(["Hello", "World"])
+
+        assert result == ["สวัสดี", None]
+        assert len(service._cache) == 1

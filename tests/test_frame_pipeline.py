@@ -6,6 +6,8 @@ from overlayr.core.frame_pipeline import (
     build_region_fingerprints,
     compare_region_fingerprints,
     evaluate_ocr_cache,
+    find_previous_translation,
+    stabilize_ocr_metadata,
 )
 
 
@@ -119,3 +121,66 @@ def test_empty_result_cache_polls_frequently_for_new_text():
 
     assert decision.reuse is False
     assert decision.reason == "empty_scene_poll"
+
+
+def test_static_rescan_keeps_previous_text_when_ocr_spelling_wobbles():
+    previous = [
+        {
+            "bbox": [100, 50, 300, 90],
+            "original": "Rewards",
+            "translated": "รางวัล",
+        }
+    ]
+    current = [
+        {
+            "bbox": [101, 50, 302, 91],
+            "original": "Riewards",
+        }
+    ]
+
+    stabilized = stabilize_ocr_metadata(
+        previous,
+        current,
+        source_regions_changed=False,
+    )
+
+    assert stabilized[0]["original"] == "Rewards"
+    assert stabilized[0]["_stable_translation"] == "รางวัล"
+
+
+def test_changed_source_region_accepts_new_ocr_text():
+    previous = [
+        {
+            "bbox": [100, 50, 300, 90],
+            "original": "Old quest",
+            "translated": "ภารกิจเก่า",
+        }
+    ]
+    current = [
+        {
+            "bbox": [100, 50, 300, 90],
+            "original": "New quest",
+        }
+    ]
+
+    stabilized = stabilize_ocr_metadata(
+        previous,
+        current,
+        source_regions_changed=True,
+    )
+
+    assert stabilized[0]["original"] == "New quest"
+    assert "_stable_translation" not in stabilized[0]
+
+
+def test_failed_translation_can_hold_previous_overlay_at_same_position():
+    previous = [
+        {
+            "bbox": [100, 50, 300, 90],
+            "original": "Old quest",
+            "translated": "ภารกิจเก่า",
+        }
+    ]
+    current = {"bbox": [103, 51, 301, 91], "original": "New quest"}
+
+    assert find_previous_translation(previous, current) == "ภารกิจเก่า"

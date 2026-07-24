@@ -19,8 +19,8 @@ def _preferred_ort_providers():
     preferred = [
         provider
         for provider in (
-            "DmlExecutionProvider",
             "CUDAExecutionProvider",
+            "DmlExecutionProvider",
             "CPUExecutionProvider",
         )
         if provider in available

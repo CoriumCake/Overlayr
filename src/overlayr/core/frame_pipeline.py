@@ -182,9 +182,7 @@ def compare_region_fingerprints(
 
         left, top, right, bottom = fingerprint.bbox
         if current_gray is None:
-            crop = np.asarray(
-                current_image.crop((left, top, right, bottom)).convert("L")
-            )
+            crop = np.asarray(current_image.crop((left, top, right, bottom)).convert("L"))
         else:
             crop = current_gray[top:bottom, left:right]
         if crop.size == 0:
@@ -203,8 +201,7 @@ def compare_region_fingerprints(
         max_mean = max(max_mean, mean_delta)
 
         if (
-            changed_ratio >= changed_ratio_threshold
-            and mean_delta >= mean_delta_threshold
+            changed_ratio >= changed_ratio_threshold and mean_delta >= mean_delta_threshold
         ) or mean_delta >= mean_delta_threshold * 2.25:
             return RegionChangeMetrics(True, max_ratio, max_mean)
 
@@ -284,10 +281,7 @@ def evaluate_ocr_cache(
         )
 
     if not previous_results:
-        reuse = (
-            cache_age_seconds < empty_poll_seconds
-            and global_ratio < structural_change_threshold
-        )
+        reuse = cache_age_seconds < empty_poll_seconds and global_ratio < structural_change_threshold
         return OCRCacheDecision(
             reuse,
             "empty_scene_cooldown" if reuse else "empty_scene_poll",
@@ -303,10 +297,7 @@ def evaluate_ocr_cache(
             False,
         )
 
-    if (
-        global_ratio < structural_change_threshold
-        and cache_age_seconds < stable_rescan_seconds
-    ):
+    if global_ratio < structural_change_threshold and cache_age_seconds < stable_rescan_seconds:
         return OCRCacheDecision(
             True,
             "static_scene",
@@ -320,3 +311,116 @@ def evaluate_ocr_cache(
         global_ratio,
         False,
     )
+
+
+def _bbox_overlap_score(
+    first: Sequence[Any],
+    second: Sequence[Any],
+) -> float:
+    """Return intersection over the smaller box for spatial text matching."""
+    if len(first) != 4 or len(second) != 4:
+        return 0.0
+
+    first_left, first_top, first_right, first_bottom = map(float, first)
+    second_left, second_top, second_right, second_bottom = map(float, second)
+    intersection_width = max(
+        0.0,
+        min(first_right, second_right) - max(first_left, second_left),
+    )
+    intersection_height = max(
+        0.0,
+        min(first_bottom, second_bottom) - max(first_top, second_top),
+    )
+    intersection = intersection_width * intersection_height
+    first_area = max(0.0, first_right - first_left) * max(
+        0.0,
+        first_bottom - first_top,
+    )
+    second_area = max(0.0, second_right - second_left) * max(
+        0.0,
+        second_bottom - second_top,
+    )
+    smaller_area = min(first_area, second_area)
+    if smaller_area <= 0:
+        return 0.0
+    return intersection / smaller_area
+
+
+def _best_previous_result(
+    previous_results: Iterable[Mapping[str, Any]],
+    current_result: Mapping[str, Any],
+    *,
+    excluded_indices: Optional[set[int]] = None,
+    minimum_overlap: float = 0.55,
+) -> tuple[Optional[int], Optional[Mapping[str, Any]]]:
+    current_bbox = current_result.get("bbox")
+    if not current_bbox:
+        return None, None
+
+    best_index = None
+    best_result = None
+    best_score = minimum_overlap
+    excluded_indices = excluded_indices or set()
+    for index, previous in enumerate(previous_results):
+        if index in excluded_indices:
+            continue
+        previous_bbox = previous.get("bbox")
+        if not previous_bbox:
+            continue
+        score = _bbox_overlap_score(previous_bbox, current_bbox)
+        if score >= best_score:
+            best_index = index
+            best_result = previous
+            best_score = score
+    return best_index, best_result
+
+
+def stabilize_ocr_metadata(
+    previous_results: Iterable[Mapping[str, Any]],
+    current_results: Iterable[Mapping[str, Any]],
+    *,
+    source_regions_changed: bool,
+) -> list[dict[str, Any]]:
+    """Keep canonical OCR text during a static-frame periodic rescan.
+
+    OCR can alternate between close spellings on identical pixels. The frame
+    detector already knows whether translated source regions changed, so a
+    spatially matching result from an unchanged region should retain the
+    previous source key and translation.
+    """
+    current_copies = [dict(item) for item in current_results]
+    if source_regions_changed:
+        return current_copies
+
+    previous_results = tuple(previous_results)
+    used_previous: set[int] = set()
+    for current in current_copies:
+        previous_index, previous = _best_previous_result(
+            previous_results,
+            current,
+            excluded_indices=used_previous,
+        )
+        if previous_index is None or previous is None:
+            continue
+        used_previous.add(previous_index)
+
+        previous_original = previous.get("original")
+        if previous_original:
+            current["original"] = previous_original
+        previous_translation = previous.get("translated")
+        if previous_translation:
+            current["_stable_translation"] = previous_translation
+
+    return current_copies
+
+
+def find_previous_translation(
+    previous_results: Iterable[Mapping[str, Any]],
+    current_result: Mapping[str, Any],
+) -> Optional[str]:
+    """Find the last good translation occupying the same source region."""
+    _, previous = _best_previous_result(previous_results, current_result)
+    if previous is None:
+        return None
+    translated = previous.get("translated")
+    return translated if isinstance(translated, str) and translated else None

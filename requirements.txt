@@ -16,9 +16,7 @@ symspellpy
 requests
 winsdk
 
-onnxruntime-directml
-
-onnxruntime
+onnxruntime==1.24.4
 pyclipper
 rapidocr-onnxruntime
 numpy

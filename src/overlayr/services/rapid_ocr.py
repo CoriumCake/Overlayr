@@ -1,24 +1,93 @@
-import numpy as np
-from PIL import Image
-from typing import List, Tuple, Optional, Callable
 import asyncio
+from typing import Callable, List, Optional, Tuple
+
+import numpy as np
+
+
+def _rapidocr_runtime_options(
+    available_providers,
+    *,
+    use_angle_classifier: bool,
+):
+    """Choose the fastest installed ONNX provider with a safe CPU fallback."""
+    available = set(available_providers)
+    options = {"use_cls": bool(use_angle_classifier)}
+
+    if "CUDAExecutionProvider" in available:
+        options.update(
+            {
+                "det_use_cuda": True,
+                "rec_use_cuda": True,
+            }
+        )
+        if use_angle_classifier:
+            options["cls_use_cuda"] = True
+        return options, "CUDAExecutionProvider"
+
+    if "DmlExecutionProvider" in available:
+        options.update(
+            {
+                "det_use_dml": True,
+                "rec_use_dml": True,
+            }
+        )
+        if use_angle_classifier:
+            options["cls_use_dml"] = True
+        return options, "DmlExecutionProvider"
+
+    return options, "CPUExecutionProvider"
+
 
 class RapidOCREngine:
     """
     RapidOCR engine wrapper. Follows the same interface as WindowsOCREngine.
     """
-    def __init__(self):
+
+    def __init__(self, *, use_angle_classifier: bool = False):
         print("RapidOCREngine: Init start...", flush=True)
         try:
+            import onnxruntime as ort
             from rapidocr_onnxruntime import RapidOCR
-            self.engine = RapidOCR()
+
+            runtime_options, provider = _rapidocr_runtime_options(
+                ort.get_available_providers(),
+                use_angle_classifier=use_angle_classifier,
+            )
+            try:
+                self.engine = RapidOCR(**runtime_options)
+            except Exception as acceleration_error:
+                if provider == "CPUExecutionProvider":
+                    raise
+                print(
+                    f"RapidOCREngine: {provider} initialization failed "
+                    f"({acceleration_error}); falling back to CPU.",
+                    flush=True,
+                )
+                runtime_options, provider = _rapidocr_runtime_options(
+                    ["CPUExecutionProvider"],
+                    use_angle_classifier=use_angle_classifier,
+                )
+                self.engine = RapidOCR(**runtime_options)
+            self.execution_provider = provider
+            self.accepts_bgr_numpy = True
             self._is_available = True
-            print("RapidOCREngine: Successfully initialized.", flush=True)
+            print(
+                f"RapidOCREngine: Successfully initialized with {provider}.",
+                flush=True,
+            )
         except ImportError:
             print("RapidOCREngine: rapidocr_onnxruntime not installed.", flush=True)
             self.engine = None
+            self.execution_provider = "unavailable"
+            self.accepts_bgr_numpy = True
             self._is_available = False
-        
+        except Exception as error:
+            print(f"RapidOCREngine initialization error: {error}", flush=True)
+            self.engine = None
+            self.execution_provider = "unavailable"
+            self.accepts_bgr_numpy = True
+            self._is_available = False
+
         self._language = "en"
         self._status_callback: Optional[Callable] = None
 
@@ -43,7 +112,7 @@ class RapidOCREngine:
         except Exception as e:
             print(f"RapidOCREngine Warmup Error: {e}", flush=True)
 
-    async def extract_text(self, image: Image.Image) -> List[Tuple[List[List[int]], str, float]]:
+    async def extract_text(self, image) -> List[Tuple[List[List[int]], str, float]]:
         """
         Executes OCR on the image.
         Returns a list of (bbox, text, confidence) where bbox is [[x,y], [x,y], [x,y], [x,y]].
@@ -52,9 +121,12 @@ class RapidOCREngine:
             print("RapidOCREngine is not available.", flush=True)
             return []
 
-        # Convert PIL to CV2 BGR
-        img_cv = np.array(image.convert('RGB'))
-        img_cv = img_cv[:, :, ::-1].copy()
+        if isinstance(image, np.ndarray):
+            img_cv = image
+        else:
+            # Convert PIL to CV2 BGR when called outside AsyncEngine.
+            img_cv = np.array(image.convert("RGB"))
+            img_cv = img_cv[:, :, ::-1].copy()
 
         # Run OCR in a background thread to prevent blocking async loop
         results = await asyncio.to_thread(self._run_ocr_sync, img_cv)
@@ -75,5 +147,5 @@ class RapidOCREngine:
                 text = item[1]
                 conf = item[2]
                 formatted_results.append((box, text, float(conf)))
-                
+
         return formatted_results
