@@ -16,6 +16,13 @@ class SettingsScreen(ctk.CTkFrame):
         # Track pending changes
         self._original_theme = ctk.get_appearance_mode()
         self._pending_theme = self._original_theme
+        config = getattr(self.master, "config_service", None)
+        self._original_include_overlay_in_capture = bool(
+            config.get("include_overlay_in_capture", False) if config else False
+        )
+        self.include_overlay_in_capture_var = ctk.BooleanVar(
+            value=self._original_include_overlay_in_capture
+        )
         
         self._build_ui()
     
@@ -222,6 +229,46 @@ class SettingsScreen(ctk.CTkFrame):
             corner_radius=8
         )
         self.theme_switch.pack(side="right")
+
+        # Screenshot behavior
+        self.capture_setting_row = ctk.CTkFrame(
+            self.appearance_content,
+            fg_color=colors["bg_card"]
+        )
+        self.capture_setting_row.pack(fill="x", pady=(20, 0))
+
+        self.capture_setting_text = ctk.CTkFrame(
+            self.capture_setting_row,
+            fg_color=colors["bg_card"]
+        )
+        self.capture_setting_text.pack(side="left", fill="x", expand=True)
+
+        self.capture_setting_label = ctk.CTkLabel(
+            self.capture_setting_text,
+            text="Include translation in screenshots",
+            font=("Segoe UI", 13, "bold"),
+            anchor="w",
+            text_color=colors["text_primary"]
+        )
+        self.capture_setting_label.pack(anchor="w")
+
+        self.capture_setting_hint = ctk.CTkLabel(
+            self.capture_setting_text,
+            text="Show the translated overlay when using screen capture tools",
+            font=("Segoe UI", 11),
+            anchor="w",
+            text_color=colors["text_muted"]
+        )
+        self.capture_setting_hint.pack(anchor="w", pady=(2, 0))
+
+        self.capture_setting_switch = ctk.CTkSwitch(
+            self.capture_setting_row,
+            text="",
+            variable=self.include_overlay_in_capture_var,
+            width=44,
+            progress_color=colors["accent"]
+        )
+        self.capture_setting_switch.pack(side="right", padx=(15, 0))
     
     def _build_about_section(self, colors):
         self.about_section = ctk.CTkFrame(
@@ -350,6 +397,12 @@ class SettingsScreen(ctk.CTkFrame):
         self.appearance_content.configure(fg_color=colors["bg_card"])
         self.appearance_header_row.configure(fg_color=colors["bg_card"])
         self.appearance_label.configure(text_color=colors["text_primary"])
+        if hasattr(self, "capture_setting_text"):
+            self.capture_setting_text.configure(fg_color=colors["bg_card"])
+            self.capture_setting_row.configure(fg_color=colors["bg_card"])
+            self.capture_setting_label.configure(text_color=colors["text_primary"])
+            self.capture_setting_hint.configure(text_color=colors["text_muted"])
+            self.capture_setting_switch.configure(progress_color=colors["accent"])
         if hasattr(self, 'engine_label'):
             self.engine_label.configure(text_color=colors["text_primary"])
         # theme_switch handles its own colors via segmented button defaults usually,
@@ -393,6 +446,10 @@ class SettingsScreen(ctk.CTkFrame):
         # Persist to config file
         if hasattr(self.master, 'config_service') and self.master.config_service:
             self.master.config_service.set("appearance_mode", ctk.get_appearance_mode())
+            include_overlay = self.include_overlay_in_capture_var.get()
+            self.master.config_service.set("include_overlay_in_capture", include_overlay)
+            if hasattr(self.master, "overlay"):
+                self.master.overlay.set_capture_inclusion(include_overlay)
             
         self.on_back()
     
@@ -401,6 +458,7 @@ class SettingsScreen(ctk.CTkFrame):
         # Revert theme if changed
         if self._pending_theme != self._original_theme:
             ctk.set_appearance_mode(self._original_theme)
+        self.include_overlay_in_capture_var.set(self._original_include_overlay_in_capture)
         self.on_back()
     
     def _handle_logout(self):

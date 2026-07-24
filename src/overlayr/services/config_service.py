@@ -9,7 +9,8 @@ class ConfigService:
             "source_lang": "Japanese",
             "target_lang": "Thai",
             "grouping_mode": "Group (Manga)",
-            "ocr_engine": "RapidOCR"
+            "ocr_engine": "RapidOCR",
+            "include_overlay_in_capture": False
         }
         self.load()
 

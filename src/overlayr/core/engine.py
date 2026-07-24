@@ -11,6 +11,33 @@ from PIL import ImageEnhance, ImageFilter
 import cv2
 from .post_processing import TextPostProcessor
 
+
+_FRAME_DIFF_INTENSITY_THRESHOLD = 15
+_FRAME_CACHE_MAX_CHANGED_RATIO = 0.00001
+_FRAME_CACHE_MIN_CHANGED_PIXELS = 16
+
+
+def _can_reuse_frame_cache(previous_gray, current_gray):
+    """Return cache eligibility and frame-difference statistics.
+
+    A translated sentence occupies only a small fraction of a game window, so
+    a percentage such as 90% can still classify a completely different text
+    panel as unchanged.  Cache reuse is intentionally limited to frames with
+    only a handful of capture-noise pixels.
+    """
+    if previous_gray is None or previous_gray.shape != current_gray.shape:
+        return False, 0, int(current_gray.size)
+
+    diff = cv2.absdiff(previous_gray, current_gray)
+    changed_pixels = int(np.count_nonzero(diff > _FRAME_DIFF_INTENSITY_THRESHOLD))
+    total_pixels = int(current_gray.size)
+    changed_limit = max(
+        _FRAME_CACHE_MIN_CHANGED_PIXELS,
+        int(total_pixels * _FRAME_CACHE_MAX_CHANGED_RATIO),
+    )
+    return changed_pixels <= changed_limit, changed_pixels, total_pixels
+
+
 class AsyncEngine(metaclass=SingletonMeta):
     """
     Orchestrates OCR and Translation asynchronously.
@@ -119,7 +146,11 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         # Helper to log time and save debug images
         last_time = time.perf_counter()
-        debug_dir = r"d:\NotWork\NewWork\Overlayr\debug_images"
+        # Store debug output in the project's Overlayr\debug_images folder.
+        project_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..")
+        )
+        debug_dir = os.path.join(project_root, "debug_images")
         timestamp = int(time.time() * 1000)
         
         # TOGGLE: Debug Image Saving
@@ -155,19 +186,21 @@ class AsyncEngine(metaclass=SingletonMeta):
         gray_image = cv2.cvtColor(open_cv_image, cv2.COLOR_BGR2GRAY)
         
         if hasattr(self, 'last_gray_image') and self.last_gray_image is not None:
-            if self.last_gray_image.shape == gray_image.shape:
-                diff = cv2.absdiff(self.last_gray_image, gray_image)
-                _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
-                non_zero = cv2.countNonZero(thresh)
-                total_pixels = gray_image.shape[0] * gray_image.shape[1]
-                diff_percent = (non_zero / total_pixels) * 100.0
-                sim_percent = 100.0 - diff_percent
-                print(f"[DEBUG] Image Similarity: {sim_percent:.2f}%", flush=True)
-                
-                if sim_percent >= 90.0:
-                    if hasattr(self, 'last_process_result'):
-                        await asyncio.sleep(0.3)
-                        return self.last_process_result
+            can_reuse_cache, changed_pixels, total_pixels = _can_reuse_frame_cache(
+                self.last_gray_image,
+                gray_image,
+            )
+            diff_percent = (changed_pixels / max(1, total_pixels)) * 100.0
+            sim_percent = 100.0 - diff_percent
+            print(
+                f"[DEBUG] Image Similarity: {sim_percent:.4f}% "
+                f"({changed_pixels} changed pixels)",
+                flush=True,
+            )
+
+            if can_reuse_cache and hasattr(self, 'last_process_result'):
+                await asyncio.sleep(0.3)
+                return self.last_process_result
         
         self.last_gray_image = gray_image
         
@@ -252,19 +285,100 @@ class AsyncEngine(metaclass=SingletonMeta):
                  print(f"[DEBUG] Accepted text: '{text}' (Conf: {conf})", flush=True)
             
             try:
-                region = image.crop((left, top, right, bottom))
-                if region.width == 0 or region.height == 0: continue
-                np_region = np.array(region)
-                avg_color = np.mean(np_region, axis=(0,1))
-                bg_color_hex = '#%02x%02x%02x' % (int(avg_color[0]), int(avg_color[1]), int(avg_color[2]))
-            except: 
+                ink_bbox = [left, top, right, bottom]
+                # Estimate the background from a narrow ring around the OCR box.
+                # Sampling the whole box would include the original glyphs and
+                # make the clearing color too dark or too light.
+                rgb_image = open_cv_image[:, :, ::-1]
+                sample_pad = max(3, min(12, int(max(right - left, bottom - top) * 0.08)))
+                sx1 = max(0, left - sample_pad)
+                sy1 = max(0, top - sample_pad)
+                sx2 = min(w, right + sample_pad)
+                sy2 = min(h, bottom + sample_pad)
+                sample = rgb_image[sy1:sy2, sx1:sx2]
+
+                ring_mask = np.ones(sample.shape[:2], dtype=bool)
+                inner_x1 = left - sx1
+                inner_y1 = top - sy1
+                inner_x2 = right - sx1
+                inner_y2 = bottom - sy1
+                ring_mask[inner_y1:inner_y2, inner_x1:inner_x2] = False
+                border_pixels = sample[ring_mask]
+
+                # Very small/edge-touching boxes may not have enough ring pixels.
+                if border_pixels.shape[0] < 12:
+                    border_pixels = rgb_image[top:bottom, left:right].reshape(-1, 3)
+
+                bg_rgb = np.median(border_pixels, axis=0).astype(int)
+                bg_color_hex = '#%02x%02x%02x' % tuple(np.clip(bg_rgb, 0, 255))
+
+                # Estimate the source glyph color from pixels that differ
+                # most from the sampled background. This works for both dark
+                # text on light bubbles and light text on dark UI surfaces.
+                text_pixels = rgb_image[top:bottom, left:right].reshape(-1, 3).astype(np.float32)
+                bg_vector = bg_rgb.astype(np.float32)
+                color_distance = np.linalg.norm(text_pixels - bg_vector, axis=1)
+                # Keep only the strongest contrast pixels when estimating the
+                # source colour.  A lower percentile often selects UI grid
+                # lines/background texture as if it were part of the glyph.
+                distance_cutoff = np.percentile(color_distance, 85)
+                foreground_pixels = text_pixels[color_distance >= distance_cutoff]
+                if foreground_pixels.shape[0] < 3:
+                    foreground_pixels = text_pixels
+                text_rgb = np.median(foreground_pixels, axis=0).astype(int)
+                text_color_hex = '#%02x%02x%02x' % tuple(np.clip(text_rgb, 0, 255))
+
+                # Tighten the OCR rectangle to the actual foreground ink.
+                # OCR boxes commonly include a few pixels of padding, which
+                # is enough to make a centered translation look misaligned.
+                distance_map = color_distance.reshape(bottom - top, right - left)
+                ink_mask = distance_map >= distance_cutoff
+                ink_y, ink_x = np.where(ink_mask)
+                if ink_x.size >= 3:
+                    ink_bbox = [
+                        left + int(ink_x.min()),
+                        top + int(ink_y.min()),
+                        left + int(ink_x.max()) + 1,
+                        top + int(ink_y.max()) + 1,
+                    ]
+
+                # Build a pixel-level cleaning mask.  Inpainting an entire OCR
+                # rectangle smears grid lines and manga line art into a flat
+                # band; this mask removes only high-contrast glyph pixels and
+                # their anti-aliased edge.
+                clean_cutoff = max(18.0, float(np.percentile(color_distance, 70)))
+                clean_mask = (distance_map >= clean_cutoff).astype(np.uint8) * 255
+                if np.any(clean_mask):
+                    clean_mask = cv2.dilate(
+                        clean_mask,
+                        np.ones((3, 3), dtype=np.uint8),
+                        iterations=1,
+                    )
+            except Exception:
                 bg_color_hex = "#000000"
+                text_color_hex = "#ffffff"
+                ink_bbox = [left, top, right, bottom]
+                clean_mask = None
 
             texts_to_translate.append(text)
             metadata.append({
                 "bbox": [left, top, right, bottom],
                 "original": text,
-                "bg_color": bg_color_hex
+                "bg_color": bg_color_hex,
+                "text_color": text_color_hex,
+                "ink_bbox": ink_bbox,
+                "source_boxes": [[left, top, right, bottom]],
+                "source_regions": [{
+                    "bbox": [left, top, right, bottom],
+                    "mask": clean_mask,
+                }],
+                # Preserve the OCR line box height for accurate overlay sizing.
+                "line_height": max(1, bottom - top),
+                "glyph_height": max(1, ink_bbox[3] - ink_bbox[1]),
+                # OCR does not expose the original font family.  These fields
+                # make the renderer extensible while retaining Thai coverage.
+                "font_family": "Segoe UI",
+                "font_weight": "normal"
             })
 
         if not metadata:
@@ -365,7 +479,6 @@ class AsyncEngine(metaclass=SingletonMeta):
         if SAVE_FINAL_DEBUG:
             try:
                 timestamp = int(time.time() * 1000)
-                debug_dir = r"d:\NotWork\NewWork\Overlayr\debug_images"
                 os.makedirs(debug_dir, exist_ok=True)
                 
                 # 1. Save Debug Image (.png)
@@ -453,14 +566,43 @@ class AsyncEngine(metaclass=SingletonMeta):
             all_b = [i["bbox"][3] for i in cluster_items]
             
             new_bbox = [min(all_l), min(all_t), max(all_r), max(all_b)]
+
+            ink_boxes = [item.get("ink_bbox", item["bbox"]) for item in cluster_items]
+            ink_bbox = [
+                min(box[0] for box in ink_boxes),
+                min(box[1] for box in ink_boxes),
+                max(box[2] for box in ink_boxes),
+                max(box[3] for box in ink_boxes),
+            ]
             
             # Use background color of the first item (topmost)
             bg_color = cluster_items[0]["bg_color"]
+            text_colors = [item.get("text_color") for item in cluster_items if item.get("text_color")]
+            text_color = text_colors[0] if text_colors else "#ffffff"
+            line_heights = [item.get("line_height", 0) for item in cluster_items]
+            line_heights = [height for height in line_heights if height > 0]
+            line_height = int(round(np.median(line_heights))) if line_heights else 0
+            glyph_heights = [item.get("glyph_height", 0) for item in cluster_items]
+            glyph_heights = [height for height in glyph_heights if height > 0]
+            glyph_height = int(round(np.median(glyph_heights))) if glyph_heights else 0
+            source_boxes = []
+            source_regions = []
+            for item in cluster_items:
+                source_boxes.extend(item.get("source_boxes") or [item["bbox"]])
+                source_regions.extend(item.get("source_regions") or [])
             
             return {
                 "bbox": new_bbox,
                 "original": full_text,
-                "bg_color": bg_color
+                "bg_color": bg_color,
+                "text_color": text_color,
+                "ink_bbox": ink_bbox,
+                "source_boxes": source_boxes,
+                "source_regions": source_regions,
+                "line_height": line_height,
+                "glyph_height": glyph_height,
+                "font_family": cluster_items[0].get("font_family", "Segoe UI"),
+                "font_weight": cluster_items[0].get("font_weight", "normal")
             }
 
         # ---- DUPLICATE / NESTED FILTERING (Common for all modes, but critical for Manga) ----

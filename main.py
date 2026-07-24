@@ -1,5 +1,38 @@
 import sys
 import os
+import ctypes
+
+
+def _enable_dpi_awareness():
+    """Keep MSS/WGC pixels and Tk screen coordinates on the same scale."""
+    if os.name != "nt":
+        return
+
+    try:
+        # Per-monitor v2 handles DPI changes when windows move between displays
+        # and keeps Win32/Tk geometry in physical pixel coordinates.
+        user32 = ctypes.windll.user32
+        user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        user32.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
+        if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    except Exception:
+        pass
+
+    try:
+        # Fallback for Windows 8.1 / older Tk builds.
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+_enable_dpi_awareness()
 
 # Ensure src is in path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))

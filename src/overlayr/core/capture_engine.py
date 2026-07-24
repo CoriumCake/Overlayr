@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any, Tuple
 import asyncio
 from ..utils.singleton import SingletonMeta
 from ..services.source_manager import SourceManager
+from ..utils.display_utils import resolve_monitor_bounds
 from .wgc_capture import WGCCapture
 
 class CaptureEngine(metaclass=SingletonMeta):
@@ -40,6 +41,46 @@ class CaptureEngine(metaclass=SingletonMeta):
     def set_roi(self, roi: Optional[Tuple[float, float, float, float]]) -> None:
         """Set Region of Interest as ratios (x, y, w, h) of target."""
         self.roi = roi
+
+    @staticmethod
+    def _get_client_bounds(hwnd: int) -> Optional[Dict[str, int]]:
+        """Get the window client area's screen-space pixel bounds."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", wintypes.LONG),
+                    ("top", wintypes.LONG),
+                    ("right", wintypes.LONG),
+                    ("bottom", wintypes.LONG),
+                ]
+
+            rect = RECT()
+            origin = POINT(0, 0)
+            user32 = ctypes.windll.user32
+            if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+                return None
+            if not user32.ClientToScreen(hwnd, ctypes.byref(origin)):
+                return None
+
+            width = rect.right - rect.left
+            height = rect.bottom - rect.top
+            if width <= 0 or height <= 0:
+                return None
+
+            return {
+                "left": int(origin.x),
+                "top": int(origin.y),
+                "width": int(width),
+                "height": int(height),
+            }
+        except Exception:
+            return None
         
     def capture(self) -> Tuple[Optional[Image.Image], Optional[Dict[str, int]]]:
         """
@@ -49,21 +90,19 @@ class CaptureEngine(metaclass=SingletonMeta):
         try:
             if self.mode == "screen":
                 with mss.mss() as sct:
-                    monitor_idx = self.target['id'] + 1
+                    monitor_bbox = resolve_monitor_bounds(self.target, sct.monitors)
                     
-                    if monitor_idx < len(sct.monitors):
-                        mon = sct.monitors[monitor_idx]
-                        
-                        target_bbox = {"left": mon['left'], "top": mon['top'], "width": mon['width'], "height": mon['height']}
+                    if monitor_bbox:
+                        target_bbox = monitor_bbox.copy()
                         
                         # Apply ROI if set
                         if self.roi:
                             rx, ry, rw, rh = self.roi
                             target_bbox = {
-                                "left": mon['left'] + int(rx * mon['width']),
-                                "top": mon['top'] + int(ry * mon['height']),
-                                "width": int(rw * mon['width']),
-                                "height": int(rh * mon['height'])
+                                "left": monitor_bbox['left'] + int(rx * monitor_bbox['width']),
+                                "top": monitor_bbox['top'] + int(ry * monitor_bbox['height']),
+                                "width": int(rw * monitor_bbox['width']),
+                                "height": int(rh * monitor_bbox['height'])
                             }
                         
                         img = sct.grab(target_bbox)
@@ -98,7 +137,23 @@ class CaptureEngine(metaclass=SingletonMeta):
                     except: pass
                     
                     if w_obj:
-                         target_bbox = {"left": w_obj.left, "top": w_obj.top, "width": w_obj.width, "height": w_obj.height}
+                         window_bbox = {"left": w_obj.left, "top": w_obj.top, "width": w_obj.width, "height": w_obj.height}
+
+                         # WGC CreateForWindow normally returns the client
+                         # area, not the outer title-bar frame. Use the same
+                         # screen-space origin for the overlay.
+                         client_bbox = self._get_client_bounds(hwnd)
+                         if client_bbox:
+                             window_area_error = abs(img.width - window_bbox["width"]) + abs(img.height - window_bbox["height"])
+                             client_area_error = abs(img.width - client_bbox["width"]) + abs(img.height - client_bbox["height"])
+                             target_bbox = client_bbox if client_area_error <= window_area_error else window_bbox
+                         else:
+                             target_bbox = window_bbox
+
+                         # The canvas coordinates are image pixels, so make
+                         # the overlay geometry match the captured image.
+                         target_bbox["width"] = img.width
+                         target_bbox["height"] = img.height
                          
                          # If ROI is set, crop the WGC image
                          if self.roi:
@@ -117,8 +172,8 @@ class CaptureEngine(metaclass=SingletonMeta):
                              
                              # Update target_bbox to match screen position of ROI
                              target_bbox = {
-                                 "left": w_obj.left + crop_x,
-                                 "top": w_obj.top + crop_y,
+                                 "left": target_bbox["left"] + crop_x,
+                                 "top": target_bbox["top"] + crop_y,
                                  "width": crop_w,
                                  "height": crop_h
                              }
@@ -136,9 +191,9 @@ class CaptureEngine(metaclass=SingletonMeta):
         try:
             if mode == "screen":
                 with mss.mss() as sct:
-                    monitor_idx = target['id'] + 1
-                    if monitor_idx < len(sct.monitors):
-                        img_sct = sct.grab(sct.monitors[monitor_idx])
+                    monitor_bbox = resolve_monitor_bounds(target, sct.monitors)
+                    if monitor_bbox:
+                        img_sct = sct.grab(monitor_bbox)
                         img = Image.frombytes("RGB", img_sct.size, img_sct.bgra, "raw", "BGRX")
                         return img.resize(size, Image.Resampling.LANCZOS)
                 

@@ -4,5 +4,6 @@
     "target_lang": "Thai",
     "grouping_mode": "Group (Manga)",
     "ocr_engine": "RapidOCR",
+    "include_overlay_in_capture": true,
     "capture_mode": "Applications"
 }

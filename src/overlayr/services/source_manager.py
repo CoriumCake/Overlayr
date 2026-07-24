@@ -86,18 +86,53 @@ class SourceManager(metaclass=SingletonMeta):
 
         monitors = []
         try:
-            mss_mons = screeninfo.get_monitors()
+            # Use MSS as the source of truth because CaptureEngine uses MSS.
+            # Persist physical bounds so monitor ordering cannot drift between
+            # discovery and capture.
+            import mss
 
-            for i, m in enumerate(mss_mons):
-                monitors.append({
-                    "id": i,
-                    "name": f"Display {i+1}",
-                    "details": f"{m.width}x{m.height} at ({m.x},{m.y})",
-                    "type": "screen",
-                    "monitor_obj": m
-                })
+            with mss.mss() as sct:
+                for i, monitor in enumerate(sct.monitors[1:]):
+                    bounds = {
+                        "left": int(monitor["left"]),
+                        "top": int(monitor["top"]),
+                        "width": int(monitor["width"]),
+                        "height": int(monitor["height"]),
+                    }
+                    monitors.append({
+                        "id": i,
+                        "name": f"Display {i+1}",
+                        "details": (
+                            f"{bounds['width']}x{bounds['height']} at "
+                            f"({bounds['left']},{bounds['top']})"
+                        ),
+                        "type": "screen",
+                        "bounds": bounds,
+                        "monitor_obj": monitor,
+                    })
         except Exception as e:
-            print(f"Error listing monitors: {e}")
+            print(f"Error listing monitors with MSS: {e}")
+            try:
+                for i, monitor in enumerate(screeninfo.get_monitors()):
+                    bounds = {
+                        "left": int(monitor.x),
+                        "top": int(monitor.y),
+                        "width": int(monitor.width),
+                        "height": int(monitor.height),
+                    }
+                    monitors.append({
+                        "id": i,
+                        "name": f"Display {i+1}",
+                        "details": (
+                            f"{bounds['width']}x{bounds['height']} at "
+                            f"({bounds['left']},{bounds['top']})"
+                        ),
+                        "type": "screen",
+                        "bounds": bounds,
+                        "monitor_obj": monitor,
+                    })
+            except Exception as fallback_error:
+                print(f"Error listing monitors: {fallback_error}")
         return monitors
     
     def get_windows(self) -> List[Dict[str, Any]]:

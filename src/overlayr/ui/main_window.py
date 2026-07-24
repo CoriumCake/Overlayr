@@ -13,6 +13,12 @@ from ..services.source_manager import SourceManager
 from ..ui.overlay import ResultOverlay
 from ..ui.components.source_card import SourceCard
 from ..ui.components.loading_spinner import LoadingSpinner
+from ..utils.display_utils import (
+    format_tk_geometry,
+    get_monitor_for_window,
+    resolve_monitor_bounds,
+    should_show_window_overlay,
+)
 # from ..ui.components.profile_menu import ProfileMenu
 from .theme import get_theme, apply_theme_to_window
 
@@ -113,7 +119,11 @@ class MainWindow(ctk.CTk):
         # UI Setup
         self._load_assets()
         self._create_ui()
-        self.overlay = ResultOverlay(self)
+        include_overlay_in_capture = (
+            self.config_service.get("include_overlay_in_capture", False)
+            if self.config_service else False
+        )
+        self.overlay = ResultOverlay(self, include_in_capture=include_overlay_in_capture)
 
         # Background Threads
         threading.Thread(target=self._run_async_loop, daemon=True).start()
@@ -1006,13 +1016,21 @@ class MainWindow(ctk.CTk):
         is_active = True
         try:
             import ctypes
-            active_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            user32 = ctypes.windll.user32
+            active_hwnd = user32.GetForegroundWindow()
             if self.selected_source.get('type') == 'window':
                 target_hwnd = self.selected_source.get('id')
-                # Strict check: Active window must be target
-                if active_hwnd != target_hwnd:
-                    is_active = False
-        except: pass
+                is_active = should_show_window_overlay(
+                    target_exists=bool(user32.IsWindow(target_hwnd)),
+                    target_visible=bool(user32.IsWindowVisible(target_hwnd)),
+                    target_minimized=bool(user32.IsIconic(target_hwnd)),
+                    foreground_is_target=active_hwnd == target_hwnd,
+                    target_monitor=get_monitor_for_window(target_hwnd),
+                    foreground_monitor=get_monitor_for_window(active_hwnd),
+                )
+        except Exception:
+            # Keep translating if Windows temporarily cannot report focus.
+            is_active = True
         
         # Check for state change
         prev_state = getattr(self, 'is_target_active', True)
@@ -1045,10 +1063,16 @@ class MainWindow(ctk.CTk):
                  if last_data:
                      # print("Instant Show Restore!", flush=True)
                      # args: results, x, y, geometry
-                     results, x, y, geometry = last_data
+                     if len(last_data) == 5:
+                         results, x, y, geometry, source_image = last_data
+                     else:
+                         results, x, y, geometry = last_data
+                         source_image = None
                      if geometry:
                         self.overlay.set_geometry(geometry)
-                     self.overlay.show_results(results, x, y, visible=True)
+                     self.overlay.show_results(
+                         results, x, y, visible=True, source_image=source_image
+                     )
 
         # Schedule next check (100ms)
         self.after(100, self._check_visibility)
@@ -1068,7 +1092,7 @@ class MainWindow(ctk.CTk):
                     # Do not capture/hide. Just track window position.
                     if last_bounds:
                          self.after(0, lambda b=last_bounds: self.overlay.set_geometry(
-                             f"{b['width']}x{b['height']}+{b['left']}+{b['top']}"
+                             format_tk_geometry(b)
                          ))
                     time.sleep(0.05)
                     continue
@@ -1077,11 +1101,17 @@ class MainWindow(ctk.CTk):
 
             start_time = time.time()
             try:
-                # Optimized Capture:
-                # We use SetWindowDisplayAffinity in overlay.py to make it invisible to capture.
-                # So we NO LONGER need to hide/restore it manually.
-                
-                result = self.capture_engine.capture()
+                # If the user wants external screenshots to include the
+                # translation, temporarily exclude the overlay only while the
+                # internal OCR frame is captured to avoid self-recognition.
+                include_overlay = getattr(self.overlay, "include_in_capture", False)
+                if include_overlay:
+                    self.overlay.hide_for_capture()
+                try:
+                    result = self.capture_engine.capture()
+                finally:
+                    if include_overlay:
+                        self.overlay.restore_after_capture()
                 
                 image, bounds = result if result else (None, None)
                 
@@ -1142,7 +1172,7 @@ class MainWindow(ctk.CTk):
                 # So we draw relative to 0,0 of the overlay.
                 offset_x = 0 
                 offset_y = 0
-                geometry = f"{bounds['width']}x{bounds['height']}+{bounds['left']}+{bounds['top']}"
+                geometry = format_tk_geometry(bounds)
                 
                 self.after(0, lambda: self.overlay.set_geometry(geometry))
                 # self.after(0, lambda: self.overlay.show_boxes(boxes, offset_x, offset_y, color="#00ffff")) # Cyan/Blue
@@ -1175,12 +1205,23 @@ class MainWindow(ctk.CTk):
             # So the content should be drawn at offset 0,0 relative to the window.
             offset_x = 0
             offset_y = 0
-            geometry = f"{bounds['width']}x{bounds['height']}+{bounds['left']}+{bounds['top']}"
+            geometry = format_tk_geometry(bounds)
 
             if self.is_streaming:
                 # Use stored visibility state
                 visible = getattr(self, 'is_target_active', True)
-                self.after(0, lambda: self._update_overlay_safe(results, raw_text, offset_x, offset_y, geometry, visible))
+                self.after(
+                    0,
+                    lambda: self._update_overlay_safe(
+                        results,
+                        raw_text,
+                        offset_x,
+                        offset_y,
+                        geometry,
+                        visible,
+                        image,
+                    ),
+                )
                 
             # Wait 0 seconds (Immediate Yield) for max performance
             await asyncio.sleep(0)
@@ -1194,17 +1235,28 @@ class MainWindow(ctk.CTk):
             print(f"Proc Error: {e}")
             traceback.print_exc()
 
-    def _update_overlay_safe(self, results, raw_text, x, y, geometry, visible=True):
+    def _update_overlay_safe(
+        self,
+        results,
+        raw_text,
+        x,
+        y,
+        geometry,
+        visible=True,
+        source_image=None,
+    ):
         if not self.is_streaming:
             self.overlay.hide()
             return
             
         if geometry:
             self.overlay.set_geometry(geometry)
-        self.overlay.show_results(results, x, y, visible=visible)
+        self.overlay.show_results(
+            results, x, y, visible=visible, source_image=source_image
+        )
         
         # Cache for Instant Restore
-        self.last_overlay_data = (results, x, y, geometry)
+        self.last_overlay_data = (results, x, y, geometry, source_image)
         
         # self.overlay.show_debug(f"Raw: {raw_text[:50]}...")
             
@@ -1227,7 +1279,10 @@ class MainWindow(ctk.CTk):
             # Relative to monitor
             import mss
             with mss.mss() as sct:
-                mon = sct.monitors[target['id'] + 1]
+                mon = resolve_monitor_bounds(target, sct.monitors)
+                if not mon:
+                    self.lbl_status.configure(text="Display is no longer available")
+                    return
                 rx = (x - mon['left']) / mon['width']
                 ry = (y - mon['top']) / mon['height']
                 rw = w / mon['width']
