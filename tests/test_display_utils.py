@@ -2,6 +2,7 @@ from overlayr.utils.display_utils import (
     format_tk_geometry,
     parse_physical_geometry,
     resolve_monitor_bounds,
+    select_capture_bounds,
     should_show_window_overlay,
     tk_pixel_font,
 )
@@ -54,6 +55,40 @@ def test_monitor_selection_prefers_persisted_physical_bounds():
     ]
 
     assert resolve_monitor_bounds(target, monitors) == target["bounds"]
+
+
+def test_wgc_capture_prefers_exact_visible_dwm_frame():
+    selected = select_capture_bounds(
+        2560,
+        1368,
+        {"left": 0, "top": 0, "width": 2560, "height": 1368},
+        {"left": -11, "top": -11, "width": 2582, "height": 1390},
+        {"left": 0, "top": 34, "width": 2560, "height": 1334},
+    )
+
+    assert selected == {
+        "left": 0,
+        "top": 0,
+        "width": 2560,
+        "height": 1368,
+    }
+
+
+def test_wgc_capture_uses_client_area_when_frame_matches_it():
+    selected = select_capture_bounds(
+        1920,
+        1009,
+        None,
+        {"left": -1928, "top": -8, "width": 1936, "height": 1048},
+        {"left": -1920, "top": 23, "width": 1920, "height": 1009},
+    )
+
+    assert selected == {
+        "left": -1920,
+        "top": 23,
+        "width": 1920,
+        "height": 1009,
+    }
 
 
 def test_overlay_remains_visible_when_focus_moves_to_other_monitor():

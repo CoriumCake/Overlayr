@@ -5,7 +5,10 @@ from typing import Optional, Dict, Any, Tuple
 import asyncio
 from ..utils.singleton import SingletonMeta
 from ..services.source_manager import SourceManager
-from ..utils.display_utils import resolve_monitor_bounds
+from ..utils.display_utils import (
+    resolve_monitor_bounds,
+    select_capture_bounds,
+)
 from .wgc_capture import WGCCapture
 
 class CaptureEngine(metaclass=SingletonMeta):
@@ -81,6 +84,74 @@ class CaptureEngine(metaclass=SingletonMeta):
             }
         except Exception:
             return None
+
+    @staticmethod
+    def _get_window_bounds(hwnd: int) -> Optional[Dict[str, int]]:
+        """Get DPI-aware outer window bounds from Win32."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            rect = wintypes.RECT()
+            user32 = ctypes.windll.user32
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return None
+
+            width = rect.right - rect.left
+            height = rect.bottom - rect.top
+            if width <= 0 or height <= 0:
+                return None
+
+            return {
+                "left": int(rect.left),
+                "top": int(rect.top),
+                "width": int(width),
+                "height": int(height),
+            }
+        except Exception:
+            return None
+
+    @staticmethod
+    def _get_visible_window_bounds(hwnd: int) -> Optional[Dict[str, int]]:
+        """Get the physical DWM frame captured by Graphics Capture."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            rect = wintypes.RECT()
+            dwmapi = ctypes.windll.dwmapi
+            dwmapi.DwmGetWindowAttribute.argtypes = [
+                wintypes.HWND,
+                wintypes.DWORD,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+            ]
+            dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
+
+            # DWMWA_EXTENDED_FRAME_BOUNDS excludes invisible resize borders
+            # and corresponds to the visible frame returned by WGC.
+            result = dwmapi.DwmGetWindowAttribute(
+                hwnd,
+                9,
+                ctypes.byref(rect),
+                ctypes.sizeof(rect),
+            )
+            if result != 0:
+                return None
+
+            width = rect.right - rect.left
+            height = rect.bottom - rect.top
+            if width <= 0 or height <= 0:
+                return None
+
+            return {
+                "left": int(rect.left),
+                "top": int(rect.top),
+                "width": int(width),
+                "height": int(height),
+            }
+        except Exception:
+            return None
         
     def capture(self) -> Tuple[Optional[Image.Image], Optional[Dict[str, int]]]:
         """
@@ -137,23 +208,24 @@ class CaptureEngine(metaclass=SingletonMeta):
                     except: pass
                     
                     if w_obj:
-                         window_bbox = {"left": w_obj.left, "top": w_obj.top, "width": w_obj.width, "height": w_obj.height}
-
-                         # WGC CreateForWindow normally returns the client
-                         # area, not the outer title-bar frame. Use the same
-                         # screen-space origin for the overlay.
+                         fallback_bbox = {
+                             "left": w_obj.left,
+                             "top": w_obj.top,
+                             "width": w_obj.width,
+                             "height": w_obj.height,
+                         }
+                         window_bbox = self._get_window_bounds(hwnd) or fallback_bbox
                          client_bbox = self._get_client_bounds(hwnd)
-                         if client_bbox:
-                             window_area_error = abs(img.width - window_bbox["width"]) + abs(img.height - window_bbox["height"])
-                             client_area_error = abs(img.width - client_bbox["width"]) + abs(img.height - client_bbox["height"])
-                             target_bbox = client_bbox if client_area_error <= window_area_error else window_bbox
-                         else:
-                             target_bbox = window_bbox
-
-                         # The canvas coordinates are image pixels, so make
-                         # the overlay geometry match the captured image.
-                         target_bbox["width"] = img.width
-                         target_bbox["height"] = img.height
+                         visible_bbox = self._get_visible_window_bounds(hwnd)
+                         target_bbox = select_capture_bounds(
+                             img.width,
+                             img.height,
+                             visible_bbox,
+                             window_bbox,
+                             client_bbox,
+                         )
+                         if target_bbox is None:
+                             return None, None
                          
                          # If ROI is set, crop the WGC image
                          if self.roi:

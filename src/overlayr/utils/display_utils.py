@@ -54,6 +54,53 @@ def resolve_monitor_bounds(target: Dict[str, Any], monitors) -> Optional[Dict[st
     return None
 
 
+def select_capture_bounds(
+    image_width: int,
+    image_height: int,
+    *candidates: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, int]]:
+    """Choose the screen bounds whose size best matches a captured frame.
+
+    Candidate order is significant when two bounds have the same size error.
+    WGC captures the visible DWM frame, so callers should pass that candidate
+    before the outer window and client-area bounds.
+    """
+    width = max(1, int(image_width))
+    height = max(1, int(image_height))
+    best_bounds = None
+    best_error = None
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            normalized = {
+                "left": int(candidate["left"]),
+                "top": int(candidate["top"]),
+                "width": int(candidate["width"]),
+                "height": int(candidate["height"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        error = (
+            abs(width - normalized["width"])
+            + abs(height - normalized["height"])
+        )
+        if best_error is None or error < best_error:
+            best_bounds = normalized
+            best_error = error
+
+    if best_bounds is None:
+        return None
+
+    # Canvas coordinates are capture pixels, even when Windows reports a
+    # one-pixel rounding difference for the corresponding screen rectangle.
+    best_bounds["width"] = width
+    best_bounds["height"] = height
+    return best_bounds
+
+
 def tk_pixel_font(family: str, pixel_size: int, weight: str = "normal"):
     """Return a Tk font tuple whose negative size is interpreted as pixels."""
     size = max(1, int(round(pixel_size)))
