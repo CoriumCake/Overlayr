@@ -186,9 +186,10 @@ class AsyncEngine(metaclass=SingletonMeta):
         else:
             # EasyOCR is synchronous and CPU-bound, run it in a background thread
             results = await asyncio.to_thread(self.ocr_service.extract_text, image)
-        ocr_dur = (time.perf_counter() - ocr_start) * 1000
-        print(f"[DEBUG] OCR Processing: {ocr_dur:.2f} ms", flush=True)
-        t1 = time.time()
+        ocr_dur = time.perf_counter() - ocr_start
+        print(f"[DEBUG] OCR Processing: {ocr_dur*1000:.2f} ms", flush=True)
+        
+        correction_start = time.perf_counter()
         
         # Post-Process Text
         final_results = []
@@ -268,37 +269,28 @@ class AsyncEngine(metaclass=SingletonMeta):
 
         if not metadata:
             return [], raw_text
-
+            
+        correction_dur = time.perf_counter() - correction_start
+        
+        grouping_start = time.perf_counter()
+        
+        # Reset last_dbnet_regions for this frame
+        self.last_dbnet_regions = None
+        
         # In WinOCR, the engine has already handled merging spatially close blocks and overlapping geometry
         # but the returns are just flat boxes. We keep this to group them into paragraphs if requested.
-        merged_metadata = self._merge_text_blocks(metadata, mode=merge_mode)  
+        merged_metadata = await asyncio.to_thread(self._merge_text_blocks, metadata, merge_mode, open_cv_image)
+        
+        grouping_dur = time.perf_counter() - grouping_start
+        
         # DEBUG CALLBACK: MERGE DONE
         if step_callback:
             await step_callback("MERGED", merged_metadata)
             
-        # --- DEBUG SAVE: Processed Image + Grouped Boxes ---
-        if SAVE_FINAL_DEBUG:
-            try:
-                debug_img = open_cv_image.copy()
-                for i, item in enumerate(merged_metadata):
-                    try:
-                        b = item["bbox"]
-                        x1, y1, x2, y2 = int(b[0]), int(b[1]), int(b[2]), int(b[3])
-                        cv2.rectangle(debug_img, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                        
-                        # Try drawing text, if it fails (e.g. unicode error), ignore
-                        safe_text = str(item["original"]).encode('ascii', 'ignore').decode('ascii')
-                        cv2.putText(debug_img, safe_text, (x1, max(0, y1-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-                    except Exception as inner_e:
-                        print(f"[DEBUG] Failed to draw box {i}: {inner_e}", flush=True)
-                
-                fname = f"final_grouped_{timestamp}.png"
-                success = cv2.imwrite(os.path.join(debug_dir, fname), debug_img)
-                if not success:
-                    print(f"[DEBUG] cv2.imwrite returned False for {fname}", flush=True)
-            except Exception as e:
-                print(f"[DEBUG] Failed to save final debug image: {e}", flush=True)
-        
+        # Initialize translation timing
+        translation_start = time.perf_counter()
+            
+        # We will save debug AFTER translation so we can include translation results in the text file.
         texts_to_translate = [m["original"] for m in merged_metadata]
 
         # --- Translation Caching (Last 2 Loops) ---
@@ -365,16 +357,75 @@ class AsyncEngine(metaclass=SingletonMeta):
             meta["translated"] = translated_texts[i]
             final_results.append(meta)
             
-        t2 = time.time()
-        print(f"OCR: {t1-t0:.2f}s | Translate: {t2-t1:.2f}s | Items: {len(final_results)}", flush=True)
+        translation_dur = time.perf_counter() - translation_start
+        total_dur = time.perf_counter() - (ocr_start - 0) # approximation of total time
+        print(f"OCR: {ocr_dur:.2f}s | Group: {grouping_dur:.2f}s | Trans: {translation_dur:.2f}s | Items: {len(final_results)}", flush=True)
+        
+        # --- ENHANCED DEBUG SAVE: Processed Image + Text Logs ---
+        if SAVE_FINAL_DEBUG:
+            try:
+                timestamp = int(time.time() * 1000)
+                debug_dir = r"d:\NotWork\NewWork\Overlayr\debug_images"
+                os.makedirs(debug_dir, exist_ok=True)
+                
+                # 1. Save Debug Image (.png)
+                debug_img = open_cv_image.copy()
+                
+                # Draw Blue Bounding Boxes (Raw OCR text)
+                for bbox_points, _, _ in results:
+                    pts = np.array(bbox_points, np.int32)
+                    pts = pts.reshape((-1, 1, 2))
+                    cv2.polylines(debug_img, [pts], True, (255, 0, 0), 2)
+                
+                # Draw Green Polygons & Red Index (DBNet Regions)
+                if getattr(self, 'last_dbnet_regions', None):
+                    for i, cnt in enumerate(self.last_dbnet_regions):
+                        # Draw polygon in Green
+                        cv2.polylines(debug_img, [cnt], True, (0, 255, 0), 2)
+                        
+                        # Draw Red region index near the top-left of the contour
+                        x, y, w, h = cv2.boundingRect(cnt)
+                        cv2.putText(debug_img, str(i), (x, max(0, y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                        
+                fname_img = f"debug_output_{timestamp}.png"
+                cv2.imwrite(os.path.join(debug_dir, fname_img), debug_img)
+                
+                # 2. Save Debug Text (.txt)
+                fname_txt = f"debug_output_{timestamp}.txt"
+                with open(os.path.join(debug_dir, fname_txt), "w", encoding="utf-8") as f:
+                    f.write("=== TIMING ===\n")
+                    f.write(f"OCR Time:         {ocr_dur:.4f} s\n")
+                    f.write(f"Correction Time:  {correction_dur:.4f} s\n")
+                    f.write(f"Grouping Time:    {grouping_dur:.4f} s\n")
+                    f.write(f"Translation Time: {translation_dur:.4f} s\n")
+                    f.write(f"Total Pipeline:   {total_dur:.4f} s\n\n")
+                    
+                    f.write("=== OCR FOUND TEXT (RAW) ===\n")
+                    for _, t, conf in results:
+                        f.write(f"[{conf:.2f}] {t}\n")
+                        
+                    f.write("\n=== TEXT AFTER POST-PROCESSING ===\n")
+                    for m in metadata:
+                        f.write(f"- {m['original']}\n")
+                        
+                    f.write("\n=== TEXT AFTER GROUPING (DBNET) ===\n")
+                    for m in merged_metadata:
+                        f.write(f"- {m['original']}\n")
+                        
+                    f.write("\n=== FINAL TRANSLATION ===\n")
+                    for i, text in enumerate(translated_texts):
+                        f.write(f"[{i}] {text}\n")
+                        
+            except Exception as e:
+                print(f"[DEBUG] Failed to save enhanced debug info: {e}", flush=True)
         
         self.last_process_result = (final_results, raw_text)
         return final_results, raw_text
 
-    def _merge_text_blocks(self, elements: List[Dict[str, Any]], mode: str = "paragraph") -> List[Dict[str, Any]]:
+    def _merge_text_blocks(self, elements: List[Dict[str, Any]], mode: str = "paragraph", image_cv=None) -> List[Dict[str, Any]]:
         """
         Merges text boxes using clustering logic adapted from WindowsOCRTool.
-        mode='paragraph': Groups vertically adjacent lines (Manga/Comic style).
+        mode='paragraph': Groups using DBNet regions.
         mode='line': Merges only horizontal fragments, strict on vertical.
         """
         if not elements: return []
@@ -581,9 +632,51 @@ class AsyncEngine(metaclass=SingletonMeta):
                 
             return paragraphs
 
-        # ---- PARAGRAPH / MANGA MODE (Clustering) ----
-        # Grouping is now natively handled by DBNet within windows_ocr.py
-        # Therefore, elements returned from extract_text are already clustered.
+        # ---- PARAGRAPH / MANGA MODE (Clustering with DBNet) ----
+        if mode == "paragraph" and image_cv is not None:
+            try:
+                from ..services.ocr_preprocessor import detect_text_regions_dbnet
+                import cv2
+                
+                regions = detect_text_regions_dbnet(image_cv)
+                self.last_dbnet_regions = regions # Expose to process_image
+                if not regions:
+                    return elements
+                    
+                grouped_items = [[] for _ in regions]
+                ungrouped = []
+                
+                for item in elements:
+                    ix, iy, iw, ih = get_vals(item)
+                    points = [
+                        (ix + iw/2, iy + ih/2),
+                        (ix, iy), (ix+iw, iy), (ix, iy+ih), (ix+iw, iy+ih)
+                    ]
+                    
+                    best_i = -1
+                    for i, cnt in enumerate(regions):
+                        for pt in points:
+                            if cv2.pointPolygonTest(cnt, pt, False) >= 0:
+                                best_i = i
+                                break
+                        if best_i >= 0: break
+                        
+                    if best_i >= 0:
+                        grouped_items[best_i].append(item)
+                    else:
+                        ungrouped.append(item)
+                        
+                final_elements = []
+                for group in grouped_items:
+                    if group:
+                        final_elements.append(merge_cluster(group))
+                        
+                final_elements.extend(ungrouped)
+                return final_elements
+            except Exception as e:
+                print(f"DBNet Grouping Error: {e}")
+                return elements
+
         return elements
                         
 

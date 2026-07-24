@@ -20,3 +20,5 @@ onnxruntime-directml
 
 onnxruntime
 pyclipper
+rapidocr-onnxruntime
+numpy

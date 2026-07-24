@@ -1,6 +1,6 @@
 ================================================================================
   OVERLAYR — รายละเอียดฟังก์ชันทั้งหมด (ภาษาไทย)
-  อัปเดต: 2026-07-23
+  อัปเดต: 2026-07-24
 ================================================================================
 
 โครงสร้างโปรเจกต์
@@ -796,13 +796,16 @@ src/overlayr/
     ├── RapidOCREngine.extract_text(image) [เครื่องยนต์หลัก]
     │     └── ค้นหาขอบเขตข้อความและอ่านข้อความแบบเบ็ดเสร็จ (End-to-End) ในตัวเอง
     ├── (ทางเลือกสำรอง) WindowsOCREngine.extract_text(image)
-    │     ├── รัน 4 เทคนิคพร้อมกัน และรวมผลลัพธ์
-    │     └── จัดกลุ่มคำลง Paragraph ด้วย DBNet
-    ├── TextPostProcessor.clean_text() — regex cleanup
-    ├── TextPostProcessor.correct_text() — SymSpell + custom rules
+    │     └── รัน 4 เทคนิคพร้อมกัน และรวมผลลัพธ์
+    ├── TextPostProcessor.clean_text() — ทำความสะอาดสัญลักษณ์พื้นฐาน
+    ├── TextPostProcessor.correct_text() — (ปิดการใช้งานชั่วคราว คืนค่าตรง)
     ├── ValidationService.is_valid_text() — กรองเนื้อหาที่ไม่ใช่ข้อความจริง
-    ├── _merge_text_blocks() — ข้ามการจัดกลุ่มซ้ำซ้อนหากเป็น paragraph mode นำโครงสร้างจาก DBNet มาใช้
-    └── GoogleTranslateService.translate() — แปลภาษา (parallel, cached)
+    ├── _merge_text_blocks() (รันแบบ Async ผ่าน asyncio.to_thread เพื่อไม่ให้บล็อก UI)
+    │     └── โหมด Group (Manga): เรียกใช้ DBNet (ผ่าน GPU/DirectML/CUDA) จัดกลุ่มข้อความ RapidOCR ลง Paragraph
+    ├── GoogleTranslateService.translate() — แปลภาษา (parallel, cached)
+    └── [Enhanced Debug Save] (ถ้าเปิดใช้งาน SAVE_FINAL_DEBUG)
+          ├── เซฟ .png: วาดกรอบสีฟ้า (OCR Raw), โพลีกอนสีเขียว (DBNet Region), และเลขลำดับสีแดง
+          └── เซฟ .txt: บันทึกเวลาประมวลผลของแต่ละระบบ (OCR, Correction, Grouping, Translation, Total) และ Log ข้อความทุกขั้นตอน
 
   [แสดงผล]
   Overlay (ui/overlay.py)

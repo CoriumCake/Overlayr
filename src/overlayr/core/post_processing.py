@@ -103,15 +103,10 @@ class TextPostProcessor:
 
     def correct_text(self, text: str) -> str:
         """
-        Apply SymSpell correction then Fuzzy fallback.
+        [DISABLED] Apply SymSpell correction then Fuzzy fallback.
         """
-        if not text: return text
-        
-        # 0. Custom Rules (Pre-correction)
-        text = self._apply_custom_rules(text)
-        
-        if not self.sym_spell:
-            return text
+        # return text directly without applying correction
+        return text
 
         # Split into words for SymSpell? 
         # SymSpell supports compound splitting, but let's try word-by-word or full phrase lookup first.

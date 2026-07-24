@@ -621,8 +621,8 @@ def detect_text_regions_dbnet(image_source):
         if not os.path.exists(model_path):
              print(f"DBNet model not found at {model_path}. Falling back to bubble detection.")
              return detect_speech_bubbles(image_source)
-        # Load ONNX model
-        _dbnet_session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+        # Load ONNX model with GPU acceleration if available
+        _dbnet_session = ort.InferenceSession(model_path, providers=['DmlExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider'])
         
     img = cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB)
     img_resized = cv2.resize(img, (target_size, target_size))
