@@ -9,6 +9,11 @@ from ..utils.singleton import SingletonMeta
 from PIL import ImageEnhance, ImageFilter
 
 import cv2
+from .frame_pipeline import (
+    build_frame_preview,
+    build_region_fingerprints,
+    evaluate_ocr_cache,
+)
 from .post_processing import TextPostProcessor
 
 
@@ -65,6 +70,18 @@ class AsyncEngine(metaclass=SingletonMeta):
         self.CACHE_SIZE = 100
         
         self._loop_counter = 0
+        self.last_translated_gray_image = None
+        self.last_process_result = None
+        self.last_dbnet_regions = None
+        self._last_full_scan_at = 0.0
+        self._last_dbnet_scan_at = 0.0
+        self._last_dbnet_frame_shape = None
+        self._last_frame_preview = None
+        self._last_result_fingerprints = ()
+        self.save_debug_output = bool(
+            self.config.get("save_debug_output", False)
+        )
+        self.debug_logging = self.save_debug_output
 
     def update_ocr_engine(self, engine_name: str = None):
         if engine_name is None:
@@ -132,6 +149,18 @@ class AsyncEngine(metaclass=SingletonMeta):
         # Store for internal use (noise filtering logic)
         self.source = source
         self.target = target
+        self.reset_frame_cache()
+
+    def reset_frame_cache(self) -> None:
+        """Discard visual caches when the source, OCR engine, or language changes."""
+        self.last_translated_gray_image = None
+        self.last_process_result = None
+        self.last_dbnet_regions = None
+        self._last_full_scan_at = 0.0
+        self._last_dbnet_scan_at = 0.0
+        self._last_dbnet_frame_shape = None
+        self._last_frame_preview = None
+        self._last_result_fingerprints = ()
 
     async def process_image(self, image: Image.Image, step_callback: Optional[Callable] = None, skip_translation: bool = True, merge_mode: str = "paragraph") -> Tuple[List[Dict[str, Any]], str]:
         """
@@ -157,7 +186,7 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         # TOGGLE: Debug Image Saving
         SAVE_INTERMEDIATE_DEBUG = False
-        SAVE_FINAL_DEBUG = True
+        SAVE_FINAL_DEBUG = self.save_debug_output
 
         if SAVE_INTERMEDIATE_DEBUG or SAVE_FINAL_DEBUG:
             if not os.path.exists(debug_dir):
@@ -178,34 +207,66 @@ class AsyncEngine(metaclass=SingletonMeta):
                 except Exception as e:
                     print(f"[DEBUG] Save Fail ({name}): {e}", flush=True)
 
-        # Convert PIL to CV2 (BGR)
         padding = 50
-        open_cv_image = np.array(image.convert('RGB')) 
-        open_cv_image = open_cv_image[:, :, ::-1].copy()
+        # Build only a single grayscale plane for the cheap cache gate.
+        # The 3-channel BGR copy is deferred until OCR is actually required.
+        gray_image = np.asarray(image.convert("L"))
         
-        import cv2
-        import asyncio
-        gray_image = cv2.cvtColor(open_cv_image, cv2.COLOR_BGR2GRAY)
-        
-        if (
-            hasattr(self, 'last_translated_gray_image')
-            and self.last_translated_gray_image is not None
-        ):
+        cache_decision = None
+        current_preview = None
+        if self.last_translated_gray_image is not None:
             can_reuse_cache, changed_pixels, total_pixels = _can_reuse_frame_cache(
                 self.last_translated_gray_image,
                 gray_image,
             )
             diff_percent = (changed_pixels / max(1, total_pixels)) * 100.0
             sim_percent = 100.0 - diff_percent
-            print(
-                f"[DEBUG] Image Similarity (vs Last Translated): {sim_percent:.4f}% "
-                f"({changed_pixels} changed pixels)",
-                flush=True,
-            )
+            if self.debug_logging:
+                print(
+                    "[DEBUG] Image Similarity (vs Last Translated): "
+                    f"{sim_percent:.4f}% ({changed_pixels} changed pixels)",
+                    flush=True,
+                )
 
-            if can_reuse_cache and hasattr(self, 'last_process_result'):
-                await asyncio.sleep(0.2)
+            if can_reuse_cache and self.last_process_result is not None:
                 return self.last_process_result
+
+            previous_results = (
+                self.last_process_result[0]
+                if self.last_process_result is not None
+                else []
+            )
+            cache_age = max(
+                0.0,
+                time.perf_counter() - self._last_full_scan_at,
+            )
+            current_preview = build_frame_preview(gray_image)
+            cache_decision = evaluate_ocr_cache(
+                self.last_translated_gray_image,
+                gray_image,
+                previous_results,
+                cache_age_seconds=cache_age,
+                previous_preview=self._last_frame_preview,
+                current_preview=current_preview,
+                previous_fingerprints=self._last_result_fingerprints,
+            )
+            if self.debug_logging:
+                print(
+                    "[DEBUG] OCR cache decision: "
+                    f"{cache_decision.reason} "
+                    f"(global change {cache_decision.global_changed_ratio:.2%})",
+                    flush=True,
+                )
+            if (
+                cache_decision.reuse
+                and self.last_process_result is not None
+            ):
+                return self.last_process_result
+
+        # Cache miss: materialize the full color frame for OCR, DBNet,
+        # background sampling, and source-patch metadata.
+        open_cv_image = np.asarray(image.convert("RGB"))
+        open_cv_image = open_cv_image[:, :, ::-1].copy()
         
         # 1. Smart Scaling (Optimize for Speed/Accuracy)
         w, h = image.size
@@ -234,11 +295,34 @@ class AsyncEngine(metaclass=SingletonMeta):
             return regions, dur
 
         if merge_mode == "paragraph":
-            (results, ocr_dur), (dbnet_regions, text_detection_dur) = await asyncio.gather(
-                run_ocr(),
-                run_dbnet()
+            dbnet_cache_age = max(
+                0.0,
+                time.perf_counter() - self._last_dbnet_scan_at,
             )
-            self.last_dbnet_regions = dbnet_regions
+            can_reuse_dbnet = (
+                self.last_dbnet_regions is not None
+                and self._last_dbnet_frame_shape == gray_image.shape
+                and cache_decision is not None
+                and cache_decision.global_changed_ratio < 0.025
+                and dbnet_cache_age < 15.0
+            )
+            if can_reuse_dbnet:
+                results, ocr_dur = await run_ocr()
+                dbnet_regions = self.last_dbnet_regions
+                text_detection_dur = 0.0
+                if self.debug_logging:
+                    print("[DEBUG] Reusing DBNet regions.", flush=True)
+            else:
+                (results, ocr_dur), (
+                    dbnet_regions,
+                    text_detection_dur,
+                ) = await asyncio.gather(
+                    run_ocr(),
+                    run_dbnet(),
+                )
+                self.last_dbnet_regions = dbnet_regions
+                self._last_dbnet_scan_at = time.perf_counter()
+                self._last_dbnet_frame_shape = gray_image.shape
         else:
             results, ocr_dur = await run_ocr()
             dbnet_regions = None
@@ -266,7 +350,16 @@ class AsyncEngine(metaclass=SingletonMeta):
             await step_callback("OCR", results)
         
         if not results:
-            return [], ""
+            self.last_process_result = ([], "")
+            self.last_translated_gray_image = gray_image
+            self._last_frame_preview = (
+                current_preview
+                if current_preview is not None
+                else build_frame_preview(gray_image)
+            )
+            self._last_result_fingerprints = ()
+            self._last_full_scan_at = time.perf_counter()
+            return self.last_process_result
             
         texts_to_translate = []
         metadata = []
@@ -407,7 +500,16 @@ class AsyncEngine(metaclass=SingletonMeta):
             })
 
         if not metadata:
-            return [], raw_text
+            self.last_process_result = ([], raw_text)
+            self.last_translated_gray_image = gray_image
+            self._last_frame_preview = (
+                current_preview
+                if current_preview is not None
+                else build_frame_preview(gray_image)
+            )
+            self._last_result_fingerprints = ()
+            self._last_full_scan_at = time.perf_counter()
+            return self.last_process_result
             
         correction_dur = time.perf_counter() - correction_start
         
@@ -557,6 +659,16 @@ class AsyncEngine(metaclass=SingletonMeta):
         
         self.last_process_result = (final_results, raw_text)
         self.last_translated_gray_image = gray_image
+        self._last_frame_preview = (
+            current_preview
+            if current_preview is not None
+            else build_frame_preview(gray_image)
+        )
+        self._last_result_fingerprints = build_region_fingerprints(
+            gray_image,
+            final_results,
+        )
+        self._last_full_scan_at = time.perf_counter()
         return final_results, raw_text
 
     def _merge_text_blocks(self, elements: List[Dict[str, Any]], mode: str = "paragraph", image_cv=None, dbnet_regions=None) -> List[Dict[str, Any]]:

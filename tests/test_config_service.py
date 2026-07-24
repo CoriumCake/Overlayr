@@ -24,6 +24,7 @@ class TestConfigDefaults:
         assert config.get("source_lang") == "Japanese"
         assert config.get("target_lang") == "Thai"
         assert config.get("grouping_mode") == "Group (Manga)"
+        assert config.get("save_debug_output") is False
 
     def test_get_missing_key_returns_default(self, config):
         assert config.get("nonexistent") is None

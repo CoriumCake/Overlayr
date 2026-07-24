@@ -9,6 +9,11 @@ from typing import Optional
 
 from ..core.engine import AsyncEngine
 from ..core.capture_engine import CaptureEngine
+from ..core.frame_pipeline import (
+    LatestFrameBuffer,
+    build_region_fingerprints,
+    compare_region_fingerprints,
+)
 from ..services.source_manager import SourceManager
 from ..ui.overlay import ResultOverlay
 from ..ui.components.source_card import SourceCard
@@ -108,6 +113,14 @@ class MainWindow(ctk.CTk):
         self.is_streaming = False
         self.loop = asyncio.new_event_loop()
         self.current_merge_mode = "paragraph" # Default to Manga mode
+        self._latest_frames = LatestFrameBuffer()
+        self._overlay_tracking_lock = threading.Lock()
+        self._overlay_fingerprints = ()
+        self._overlay_tracking_active = False
+        self._overlay_change_hits = 0
+        self._minimum_render_sequence = 0
+        self._last_rendered_results = None
+        self._stream_generation = 0
         
         # UI Cache to prevent flickering
         self.cards_cache = {"screens": {}, "apps": {}}
@@ -796,27 +809,9 @@ class MainWindow(ctk.CTk):
         )
 
     async def _update_langs_async(self, src, tgt):
-        # This runs inside the async loop thread
-        await self.async_engine.translator_service.load_model(src, tgt)
-        # Update OCR too
-        # But OCR update is sync/thread-locked... ideally run in executor or just call it?
-        # self.async_engine.update_languages helper does both.
-        # Let's fix AsyncEngine.update_languages to be async or just call logic manually here?
-        
-        # Let's call the logic manually to be safe about contexts
-        await self.async_engine.translator_service.load_model(src, tgt)
-        
-        # OCR update (sync, safe to call from here? OCREngine has locks)
-        ocr_code = src
-        if src == 'ja': ocr_code = 'ja'
-        elif src == 'ko': ocr_code = 'ko'
-        elif src.startswith('zh'): ocr_code = 'ch_sim'
-        elif src == 'th': ocr_code = 'th'
-        elif src == 'en': ocr_code = 'en'
-        
-        langs = [ocr_code]
-        if 'en' not in langs: langs.append('en')
-        self.async_engine.ocr_service.set_languages(langs)
+        # This runs inside the async loop thread. The engine owns language
+        # mapping and resets visual caches atomically with the model update.
+        await self.async_engine.update_languages(src, tgt)
         
         # Callback to UI
         self.after(0, lambda: self.lbl_status.configure(text=f"Languages Updated: {src}->{tgt}"))
@@ -989,21 +984,44 @@ class MainWindow(ctk.CTk):
             if not self.selected_source: return
             
             self.is_streaming = True
+            self._stream_generation += 1
+            stream_generation = self._stream_generation
             self.btn_stream.configure(text="Stop", fg_color="red")
             
             # Configure capture engine
             mode = self.selected_source.get('type')
             self.capture_engine.set_source(mode, self.selected_source)
+            self._latest_frames.clear()
+            with self._overlay_tracking_lock:
+                self._overlay_fingerprints = ()
+                self._overlay_tracking_active = False
+                self._overlay_change_hits = 0
+                self._minimum_render_sequence = 0
+                self._last_rendered_results = None
+            self.last_overlay_data = None
+            self.async_engine.reset_frame_cache()
             
             # Start loop
-            threading.Thread(target=self.stream_loop, daemon=True).start()
+            threading.Thread(
+                target=self.stream_loop,
+                args=(stream_generation,),
+                daemon=True,
+            ).start()
             
             # Start Visibility Loop (Decoupled for instant toggle)
             self._check_visibility()
         else:
             # Stop
             self.is_streaming = False
+            self._stream_generation += 1
             self.btn_stream.configure(text="Start", fg_color="green")
+            self._latest_frames.clear()
+            with self._overlay_tracking_lock:
+                self._overlay_fingerprints = ()
+                self._overlay_tracking_active = False
+                self._overlay_change_hits = 0
+                self._last_rendered_results = None
+            self.last_overlay_data = None
             self.overlay.hide()
 
     def _check_visibility(self):
@@ -1079,26 +1097,122 @@ class MainWindow(ctk.CTk):
 
 
 
-    def stream_loop(self):
+    def _clear_overlay_for_content_change(
+        self,
+        sequence,
+        stream_generation=None,
+    ):
+        """Clear stale text after the cheap source-region detector fires."""
+        if not self.is_streaming:
+            return
+        if (
+            stream_generation is not None
+            and stream_generation != self._stream_generation
+        ):
+            return
+        with self._overlay_tracking_lock:
+            if sequence < self._minimum_render_sequence:
+                return
+        visible = getattr(self, "is_target_active", True)
+        self.overlay.show_results([], 0, 0, visible=visible)
+        self.last_overlay_data = None
+        with self._overlay_tracking_lock:
+            self._last_rendered_results = None
+
+    def _track_overlay_change(self, packet, stream_generation=None):
+        """Invalidate displayed OCR after two consecutive changed captures."""
+        if (
+            stream_generation is not None
+            and stream_generation != self._stream_generation
+        ):
+            return
+        with self._overlay_tracking_lock:
+            if not self._overlay_tracking_active:
+                return
+            fingerprints = self._overlay_fingerprints
+
+        metrics = compare_region_fingerprints(packet.image, fingerprints)
+        with self._overlay_tracking_lock:
+            if not self._overlay_tracking_active:
+                return
+            if metrics.changed:
+                self._overlay_change_hits += 1
+            else:
+                self._overlay_change_hits = 0
+                return
+
+            if self._overlay_change_hits < 2:
+                return
+
+            self._overlay_tracking_active = False
+            self._overlay_change_hits = 0
+            self._minimum_render_sequence = max(
+                self._minimum_render_sequence,
+                packet.sequence,
+            )
+
+        print(
+            "[PERF] Clearing stale overlay from region change "
+            f"(ratio={metrics.changed_ratio:.1%}, mean={metrics.mean_delta:.1f}).",
+            flush=True,
+        )
+        self.after(
+            0,
+            lambda seq=packet.sequence, gen=stream_generation: (
+                self._clear_overlay_for_content_change(seq, gen)
+            ),
+        )
+
+    def _result_is_current(
+        self,
+        sequence,
+        source_image,
+        results,
+        stream_generation=None,
+    ):
+        """Drop completed OCR if tracked source pixels changed while it ran."""
+        if (
+            stream_generation is not None
+            and stream_generation != self._stream_generation
+        ):
+            return False
+        with self._overlay_tracking_lock:
+            if sequence < self._minimum_render_sequence:
+                return False
+
+        latest = self._latest_frames.latest()
+        if latest is None or latest.sequence <= sequence or not results:
+            return True
+
+        fingerprints = build_region_fingerprints(source_image, results)
+        metrics = compare_region_fingerprints(latest.image, fingerprints)
+        if not metrics.changed:
+            return True
+
+        with self._overlay_tracking_lock:
+            self._minimum_render_sequence = max(
+                self._minimum_render_sequence,
+                latest.sequence,
+            )
+            self._overlay_tracking_active = False
+            self._overlay_change_hits = 0
+        print(
+            f"[PERF] Dropped stale OCR result #{sequence}; "
+            f"latest frame is #{latest.sequence}.",
+            flush=True,
+        )
+        return False
+
+    def stream_loop(self, stream_generation):
         print("Stream loop started.", flush=True)
         pending_future = None
-        last_bounds = None
-        
-        while self.is_streaming:
-            # Check if previous processing is active
-            if pending_future is not None:
-                if not pending_future.done():
-                    # Processing is busy (e.g. waiting 5s display). 
-                    # Do not capture/hide. Just track window position.
-                    if last_bounds:
-                         self.after(0, lambda b=last_bounds: self.overlay.set_geometry(
-                             format_tk_geometry(b)
-                         ))
-                    time.sleep(0.05)
-                    continue
-                else:
-                    pending_future = None
+        last_submitted_sequence = 0
+        capture_interval = 0.10
 
+        while (
+            self.is_streaming
+            and stream_generation == self._stream_generation
+        ):
             start_time = time.time()
             try:
                 # If the user wants external screenshots to include the
@@ -1116,32 +1230,43 @@ class MainWindow(ctk.CTk):
                 image, bounds = result if result else (None, None)
                 
                 if image and bounds:
-                    last_bounds = bounds
-                    
-
-                    
-                    # Focus check moved to _check_visibility loop
-                    is_active = getattr(self, 'is_target_active', True)
-
-                    # if not is_active:
-                    #      self.after(0, lambda: self.overlay.show_results([], 0, 0, visible=False)) 
-                    
-                    # Start new processing 
-                    
-                    # Start new processing
-                    pending_future = asyncio.run_coroutine_threadsafe(
-                        self.process_image(image, bounds), 
-                        self.loop
+                    packet = self._latest_frames.publish(image, bounds)
+                    self._track_overlay_change(packet, stream_generation)
+                    self.after(
+                        0,
+                        lambda b=bounds: self.overlay.set_geometry(
+                            format_tk_geometry(b)
+                        ),
                     )
 
+                if pending_future is not None and pending_future.done():
+                    try:
+                        pending_future.result()
+                    except Exception as error:
+                        print(f"Processing future error: {error}", flush=True)
+                    pending_future = None
 
-                
+                latest = self._latest_frames.latest()
+                if (
+                    pending_future is None
+                    and latest is not None
+                    and latest.sequence > last_submitted_sequence
+                ):
+                    last_submitted_sequence = latest.sequence
+                    pending_future = asyncio.run_coroutine_threadsafe(
+                        self.process_image(
+                            latest.image,
+                            latest.bounds,
+                            latest.sequence,
+                            stream_generation,
+                        ),
+                        self.loop,
+                    )
             except Exception as e:
                 print(f"Stream error: {e}")
             
-            # Target ~30fps (33ms per frame)
             elapsed = time.time() - start_time
-            sleep_time = max(0, 0.033 - elapsed)
+            sleep_time = max(0, capture_interval - elapsed)
             time.sleep(sleep_time)
         
         # Ensure cleanup on exit
@@ -1149,8 +1274,19 @@ class MainWindow(ctk.CTk):
         print("Stream loop stopped.", flush=True)
 
 
-    async def process_image(self, image, bounds):
+    async def process_image(
+        self,
+        image,
+        bounds,
+        capture_sequence=0,
+        stream_generation=None,
+    ):
         if not self.async_engine: return
+        if (
+            stream_generation is not None
+            and stream_generation != self._stream_generation
+        ):
+            return
         
         # Define callback to handle "Slow Motion" steps inside the engine
         async def step_callback(stage, data):
@@ -1193,6 +1329,21 @@ class MainWindow(ctk.CTk):
                 skip_translation=False,
                 merge_mode=self.current_merge_mode
             )
+
+            with self._overlay_tracking_lock:
+                if (
+                    self._overlay_tracking_active
+                    and self._last_rendered_results is results
+                ):
+                    return
+
+            if not self._result_is_current(
+                capture_sequence,
+                image,
+                results,
+                stream_generation,
+            ):
+                return
             
             # Step 5: Draw Overlay Lines (Display Translated Result) -> Delay
             
@@ -1210,18 +1361,30 @@ class MainWindow(ctk.CTk):
             if self.is_streaming:
                 # Use stored visibility state
                 visible = getattr(self, 'is_target_active', True)
-                self.after(
-                    0,
-                    lambda: self._update_overlay_safe(
-                        results,
-                        raw_text,
+                fingerprints = build_region_fingerprints(image, results)
+
+                def render_latest_result(
+                    result_data=results,
+                    debug_text=raw_text,
+                    source_frame=image,
+                    sequence=capture_sequence,
+                    region_fingerprints=fingerprints,
+                    generation=stream_generation,
+                ):
+                    self._update_overlay_safe(
+                        result_data,
+                        debug_text,
                         offset_x,
                         offset_y,
                         geometry,
                         visible,
-                        image,
-                    ),
-                )
+                        source_frame,
+                        sequence,
+                        region_fingerprints,
+                        generation,
+                    )
+
+                self.after(0, render_latest_result)
                 
             # Wait 0 seconds (Immediate Yield) for max performance
             await asyncio.sleep(0)
@@ -1244,10 +1407,22 @@ class MainWindow(ctk.CTk):
         geometry,
         visible=True,
         source_image=None,
+        capture_sequence=0,
+        fingerprints=(),
+        stream_generation=None,
     ):
         if not self.is_streaming:
             self.overlay.hide()
             return
+        if (
+            stream_generation is not None
+            and stream_generation != self._stream_generation
+        ):
+            return
+
+        with self._overlay_tracking_lock:
+            if capture_sequence < self._minimum_render_sequence:
+                return
             
         if geometry:
             self.overlay.set_geometry(geometry)
@@ -1257,6 +1432,13 @@ class MainWindow(ctk.CTk):
         
         # Cache for Instant Restore
         self.last_overlay_data = (results, x, y, geometry, source_image)
+        with self._overlay_tracking_lock:
+            self._overlay_fingerprints = tuple(fingerprints)
+            self._overlay_tracking_active = bool(
+                results and self._overlay_fingerprints
+            )
+            self._overlay_change_hits = 0
+            self._last_rendered_results = results
         
         # self.overlay.show_debug(f"Raw: {raw_text[:50]}...")
             

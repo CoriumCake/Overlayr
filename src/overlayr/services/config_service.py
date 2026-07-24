@@ -10,7 +10,8 @@ class ConfigService:
             "target_lang": "Thai",
             "grouping_mode": "Group (Manga)",
             "ocr_engine": "RapidOCR",
-            "include_overlay_in_capture": False
+            "include_overlay_in_capture": False,
+            "save_debug_output": False
         }
         self.load()
 

@@ -10,6 +10,24 @@ except ImportError:
 
 _dbnet_session = None
 
+
+def _preferred_ort_providers():
+    """Return only installed accelerators, with a deterministic CPU fallback."""
+    if not HAS_ORT:
+        return []
+    available = set(ort.get_available_providers())
+    preferred = [
+        provider
+        for provider in (
+            "DmlExecutionProvider",
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        )
+        if provider in available
+    ]
+    return preferred or list(available)
+
+
 def preprocess_image_for_ocr(image_source):
     """
     Reads an image and applies preprocessing to improve OCR accuracy.
@@ -622,7 +640,10 @@ def detect_text_regions_dbnet(image_source):
              print(f"DBNet model not found at {model_path}. Falling back to bubble detection.")
              return detect_speech_bubbles(image_source)
         # Load ONNX model with GPU acceleration if available
-        _dbnet_session = ort.InferenceSession(model_path, providers=['DmlExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider'])
+        _dbnet_session = ort.InferenceSession(
+            model_path,
+            providers=_preferred_ort_providers(),
+        )
         
     img = cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB)
     img_resized = cv2.resize(img, (target_size, target_size))
@@ -679,7 +700,10 @@ def preload_dbnet_model():
             model_path = os.path.join(project_root, "models", "Detec_Manga-English.onnx")
             if os.path.exists(model_path):
                 print(f"DBNet: Preloading model from {model_path}...", flush=True)
-                _dbnet_session = ort.InferenceSession(model_path, providers=['DmlExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider'])
+                _dbnet_session = ort.InferenceSession(
+                    model_path,
+                    providers=_preferred_ort_providers(),
+                )
                 # Warmup inference
                 dummy = np.zeros((640, 640, 3), dtype=np.uint8)
                 detect_text_regions_dbnet(dummy)
