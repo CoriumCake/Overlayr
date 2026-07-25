@@ -44,7 +44,9 @@ Overlayr is a Python-based screen translation tool that provides real-time Japan
     python main.py
     ```
 
-2.  **Select Area**: Click "Select Area" and drag to draw a box around the Japanese text you want to translate.
+2.  **Select Area**: Select a screen/application, then press `Alt+T` (or click
+    "Select Area") and drag a box around the text to translate. Press `Esc` or
+    right-click to cancel; use "Clear Area" to return to the full source.
 3.  **Capture & Translate**: Click to translate the current content of the selection.
 4.  **Real-time Mode**: Check this box to enable continuous monitoring and automatic translation when text changes.
 5.  **Compact Mode**: Minimizes the main window and shows a floating overlay near the text.

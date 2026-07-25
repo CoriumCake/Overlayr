@@ -1,15 +1,16 @@
+from typing import Any, Dict, Optional, Tuple
+
 import mss
 import mss.tools
 from PIL import Image
-from typing import Optional, Dict, Any, Tuple
-import asyncio
-from ..utils.singleton import SingletonMeta
-from ..services.source_manager import SourceManager
+
 from ..utils.display_utils import (
     resolve_monitor_bounds,
     select_capture_bounds,
 )
+from ..utils.singleton import SingletonMeta
 from .wgc_capture import WGCCapture
+
 
 class CaptureEngine(metaclass=SingletonMeta):
     """
@@ -44,6 +45,66 @@ class CaptureEngine(metaclass=SingletonMeta):
     def set_roi(self, roi: Optional[Tuple[float, float, float, float]]) -> None:
         """Set Region of Interest as ratios (x, y, w, h) of target."""
         self.roi = roi
+
+    def get_source_bounds(
+        self,
+        mode: Optional[str] = None,
+        target: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, int]]:
+        """Return full source bounds in physical virtual-screen pixels."""
+        source_mode = mode or self.mode
+        source_target = target or self.target
+        if not source_target:
+            return None
+
+        if source_mode == "screen":
+            try:
+                with mss.mss() as sct:
+                    return resolve_monitor_bounds(source_target, sct.monitors)
+            except Exception:
+                stored = source_target.get("bounds")
+                return dict(stored) if stored else None
+
+        if source_mode != "window":
+            return None
+
+        hwnd = source_target.get("id")
+        if not hwnd:
+            return None
+
+        window_obj = source_target.get("window_obj")
+        fallback_bounds = None
+        if window_obj is not None:
+            try:
+                fallback_bounds = {
+                    "left": int(window_obj.left),
+                    "top": int(window_obj.top),
+                    "width": int(window_obj.width),
+                    "height": int(window_obj.height),
+                }
+            except Exception:
+                fallback_bounds = None
+
+        visible_bounds = self._get_visible_window_bounds(hwnd)
+        window_bounds = self._get_window_bounds(hwnd) or fallback_bounds
+        client_bounds = self._get_client_bounds(hwnd)
+
+        frame = None
+        if self.mode == "window" and self.target:
+            if self.target.get("id") == hwnd:
+                frame = self.wgc.get_latest_frame()
+        if frame is not None:
+            matched = select_capture_bounds(
+                frame.width,
+                frame.height,
+                visible_bounds,
+                window_bounds,
+                client_bounds,
+            )
+            if matched:
+                return matched
+
+        return visible_bounds or window_bounds or client_bounds
 
     @staticmethod
     def _get_client_bounds(hwnd: int) -> Optional[Dict[str, int]]:
@@ -299,7 +360,6 @@ class CaptureEngine(metaclass=SingletonMeta):
                 # We'll use a slightly more direct way to get bits if PrintWindow worked
                 # For simplicity in this env, we use BitBlt as backup or just direct
                 
-                import numpy as np
                 # This is a bit complex for raw ctypes, let's use a simpler PIL capture if PrintWindow fails
                 # OR use the buffer directly.
                 

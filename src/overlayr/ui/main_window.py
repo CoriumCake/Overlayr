@@ -1,71 +1,40 @@
-import customtkinter as ctk # type: ignore
-import tkinter as tk
-import os
-import threading
 import asyncio
-import time
+import os
 import queue
+import threading
+import time
 from typing import Optional
 
-from ..core.engine import AsyncEngine
+import customtkinter as ctk  # type: ignore
+
 from ..core.capture_engine import CaptureEngine
+from ..core.engine import AsyncEngine
 from ..core.frame_pipeline import (
     LatestFrameBuffer,
     build_region_fingerprints,
     compare_region_fingerprints,
 )
+from ..core.region_selection import selection_to_roi
 from ..services.source_manager import SourceManager
-from ..ui.overlay import ResultOverlay
-from ..ui.components.source_card import SourceCard
 from ..ui.components.loading_spinner import LoadingSpinner
+from ..ui.components.source_card import SourceCard
+from ..ui.overlay import ResultOverlay
+from ..ui.region_selector import ScreenRegionSelector
 from ..utils.display_utils import (
     format_tk_geometry,
     get_monitor_for_window,
-    resolve_monitor_bounds,
     should_show_window_overlay,
 )
+
 # from ..ui.components.profile_menu import ProfileMenu
-from .theme import get_theme, apply_theme_to_window
+from .theme import apply_theme_to_window, get_theme
 
-class ROISelector(ctk.CTkToplevel):
-    def __init__(self, parent, on_confirm):
-        super().__init__(parent)
-        self.title("Scan Area Selector")
-        self.attributes("-alpha", 0.7)
-        self.attributes("-topmost", True)
-        self.on_confirm = on_confirm
-        
-        # Make it look like a frame
-        colors = get_theme()
-        self.configure(fg_color=colors["secondary_accent"])
-        
-        self.label = ctk.CTkLabel(
-            self, 
-            text="Move/Resize over Subtitles\nThen click Confirm", 
-            font=("Segoe UI", 12, "bold"),
-            text_color=colors["text_primary"]
-        )
-        self.label.pack(expand=True, padx=20, pady=20)
-        # Status Bar
-
-        
-        # Initial position near center
-        self.geometry("600x150+400+600")
-
-    def confirm(self):
-        # Return geometry: x, y, w, h
-        x = self.winfo_x()
-        y = self.winfo_y()
-        w = self.winfo_width()
-        h = self.winfo_height()
-        self.on_confirm(x, y, w, h)
-        self.destroy()
 
 class MainWindow(ctk.CTk):
     def __init__(self, auth_service=None, config_service=None):
         print("Initializing MainWindow with Auth...")
         # Use tuple color for atomic theme switching
-        from .theme import get_theme, get_theme_tuple
+        from .theme import get_theme_tuple
         super().__init__(fg_color=get_theme_tuple("bg_primary"))
         print("Super init done.")
 
@@ -121,13 +90,22 @@ class MainWindow(ctk.CTk):
         self._minimum_render_sequence = 0
         self._last_rendered_results = None
         self._stream_generation = 0
+        self._capture_revision = 0
+        self._region_selector = None
+        self._region_selection_active = False
+        self._pending_start_roi = None
+        self._active_roi = None
+        self._hotkey_handle = None
+        self._closing = False
         
         # UI Cache to prevent flickering
         self.cards_cache = {"screens": {}, "apps": {}}
         
         # Thread-safe status message queue
         self._status_queue = queue.Queue()
+        self._ui_action_queue = queue.Queue()
         self._poll_status_messages()
+        self._poll_ui_actions()
         
         # UI Setup
         self._load_assets()
@@ -137,6 +115,8 @@ class MainWindow(ctk.CTk):
             if self.config_service else False
         )
         self.overlay = ResultOverlay(self, include_in_capture=include_overlay_in_capture)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._register_hotkeys()
 
         # Background Threads
         threading.Thread(target=self._run_async_loop, daemon=True).start()
@@ -227,6 +207,68 @@ class MainWindow(ctk.CTk):
             pass
         # Schedule next poll
         self.after(100, self._poll_status_messages)
+
+    def _poll_ui_actions(self):
+        """Run global-hotkey callbacks safely on Tk's main thread."""
+        try:
+            while True:
+                action = self._ui_action_queue.get_nowait()
+                if action == "select_region":
+                    self.begin_region_selection()
+        except queue.Empty:
+            pass
+        except Exception as error:
+            print(f"UI action error: {error}", flush=True)
+
+        if not self._closing:
+            self.after(25, self._poll_ui_actions)
+
+    def _register_hotkeys(self):
+        """Register Alt+T as a system-wide region-translation shortcut."""
+        try:
+            import keyboard
+
+            self._hotkey_handle = keyboard.add_hotkey(
+                "alt+t",
+                lambda: self._ui_action_queue.put_nowait("select_region"),
+                suppress=True,
+                trigger_on_release=True,
+            )
+            print("Global hotkey ready: Alt+T", flush=True)
+        except Exception as error:
+            self._hotkey_handle = None
+            print(f"Global hotkey unavailable: {error}", flush=True)
+
+    def _on_close(self):
+        """Release global hooks and background loops before closing."""
+        if self._closing:
+            return
+        self._closing = True
+        self.is_streaming = False
+        self._stream_generation += 1
+
+        selector = self._region_selector
+        self._region_selector = None
+        if selector is not None:
+            try:
+                selector.dismiss()
+            except Exception:
+                pass
+
+        if self._hotkey_handle is not None:
+            try:
+                import keyboard
+
+                keyboard.remove_hotkey(self._hotkey_handle)
+            except Exception:
+                pass
+            self._hotkey_handle = None
+
+        try:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+        except Exception:
+            pass
+        self.destroy()
     
     def _hide_scrollbar(self, scrollable_frame):
         """Hide the scrollbar of a CTkScrollableFrame"""
@@ -326,6 +368,7 @@ class MainWindow(ctk.CTk):
             hover_color=colors["bg_hover"],
             text_color=colors["text_primary"]
         )
+        self._set_area_button_active(self._active_roi is not None)
         # Only update start button if not streaming
         if not self.is_streaming:
             self.btn_stream.configure(
@@ -514,9 +557,9 @@ class MainWindow(ctk.CTk):
         
         self.btn_define_roi = ctk.CTkButton(
             self.footer_frame, 
-            text="Define Area", 
+            text="Select Area (Alt+T)",
             command=self.define_roi, 
-            width=110,
+            width=150,
             height=36,
             corner_radius=8,
             fg_color=colors["secondary_accent"],
@@ -601,9 +644,10 @@ class MainWindow(ctk.CTk):
         # 1. Try Online Image
         if photo_url:
             try:
+                from io import BytesIO
+
                 import requests
                 from PIL import Image, ImageDraw
-                from io import BytesIO
                 
                 # Check cache
                 if not hasattr(self, '_user_photo_cache') or getattr(self, '_user_photo_cache_url', None) != photo_url:
@@ -936,7 +980,35 @@ class MainWindow(ctk.CTk):
             parent.grid_columnconfigure(c, weight=1)
 
     def on_source_select(self, source):
+        previous_source = self.selected_source
+        if (
+            self.is_streaming
+            and previous_source is not None
+            and (
+                previous_source.get("type"),
+                previous_source.get("id"),
+            )
+            != (source.get("type"), source.get("id"))
+        ):
+            self.lbl_status.configure(
+                text="Stop capture before changing the source",
+                text_color="orange",
+            )
+            return
         self.selected_source = source
+        if (
+            previous_source is not None
+            and (
+                previous_source.get("type"),
+                previous_source.get("id"),
+            )
+            != (source.get("type"), source.get("id"))
+        ):
+            self._active_roi = None
+            self._pending_start_roi = None
+            if self.capture_engine:
+                self.capture_engine.set_roi(None)
+            self._set_area_button_active(False)
         friendly_name = source.get('friendly_name') or source.get('name') or source.get('title') or "Unknown Source"
         
         self.lbl_status.configure(text=f"Selected: {friendly_name}")
@@ -991,6 +1063,10 @@ class MainWindow(ctk.CTk):
             # Configure capture engine
             mode = self.selected_source.get('type')
             self.capture_engine.set_source(mode, self.selected_source)
+            initial_roi = self._pending_start_roi or self._active_roi
+            self._pending_start_roi = None
+            if initial_roi is not None:
+                self.capture_engine.set_roi(initial_roi)
             self._latest_frames.clear()
             with self._overlay_tracking_lock:
                 self._overlay_fingerprints = ()
@@ -1214,6 +1290,16 @@ class MainWindow(ctk.CTk):
             and stream_generation == self._stream_generation
         ):
             start_time = time.time()
+            if self._region_selection_active:
+                if pending_future is not None and pending_future.done():
+                    try:
+                        pending_future.result()
+                    except Exception as error:
+                        print(f"Processing future error: {error}", flush=True)
+                    pending_future = None
+                time.sleep(0.03)
+                continue
+
             try:
                 # If the user wants external screenshots to include the
                 # translation, temporarily exclude the overlay only while the
@@ -1259,6 +1345,7 @@ class MainWindow(ctk.CTk):
                             latest.bounds,
                             latest.sequence,
                             stream_generation,
+                            self._capture_revision,
                         ),
                         self.loop,
                     )
@@ -1280,11 +1367,17 @@ class MainWindow(ctk.CTk):
         bounds,
         capture_sequence=0,
         stream_generation=None,
+        capture_revision=None,
     ):
         if not self.async_engine: return
         if (
             stream_generation is not None
             and stream_generation != self._stream_generation
+        ):
+            return
+        if (
+            capture_revision is not None
+            and capture_revision != self._capture_revision
         ):
             return
         
@@ -1330,6 +1423,11 @@ class MainWindow(ctk.CTk):
                 merge_mode=self.current_merge_mode
             )
 
+            if (
+                capture_revision is not None
+                and capture_revision != self._capture_revision
+            ):
+                return
             with self._overlay_tracking_lock:
                 if (
                     self._overlay_tracking_active
@@ -1370,6 +1468,7 @@ class MainWindow(ctk.CTk):
                     sequence=capture_sequence,
                     region_fingerprints=fingerprints,
                     generation=stream_generation,
+                    revision=capture_revision,
                 ):
                     self._update_overlay_safe(
                         result_data,
@@ -1382,6 +1481,7 @@ class MainWindow(ctk.CTk):
                         sequence,
                         region_fingerprints,
                         generation,
+                        revision,
                     )
 
                 self.after(0, render_latest_result)
@@ -1410,6 +1510,7 @@ class MainWindow(ctk.CTk):
         capture_sequence=0,
         fingerprints=(),
         stream_generation=None,
+        capture_revision=None,
     ):
         if not self.is_streaming:
             self.overlay.hide()
@@ -1417,6 +1518,11 @@ class MainWindow(ctk.CTk):
         if (
             stream_generation is not None
             and stream_generation != self._stream_generation
+        ):
+            return
+        if (
+            capture_revision is not None
+            and capture_revision != self._capture_revision
         ):
             return
 
@@ -1444,54 +1550,157 @@ class MainWindow(ctk.CTk):
             
 
     def define_roi(self):
-        if not self.selected_source: 
-            self.lbl_status.configure(text="Select source first!", text_color="red")
+        """Button entry point for the same flow as the Alt+T hotkey."""
+        self.begin_region_selection()
+
+    def begin_region_selection(self):
+        """Open a Snipping Tool-style drag surface over the full source."""
+        if self._region_selector is not None:
+            try:
+                self._region_selector.lift()
+                self._region_selector.focus_force()
+            except Exception:
+                pass
             return
-            
-        # If already has ROI, clear it on first click? 
-        # Or just open selector
-        selector = ROISelector(self, self.apply_roi)
-        
-    def apply_roi(self, x, y, w, h):
-        # Calculate ratios relative to target screen/window
-        if not self.selected_source: return
-        
-        target = self.selected_source
-        if target['type'] == 'screen':
-            # Relative to monitor
-            import mss
-            with mss.mss() as sct:
-                mon = resolve_monitor_bounds(target, sct.monitors)
-                if not mon:
-                    self.lbl_status.configure(text="Display is no longer available")
-                    return
-                rx = (x - mon['left']) / mon['width']
-                ry = (y - mon['top']) / mon['height']
-                rw = w / mon['width']
-                rh = h / mon['height']
-        else:
-            # Relative to window
-            win = target['window_obj']
-            # Re-fetch for accuracy
-            rx = (x - win.left) / win.width
-            ry = (y - win.top) / win.height
-            rw = w / win.width
-            rh = h / win.height
-            
-        # Clamp ratios
-        rx = max(0, min(1, rx))
-        ry = max(0, min(1, ry))
-        rw = max(0, min(1-rx, rw))
-        rh = max(0, min(1-ry, rh))
-        
-        self.capture_engine.set_roi((rx, ry, rw, rh))
-        self.lbl_status.configure(text="Area Locked", text_color="cyan")
-        self.btn_define_roi.configure(text="Clear Area", command=self.clear_roi, fg_color="orange")
+        if not self.selected_source:
+            self.lbl_status.configure(
+                text="Select a screen or application first",
+                text_color="red",
+            )
+            return
+        if not self.capture_engine or not self.async_engine:
+            self.lbl_status.configure(
+                text="Translation services are still starting",
+                text_color="orange",
+            )
+            return
+
+        source_bounds = self.capture_engine.get_source_bounds(
+            self.selected_source.get("type"),
+            self.selected_source,
+        )
+        if not source_bounds:
+            self.lbl_status.configure(
+                text="The selected source is no longer available",
+                text_color="red",
+            )
+            return
+
+        self._capture_revision += 1
+        self._region_selection_active = True
+        self.overlay.hide()
+        self.lbl_status.configure(
+            text="Drag an area to translate • Esc to cancel",
+            text_color="cyan",
+        )
+
+        try:
+            self._region_selector = ScreenRegionSelector(
+                self,
+                source_bounds,
+                on_select=lambda selection, bounds=source_bounds: (
+                    self._apply_region_selection(selection, bounds)
+                ),
+                on_cancel=self._cancel_region_selection,
+            )
+        except Exception as error:
+            self._region_selector = None
+            self._region_selection_active = False
+            self.lbl_status.configure(
+                text=f"Could not open area selector: {error}",
+                text_color="red",
+            )
+
+    def _apply_region_selection(self, selection, source_bounds):
+        self._region_selector = None
+        roi = selection_to_roi(selection, source_bounds)
+        if roi is None:
+            self._region_selection_active = False
+            self.lbl_status.configure(
+                text="Selected area is too small",
+                text_color="orange",
+            )
+            return
+
+        self._active_roi = roi
+        self._pending_start_roi = roi
+        if self.is_streaming:
+            self.capture_engine.set_roi(roi)
+
+        self._reset_pipeline_for_area_change()
+        self._region_selection_active = False
+        self._set_area_button_active(True)
+        self.lbl_status.configure(
+            text="Area selected — translating only this region",
+            text_color="cyan",
+        )
+
+        if not self.is_streaming:
+            self.toggle_stream()
+
+    def _cancel_region_selection(self):
+        self._region_selector = None
+        self._region_selection_active = False
+        self.lbl_status.configure(text="Area selection cancelled")
+        self._restore_cached_overlay()
+
+    def _restore_cached_overlay(self):
+        last_data = getattr(self, "last_overlay_data", None)
+        if not self.is_streaming or not last_data:
+            return
+        results, x, y, geometry, source_image = last_data
+        if geometry:
+            self.overlay.set_geometry(geometry)
+        self.overlay.show_results(
+            results,
+            x,
+            y,
+            visible=getattr(self, "is_target_active", True),
+            source_image=source_image,
+        )
+
+    def _reset_pipeline_for_area_change(self):
+        self._latest_frames.clear()
+        with self._overlay_tracking_lock:
+            self._overlay_fingerprints = ()
+            self._overlay_tracking_active = False
+            self._overlay_change_hits = 0
+            self._last_rendered_results = None
+        self.last_overlay_data = None
+        self.overlay.hide()
+        if self.async_engine:
+            self.async_engine.reset_frame_cache()
+
+    def _set_area_button_active(self, active):
+        if not hasattr(self, "btn_define_roi"):
+            return
+        if active:
+            self.btn_define_roi.configure(
+                text="Clear Area",
+                command=self.clear_roi,
+                fg_color="orange",
+            )
+            return
+
+        colors = get_theme()
+        self.btn_define_roi.configure(
+            text="Select Area (Alt+T)",
+            command=self.define_roi,
+            fg_color=colors["secondary_accent"],
+        )
 
     def clear_roi(self):
-        self.capture_engine.set_roi(None)
-        self.lbl_status.configure(text="Area Cleared", text_color="white")
-        self.btn_define_roi.configure(text="Define Area", command=self.define_roi, fg_color=["#3B8ED0", "#1F6AA5"])
+        self._capture_revision += 1
+        self._active_roi = None
+        self._pending_start_roi = None
+        if self.capture_engine:
+            self.capture_engine.set_roi(None)
+        self._reset_pipeline_for_area_change()
+        self._set_area_button_active(False)
+        self.lbl_status.configure(
+            text="Area cleared — translating the full source",
+            text_color="white",
+        )
 
 if __name__ == "__main__":
     app = MainWindow()
