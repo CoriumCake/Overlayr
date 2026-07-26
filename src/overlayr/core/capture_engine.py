@@ -214,7 +214,11 @@ class CaptureEngine(metaclass=SingletonMeta):
         except Exception:
             return None
         
-    def capture(self) -> Tuple[Optional[Image.Image], Optional[Dict[str, int]]]:
+    def capture(
+        self,
+        *,
+        apply_roi: bool = True,
+    ) -> Tuple[Optional[Image.Image], Optional[Dict[str, int]]]:
         """
         Capture the current target.
         Returns (image, bounds_dict) where bounds_dict has keys: left, top, width, height
@@ -228,7 +232,7 @@ class CaptureEngine(metaclass=SingletonMeta):
                         target_bbox = monitor_bbox.copy()
                         
                         # Apply ROI if set
-                        if self.roi:
+                        if apply_roi and self.roi:
                             rx, ry, rw, rh = self.roi
                             target_bbox = {
                                 "left": monitor_bbox['left'] + int(rx * monitor_bbox['width']),
@@ -289,7 +293,7 @@ class CaptureEngine(metaclass=SingletonMeta):
                              return None, None
                          
                          # If ROI is set, crop the WGC image
-                         if self.roi:
+                         if apply_roi and self.roi:
                              rx, ry, rw, rh = self.roi
                              
                              # Crop coordinates relative to image (0,0 is top-left of image)
@@ -319,6 +323,12 @@ class CaptureEngine(metaclass=SingletonMeta):
             print(f"Capture error: {e}")
             return None, None
         return None, None
+
+    def capture_full_source(
+        self,
+    ) -> Tuple[Optional[Image.Image], Optional[Dict[str, int]]]:
+        """Capture one full-source frame without changing the active ROI."""
+        return self.capture(apply_roi=False)
 
     def get_thumbnail(self, mode: str, target: Dict[str, Any], size: Tuple[int, int] = (150, 100)) -> Any:
         try:

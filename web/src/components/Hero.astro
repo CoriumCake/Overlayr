@@ -2,107 +2,521 @@
 import DownloadButton from "./DownloadButton.astro";
 import { useTranslations } from "../i18n/ui";
 
+type Lang = "en" | "ja" | "es" | "th";
+
 interface Props {
-    lang?: "en" | "ja" | "es";
+    lang?: Lang;
 }
 
 const { lang = "en" } = Astro.props;
 const t = useTranslations(lang);
+
+const samples: Record<Lang, { original: string; translation: string; detected: string }> = {
+    en: {
+        original: "扉は真夜中に開く。",
+        translation: "The gate opens at midnight.",
+        detected: "Japanese detected",
+    },
+    th: {
+        original: "扉は真夜中に開く。",
+        translation: "ประตูจะเปิดในเวลาเที่ยงคืน",
+        detected: "ตรวจพบภาษาญี่ปุ่น",
+    },
+    ja: {
+        original: "The gate opens at midnight.",
+        translation: "扉は真夜中に開く。",
+        detected: "英語を検出",
+    },
+    es: {
+        original: "扉は真夜中に開く。",
+        translation: "La puerta se abre a medianoche.",
+        detected: "Japonés detectado",
+    },
+};
+
+const sample = samples[lang];
 ---
 
-<section class="hero">
-    <!-- Subtle Background Elements -->
-
-    <div class="container hero-container">
-        <div class="content-wrapper">
-            <h1 class="title">
+<section class="hero" id="download">
+    <div class="container hero-grid">
+        <div class="hero-copy">
+            <div class="eyebrow">Live game translation · Windows</div>
+            <h1>
                 {t("hero.title")}
             </h1>
-            <p class="subtitle">
-                {t("hero.subtitle")}
-            </p>
+            <p class="hero-lede">{t("hero.subtitle")}</p>
 
-            <div class="cta-wrapper">
-                <DownloadButton version="2.0.0" checksum="a1b2c3d4e5f6..." />
-                <p class="compatibility">{t("hero.compatibility")}</p>
+            <div class="hero-actions">
+                <DownloadButton label={t("hero.cta")} />
+                <a class="button button-secondary" href="#how-it-works">
+                    See how it works
+                </a>
+            </div>
+
+            <div class="hero-proof" aria-label="Product highlights">
+                <span><strong>Local OCR</strong> for responsive capture</span>
+                <span><strong>No injection</strong> into game processes</span>
+                <span><strong>Windows 10/11</strong></span>
             </div>
         </div>
+
+        <div class="product-stage" aria-label="Overlayr translating a game dialogue">
+            <div class="stage-glow" aria-hidden="true"></div>
+            <div class="app-window">
+                <div class="window-bar">
+                    <div class="window-dots" aria-hidden="true">
+                        <span></span><span></span><span></span>
+                    </div>
+                    <span class="window-title">Overlayr · Moonlit Vale</span>
+                    <span class="live-pill"><i></i> Live</span>
+                </div>
+
+                <div class="game-scene">
+                    <div class="scene-moon" aria-hidden="true"></div>
+                    <div class="scene-ridge ridge-back" aria-hidden="true"></div>
+                    <div class="scene-ridge ridge-front" aria-hidden="true"></div>
+
+                    <div class="capture-corner corner-one" aria-hidden="true"></div>
+                    <div class="capture-corner corner-two" aria-hidden="true"></div>
+
+                    <div class="translation-card">
+                        <div class="translation-meta">
+                            <span>{sample.detected}</span>
+                            <span>98%</span>
+                        </div>
+                        <p class="original">{sample.original}</p>
+                        <div class="translation-rule"></div>
+                        <p class="translated">{sample.translation}</p>
+                    </div>
+                </div>
+
+                <div class="control-strip">
+                    <span class="profile-name">
+                        <i class="profile-dot"></i>
+                        Game profile saved
+                    </span>
+                    <span>Teach Translation</span>
+                </div>
+            </div>
+
+            <div class="profile-float">
+                <span class="float-label">Game memory</span>
+                <strong>Moonlit Vale</strong>
+                <span>Region · language · 24 terms</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="container signal-row">
+        <span class="signal-label">Built for</span>
+        <span>story-rich RPGs</span>
+        <span>visual novels</span>
+        <span>indie games</span>
+        <span>untranslated releases</span>
     </div>
 </section>
 
 <style>
     .hero {
         position: relative;
-        min-height: 100svh; /* Dynamic viewport height for perfect mobile fit */
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
+        padding: clamp(4.5rem, 9vw, 8rem) 0 2.5rem;
         overflow: hidden;
-        padding-top: var(--header-height);
     }
 
-    .hero-container {
-        display: flex;
-        justify-content: center;
-        width: 100%;
-        position: relative;
-        z-index: 1;
+    .hero::after {
+        position: absolute;
+        z-index: -1;
+        top: 3rem;
+        left: 50%;
+        width: min(92vw, 1320px);
+        height: 1px;
+        content: "";
+        background: linear-gradient(90deg, transparent, var(--color-border), transparent);
+        transform: translateX(-50%);
     }
 
-    .content-wrapper {
-        display: flex;
-        flex-direction: column;
+    .hero-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(500px, 1.1fr);
         align-items: center;
-        text-align: center;
-        gap: clamp(2rem, 5vh, 4rem); /* Responsive vertical rhythm */
-        max-width: 1000px;
-        width: 100%;
+        gap: clamp(3rem, 7vw, 7rem);
     }
 
-    /* Elegant Typography */
-    .title {
-        font-size: clamp(3rem, 7vw, 6rem);
-        line-height: 1.1;
-        letter-spacing: -0.02em;
-        font-weight: 800;
-        margin: 0;
-        text-wrap: balance; /* Prevents widows/orphans */
-        color: var(--color-text-heading, var(--color-text-main));
+    .hero-copy {
+        position: relative;
+        z-index: 2;
     }
 
-    .subtitle {
-        font-size: clamp(1.125rem, 2vw, 1.5rem);
-        line-height: 1.6;
-        color: var(--color-text-muted);
-        max-width: 60ch; /* Optimal reading length */
-        margin: 0;
+    h1 {
+        max-width: 780px;
+        margin-top: 1.25rem;
+        font-size: var(--text-h1);
+        line-height: 0.93;
+        text-wrap: balance;
+    }
+
+    .hero-lede {
+        max-width: 610px;
+        margin-top: 1.75rem;
+        font-size: clamp(1.05rem, 2vw, 1.25rem);
+        line-height: 1.65;
         text-wrap: pretty;
     }
 
-    .cta-wrapper {
+    .hero-actions {
         display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 1rem;
-        margin-top: 1rem;
+        flex-wrap: wrap;
+        gap: 0.8rem;
+        margin-top: 2.2rem;
     }
 
-    .compatibility {
-        font-size: 0.875rem;
-        color: var(--color-text-muted);
+    .hero-proof {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem 1.25rem;
+        margin-top: 1.65rem;
+        color: #7f877b;
+        font-size: 0.79rem;
+    }
+
+    .hero-proof span {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+    }
+
+    .hero-proof span::before {
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        content: "";
+        background: var(--color-primary);
+    }
+
+    .hero-proof strong {
+        color: #b9c0b4;
+        font-weight: 600;
+    }
+
+    .product-stage {
+        position: relative;
+        min-width: 0;
+        transform: perspective(1200px) rotateY(-3deg) rotateX(1deg);
+    }
+
+    .stage-glow {
+        position: absolute;
+        inset: 8% -6% -10% 10%;
+        border-radius: 50%;
+        background: rgba(157, 140, 255, 0.2);
+        filter: blur(80px);
+    }
+
+    .app-window {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 1.2rem;
+        background: #0e110f;
+        box-shadow:
+            0 50px 120px rgba(0, 0, 0, 0.58),
+            0 0 0 8px rgba(255, 255, 255, 0.02);
+    }
+
+    .window-bar,
+    .control-strip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.85rem 1rem;
+        color: #9da49a;
+        background: rgba(14, 17, 15, 0.96);
+        font-size: 0.72rem;
+    }
+
+    .window-bar {
+        border-bottom: 1px solid var(--color-border);
+    }
+
+    .window-dots {
+        display: flex;
+        gap: 0.35rem;
+    }
+
+    .window-dots span {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #3e443d;
+    }
+
+    .window-title {
+        flex: 1;
+    }
+
+    .live-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.25rem 0.5rem;
+        border: 1px solid rgba(217, 255, 99, 0.2);
+        border-radius: 999px;
+        color: var(--color-primary);
+        background: rgba(217, 255, 99, 0.06);
+        font-weight: 700;
+    }
+
+    .live-pill i,
+    .profile-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 10px currentColor;
+    }
+
+    .game-scene {
+        position: relative;
+        min-height: 430px;
+        overflow: hidden;
+        background:
+            radial-gradient(circle at 72% 28%, rgba(209, 222, 218, 0.28) 0 3%, transparent 16%),
+            linear-gradient(180deg, #232c3b 0%, #18202e 48%, #111712 100%);
+    }
+
+    .game-scene::after {
+        position: absolute;
+        inset: 0;
+        content: "";
+        background:
+            linear-gradient(90deg, rgba(6, 8, 8, 0.38), transparent 45%),
+            linear-gradient(0deg, rgba(5, 7, 6, 0.7), transparent 45%);
+    }
+
+    .scene-moon {
+        position: absolute;
+        top: 18%;
+        right: 15%;
+        width: 70px;
+        height: 70px;
+        border-radius: 50%;
+        background: #e7ecdd;
+        box-shadow: 0 0 60px rgba(232, 238, 224, 0.3);
+    }
+
+    .scene-ridge {
+        position: absolute;
+        right: -5%;
+        bottom: 0;
+        left: -5%;
+        height: 62%;
+        background: #1b241e;
+        clip-path: polygon(0 58%, 14% 32%, 24% 55%, 40% 18%, 51% 47%, 67% 9%, 78% 43%, 91% 20%, 100% 40%, 100% 100%, 0 100%);
+    }
+
+    .ridge-back {
+        bottom: 12%;
+        background: #35433e;
+        opacity: 0.65;
+        filter: blur(1px);
+    }
+
+    .ridge-front {
+        height: 51%;
+        background: #101611;
+        clip-path: polygon(0 53%, 19% 28%, 29% 50%, 47% 15%, 63% 58%, 78% 23%, 100% 52%, 100% 100%, 0 100%);
+    }
+
+    .capture-corner {
+        position: absolute;
+        z-index: 2;
+        width: 34px;
+        height: 34px;
+        border-color: var(--color-primary);
         opacity: 0.7;
     }
 
-    /* Mobile Adjustments */
-    @media (max-width: 768px) {
-        .orb {
-            width: 80vw;
-            height: 80vw;
-            opacity: 0.1;
+    .corner-one {
+        top: 13%;
+        left: 8%;
+        border-top: 1px solid;
+        border-left: 1px solid;
+    }
+
+    .corner-two {
+        right: 8%;
+        bottom: 17%;
+        border-right: 1px solid;
+        border-bottom: 1px solid;
+    }
+
+    .translation-card {
+        position: absolute;
+        z-index: 3;
+        right: 7%;
+        bottom: 9%;
+        left: 7%;
+        padding: 1.15rem 1.25rem;
+        border: 1px solid rgba(255, 255, 255, 0.13);
+        border-left: 3px solid var(--color-primary);
+        border-radius: 0.75rem;
+        background: rgba(7, 9, 8, 0.88);
+        box-shadow: 0 16px 50px rgba(0, 0, 0, 0.4);
+        backdrop-filter: blur(16px);
+    }
+
+    .translation-meta {
+        display: flex;
+        justify-content: space-between;
+        color: #81897f;
+        font-size: 0.65rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+
+    .original {
+        margin-top: 0.7rem;
+        color: #aab0a8;
+        font-size: 0.9rem;
+    }
+
+    .translation-rule {
+        width: 100%;
+        height: 1px;
+        margin: 0.7rem 0;
+        background: rgba(255, 255, 255, 0.08);
+    }
+
+    .translated {
+        color: #fff;
+        font-family: var(--font-heading);
+        font-size: clamp(1rem, 2vw, 1.25rem);
+        font-weight: 600;
+    }
+
+    .control-strip {
+        border-top: 1px solid var(--color-border);
+    }
+
+    .profile-name {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        color: #c8cec4;
+    }
+
+    .profile-dot {
+        color: var(--color-primary);
+    }
+
+    .profile-float {
+        position: absolute;
+        z-index: 4;
+        top: 28%;
+        left: -8%;
+        display: flex;
+        min-width: 180px;
+        padding: 0.9rem 1rem;
+        border: 1px solid var(--color-border-strong);
+        border-radius: 0.8rem;
+        flex-direction: column;
+        background: rgba(13, 16, 13, 0.92);
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.36);
+        backdrop-filter: blur(18px);
+        font-size: 0.72rem;
+    }
+
+    .profile-float strong {
+        margin: 0.15rem 0;
+        color: #fff;
+        font-family: var(--font-heading);
+        font-size: 0.9rem;
+    }
+
+    .profile-float > span:last-child {
+        color: #838b80;
+    }
+
+    .float-label {
+        color: var(--color-primary);
+        font-size: 0.6rem;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+    }
+
+    .signal-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 0.65rem 1.75rem;
+        margin-top: clamp(4rem, 9vw, 7rem);
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--color-border);
+        color: #858c81;
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+    }
+
+    .signal-label {
+        color: var(--color-primary);
+    }
+
+    @media (max-width: 1020px) {
+        .hero-grid {
+            grid-template-columns: 1fr;
         }
 
-        .content-wrapper {
-            gap: 2rem;
+        .hero-copy {
+            max-width: 780px;
+        }
+
+        .product-stage {
+            width: min(100%, 760px);
+            margin-inline: auto;
+            transform: none;
+        }
+
+        .profile-float {
+            left: 2%;
+        }
+    }
+
+    @media (max-width: 620px) {
+        .hero {
+            padding-top: 4rem;
+        }
+
+        .hero-actions {
+            align-items: stretch;
+            flex-direction: column;
+        }
+
+        .hero-actions :global(.button) {
+            width: 100%;
+        }
+
+        .game-scene {
+            min-height: 340px;
+        }
+
+        .profile-float {
+            display: none;
+        }
+
+        .window-title {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .control-strip > span:last-child {
+            display: none;
         }
     }
 </style>

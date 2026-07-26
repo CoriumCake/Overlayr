@@ -27,6 +27,8 @@ pyinstaller `
     --paths "src" `
     --add-data "assets;assets" `
     --add-data "src;src" `
+    --add-data "models;models" `
+    --collect-all "rapidocr" `
     --collect-all "rust_ocr" `
     --collect-all "symspellpy" `
     --collect-all "customtkinter" `

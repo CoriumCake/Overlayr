@@ -1,9 +1,5 @@
 ---
 import Layout from "../layouts/Layout.astro";
-import { getLangFromUrl, useTranslations } from "../i18n/ui";
-
-const lang = getLangFromUrl(Astro.url);
-const t = useTranslations(lang);
 
 // Server-side: We just render the skeleton. Logic moves to client.
 ---
@@ -76,27 +72,15 @@ const t = useTranslations(lang);
   import { auth } from "../lib/firebase";
   import { onAuthStateChanged } from "firebase/auth";
 
-  import { STRIPE_LINKS, GITHUB_LATEST_RELEASE } from "../siteConfig";
+  import { STRIPE_LINKS } from "../siteConfig";
 
   // Configuration for plans
   const PLANS = {
     pro: {
-      name: "Pro",
-      price: "฿199",
+      name: "Pro Early Access",
+      price: "฿249",
       link_card: STRIPE_LINKS.pro,
       link_qr: STRIPE_LINKS.pro_qr,
-    },
-    plus: {
-      name: "Plus",
-      price: "฿499",
-      link_card: STRIPE_LINKS.plus,
-      link_qr: STRIPE_LINKS.plus_qr,
-    },
-    ultimate: {
-      name: "Ultimate",
-      price: "฿999",
-      link_card: STRIPE_LINKS.ultimate,
-      link_qr: STRIPE_LINKS.ultimate_qr,
     },
   };
 

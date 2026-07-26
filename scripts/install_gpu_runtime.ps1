@@ -9,14 +9,8 @@ if (-not (Test-Path -LiteralPath $Python)) {
     throw "Python executable not found: $Python"
 }
 
-# rapidocr-onnxruntime declares a dependency on the CPU package name. Install
-# the matching CPU metadata first, then make DirectML the final wheel writing
-# the shared onnxruntime module files.
-& $Python -m pip install "onnxruntime==$runtimeVersion"
-if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
-}
-
+# RapidOCR v3 uses the common onnxruntime module without requiring the legacy
+# CPU wheel. Install DirectML last so its provider binaries are the active ones.
 & $Python -m pip install --force-reinstall "onnxruntime-directml==$runtimeVersion"
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

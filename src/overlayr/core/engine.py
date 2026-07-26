@@ -4,6 +4,7 @@ from PIL import Image
 import numpy as np
 # WindowsOCREngine import removed
 from ..services.google_translate import GoogleTranslateService
+from ..services.translation_glossary import correct_contextual_ocr_labels
 from ..services.validation_service import ValidationService
 from ..utils.singleton import SingletonMeta
 from PIL import ImageEnhance, ImageFilter
@@ -60,13 +61,14 @@ class AsyncEngine(metaclass=SingletonMeta):
         print("AsyncEngine: Google Translate initialized.", flush=True)
         self.post_processor = TextPostProcessor()
         print("AsyncEngine: PostProcessor initialized.", flush=True)
+        self.game_profile_service = None
         self._is_running = False
         self.source = "en"
         self.target = "th"
         self._loop_task: Optional[asyncio.Task] = None
         
         # Translation Cache: LRU (OrderedDict)
-        # Key: (source language, target language, domain, source text)
+        # Key: (source language, target language, domain, profile, source text)
         # Value: translated_text
         from collections import OrderedDict
         self._translation_cache = OrderedDict()
@@ -101,7 +103,10 @@ class AsyncEngine(metaclass=SingletonMeta):
             self.ocr_service = RapidOCREngine(
                 use_angle_classifier=bool(
                     self.config.get("ocr_use_angle_classifier", False)
-                )
+                ),
+                use_directml=bool(
+                    self.config.get("ocr_use_directml", False)
+                ),
             )
             
         print(f"AsyncEngine: OCR Engine set to {engine_name}.", flush=True)
@@ -114,6 +119,16 @@ class AsyncEngine(metaclass=SingletonMeta):
         # Current language state
         self.source = "en"
         self.target = "th"
+
+    def set_game_profile_service(self, service) -> None:
+        """Attach the UI-owned game profile store to the translation pipeline."""
+        self.game_profile_service = service
+        self.clear_translation_cache()
+
+    def clear_translation_cache(self) -> None:
+        """Discard translations after a profile or correction changes."""
+        self._translation_cache.clear()
+        self.reset_frame_cache()
 
     def set_loop(self, loop):
         self._loop = loop
@@ -551,6 +566,38 @@ class AsyncEngine(metaclass=SingletonMeta):
         # In WinOCR, the engine has already handled merging spatially close blocks and overlapping geometry
         # but the returns are just flat boxes. We keep this to group them into paragraphs if requested.
         merged_metadata = await asyncio.to_thread(self._merge_text_blocks, metadata, merge_mode, open_cv_image, dbnet_regions)
+        if self.source.casefold().split("-", 1)[0] in {"en", "english"}:
+            corrected_labels = correct_contextual_ocr_labels(
+                item["original"] for item in merged_metadata
+            )
+            for item, corrected_label in zip(
+                merged_metadata,
+                corrected_labels,
+            ):
+                if corrected_label == item["original"]:
+                    continue
+                item["ocr_original"] = item["original"]
+                item["original"] = corrected_label
+                if self.debug_logging:
+                    print(
+                        "[DEBUG] Contextual OCR correction: "
+                        f"'{item['ocr_original']}' -> '{corrected_label}'",
+                        flush=True,
+                    )
+        if self.game_profile_service is not None:
+            profile_corrected_labels = (
+                self.game_profile_service.apply_ocr_corrections(
+                    [item["original"] for item in merged_metadata]
+                )
+            )
+            for item, corrected_label in zip(
+                merged_metadata,
+                profile_corrected_labels,
+            ):
+                if corrected_label == item["original"]:
+                    continue
+                item.setdefault("ocr_original", item["original"])
+                item["original"] = corrected_label
         merged_metadata = stabilize_ocr_metadata(
             previous_results,
             merged_metadata,
@@ -573,6 +620,11 @@ class AsyncEngine(metaclass=SingletonMeta):
         translation_domain = self.translator_service.detect_domain(
             texts_to_translate
         )
+        profile_cache_namespace = (
+            self.game_profile_service.cache_namespace
+            if self.game_profile_service is not None
+            else "generic:0"
+        )
 
         # --- Translation Caching (Last 2 Loops) ---
         self._loop_counter += 1
@@ -588,8 +640,23 @@ class AsyncEngine(metaclass=SingletonMeta):
                 self.source,
                 self.target,
                 translation_domain,
+                profile_cache_namespace,
                 text,
             )
+            profile_override = None
+            if self.game_profile_service is not None:
+                profile_override = (
+                    self.game_profile_service.lookup_translation_override(
+                        text,
+                        source_language=self.source,
+                        target_language=self.target,
+                    )
+                )
+            if profile_override is not None:
+                final_translations[i] = profile_override
+                self._translation_cache[cache_key] = profile_override
+                self._translation_cache.move_to_end(cache_key)
+                continue
             if cache_key in self._translation_cache:
                 trans = self._translation_cache[cache_key]
                 # Move to end (Recently Used)
@@ -642,6 +709,7 @@ class AsyncEngine(metaclass=SingletonMeta):
                     self.source,
                     self.target,
                     translation_domain,
+                    profile_cache_namespace,
                     text_key,
                 )
                 self._translation_cache[cache_key] = result
@@ -815,6 +883,99 @@ class AsyncEngine(metaclass=SingletonMeta):
                 "font_family": cluster_items[0].get("font_family", "Segoe UI"),
                 "font_weight": cluster_items[0].get("font_weight", "normal")
             }
+
+        def merge_trailing_orphans(items):
+            """Attach a short final line that DBNet left outside its paragraph."""
+            if len(items) < 2:
+                return items
+
+            ordered = sorted(items, key=lambda item: (item["bbox"][1], item["bbox"][0]))
+            merged_items = []
+
+            for current in ordered:
+                candidates = [
+                    (index, previous)
+                    for index, previous in enumerate(merged_items)
+                    if previous["bbox"][3] <= current["bbox"][1]
+                ]
+                if not candidates:
+                    merged_items.append(current)
+                    continue
+
+                previous_index, previous = max(
+                    candidates,
+                    key=lambda candidate: candidate[1]["bbox"][3],
+                )
+                previous_boxes = (
+                    previous.get("source_boxes")
+                    or [previous["bbox"]]
+                )
+                current_text = current["original"].strip()
+                previous_text = previous["original"].rstrip()
+                previous_line_height = max(
+                    1,
+                    int(
+                        previous.get("line_height")
+                        or np.median(
+                            [
+                                box[3] - box[1]
+                                for box in previous_boxes
+                            ]
+                        )
+                    ),
+                )
+                current_line_height = max(
+                    1,
+                    int(
+                        current.get("line_height")
+                        or current["bbox"][3] - current["bbox"][1]
+                    ),
+                )
+                vertical_gap = current["bbox"][1] - previous["bbox"][3]
+                typical_left = int(
+                    round(np.median([box[0] for box in previous_boxes]))
+                )
+                height_ratio = max(
+                    previous_line_height,
+                    current_line_height,
+                ) / min(previous_line_height, current_line_height)
+                is_short_line = (
+                    0 < len(current_text) <= 48
+                    and len(current_text.split()) <= 4
+                )
+                previous_needs_continuation = (
+                    len(previous_boxes) >= 2
+                    and not previous_text.endswith((".", "!", "?", ";", ":"))
+                )
+                is_nearby = (
+                    -previous_line_height * 0.25
+                    <= vertical_gap
+                    <= max(previous_line_height, current_line_height) * 0.9
+                    and height_ratio <= 1.45
+                    and abs(current["bbox"][0] - typical_left)
+                    <= max(12, int(round(previous_line_height * 1.25)))
+                )
+                is_narrower_than_paragraph = (
+                    current["bbox"][2] - current["bbox"][0]
+                    <= (previous["bbox"][2] - previous["bbox"][0]) * 0.5
+                )
+
+                if (
+                    is_short_line
+                    and previous_needs_continuation
+                    and is_nearby
+                    and is_narrower_than_paragraph
+                ):
+                    merged_items[previous_index] = merge_cluster(
+                        [previous, current]
+                    )
+                else:
+                    merged_items.append(current)
+
+            return sorted(
+                merged_items,
+                key=lambda item: (item["bbox"][1], item["bbox"][0]),
+            )
 
         # ---- DUPLICATE / NESTED FILTERING (Common for all modes, but critical for Manga) ----
         # Remove small boxes that are fully contained within larger boxes
@@ -997,7 +1158,11 @@ class AsyncEngine(metaclass=SingletonMeta):
                     
                 self.last_dbnet_regions = regions
                 if not regions:
-                    return elements
+                    fallback_items = self._merge_text_blocks(
+                        elements,
+                        mode="line",
+                    )
+                    return merge_trailing_orphans(fallback_items)
                     
                 grouped_items = [[] for _ in regions]
                 ungrouped = []
@@ -1028,10 +1193,14 @@ class AsyncEngine(metaclass=SingletonMeta):
                         final_elements.append(merge_cluster(group))
                         
                 final_elements.extend(ungrouped)
-                return final_elements
+                return merge_trailing_orphans(final_elements)
             except Exception as e:
                 print(f"DBNet Grouping Error: {e}")
-                return elements
+                fallback_items = self._merge_text_blocks(
+                    elements,
+                    mode="line",
+                )
+                return merge_trailing_orphans(fallback_items)
 
         return elements
                         

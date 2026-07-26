@@ -1,125 +1,120 @@
 ---
 import { useTranslations } from "../../i18n/ui";
 
+type Lang = "en" | "ja" | "es" | "th";
+
 interface Props {
-    lang: "en" | "ja" | "es";
+    lang: Lang;
 }
 
 const { lang } = Astro.props;
 const t = useTranslations(lang);
+
+const questions = [1, 2, 3, 4] as const;
 ---
 
-<section id="support" class="support-section">
-    <div class="container">
-        <h1>{t("support.title")}</h1>
-        <p class="subtitle">{t("support.subtitle")}</p>
+<section id="faq" class="faq-section">
+    <div class="container faq-grid">
+        <div class="faq-intro">
+            <span class="eyebrow">Questions, answered</span>
+            <h2 class="section-heading">{t("support.title")}</h2>
+            <p class="section-lede">{t("support.subtitle")}</p>
+            <a href="/contact">Still curious? Talk to us →</a>
+        </div>
 
-        <details class="glass-panel faq-item">
-            <summary>{t("support.faq1.q")}</summary>
-            <p>{t("support.faq1.a")}</p>
-        </details>
-
-        <details class="glass-panel faq-item">
-            <summary>{t("support.faq2.q")}</summary>
-            <p>{t("support.faq2.a")}</p>
-        </details>
-
-        <details class="glass-panel faq-item">
-            <summary>{t("support.faq3.q")}</summary>
-            <p>{t("support.faq3.a")}</p>
-        </details>
-
-        <details class="glass-panel faq-item">
-            <summary>{t("support.faq4.q")}</summary>
-            <p>{t("support.faq4.a")}</p>
-        </details>
+        <div class="faq-list">
+            {questions.map((number) => (
+                <details>
+                    <summary>
+                        <span>{t(`support.faq${number}.q`)}</span>
+                        <i aria-hidden="true">+</i>
+                    </summary>
+                    <p>{t(`support.faq${number}.a`)}</p>
+                </details>
+            ))}
+        </div>
     </div>
 </section>
 
 <style>
-    .support-section {
+    .faq-section {
         padding-block: var(--space-xl);
-    }
-
-    h1 {
-        text-align: center;
-        margin-bottom: var(--space-md);
-        font-size: var(--text-h1);
-    }
-
-    .subtitle {
-        text-align: center;
-        color: var(--color-text-muted);
-        margin-bottom: var(--space-xl);
-        font-size: var(--text-h3);
+        border-top: 1px solid var(--color-border);
+        background: #0a0d0a;
     }
 
     .faq-grid {
-        max-width: 1000px;
-        margin-inline: auto;
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-md);
+        display: grid;
+        grid-template-columns: minmax(280px, 0.7fr) 1fr;
+        gap: clamp(3rem, 8vw, 8rem);
     }
 
-    .faq-item {
-        background: rgba(255, 255, 255, 0.9);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 1px solid rgba(255, 255, 255, 0.5);
-        border-radius: 1rem;
-        box-shadow:
-            0 20px 40px -10px rgba(0, 0, 0, 0.1),
-            0 0 20px rgba(255, 255, 255, 0.2);
-        padding: 0;
-        overflow: hidden;
-        margin-bottom: 1rem;
+    .faq-intro {
+        align-self: start;
+        position: sticky;
+        top: calc(var(--header-height) + 3rem);
+    }
+
+    .faq-intro a {
+        display: inline-block;
+        margin-top: 2rem;
+        color: var(--color-primary);
+        font-size: 0.9rem;
+        font-weight: 700;
+    }
+
+    .faq-list {
+        border-top: 1px solid var(--color-border);
+    }
+
+    details {
+        border-bottom: 1px solid var(--color-border);
     }
 
     summary {
-        padding: var(--space-md) var(--space-lg);
+        display: flex;
+        padding: 1.5rem 0;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 2rem;
+        color: #e9ece6;
         cursor: pointer;
+        font-family: var(--font-heading);
+        font-size: 1.05rem;
         font-weight: 600;
-        font-size: 1.125rem;
-        color: #1a1a1a; /* Force dark text */
-        background: transparent;
-        transition: background 0.2s;
-        border-bottom: 1px solid transparent;
         list-style: none;
-        position: relative;
     }
 
     summary::-webkit-details-marker {
         display: none;
     }
 
-    summary::after {
-        content: "+";
-        position: absolute;
-        right: var(--space-lg);
-        font-weight: 300;
-        font-size: 1.5rem;
+    summary i {
+        color: var(--color-primary);
+        font-size: 1.35rem;
+        font-style: normal;
+        font-weight: 400;
         line-height: 1;
-        transition: transform 0.3s;
-        color: #1a1a1a;
+        transition: transform 160ms ease;
     }
 
-    details[open] summary::after {
+    details[open] summary i {
         transform: rotate(45deg);
     }
 
-    details[open] summary {
-        background: rgba(0, 0, 0, 0.05);
-        border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    details p {
+        max-width: 680px;
+        padding: 0 3rem 1.5rem 0;
+        font-size: 0.92rem;
     }
 
-    summary:hover {
-        background: rgba(0, 0, 0, 0.02);
-    }
+    @media (max-width: 800px) {
+        .faq-grid {
+            grid-template-columns: 1fr;
+        }
 
-    .faq-item p {
-        padding: var(--space-md) var(--space-lg);
-        color: #333; /* Force dark muted text */
-        line-height: 1.6;
+        .faq-intro {
+            position: static;
+        }
     }
 </style>

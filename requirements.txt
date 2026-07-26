@@ -16,7 +16,8 @@ symspellpy
 requests
 winsdk
 
-onnxruntime==1.24.4
+onnxruntime-directml==1.24.4; sys_platform == "win32"
+onnxruntime==1.24.4; sys_platform != "win32"
 pyclipper
-rapidocr-onnxruntime
+rapidocr==3.9.2
 numpy

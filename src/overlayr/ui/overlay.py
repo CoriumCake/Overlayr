@@ -1,6 +1,7 @@
 import tkinter as tk
 import customtkinter as ctk # type: ignore
 import platform
+from statistics import median
 
 from ..utils.display_utils import parse_physical_geometry, tk_pixel_font
 
@@ -322,6 +323,76 @@ class ResultOverlay:
         except Exception:
             return False
 
+    @staticmethod
+    def _resolve_text_anchor_x(item, bbox, offset_x):
+        """Give multi-line blocks a stable inset without moving UI labels."""
+        source_boxes = item.get("source_boxes") or []
+        valid_boxes = [
+            box
+            for box in source_boxes
+            if box is not None and len(box) >= 4 and box[2] > box[0] and box[3] > box[1]
+        ]
+        if len(valid_boxes) < 2:
+            return bbox[0] + offset_x
+
+        heights = [box[3] - box[1] for box in valid_boxes]
+        vertical_span = (
+            max(box[3] for box in valid_boxes)
+            - min(box[1] for box in valid_boxes)
+        )
+        typical_height = max(1.0, float(median(heights)))
+        if vertical_span < typical_height * 1.6:
+            return bbox[0] + offset_x
+
+        glyph_height = float(item.get("glyph_height") or typical_height)
+        minimum_inset = max(2, min(4, int(round(glyph_height * 0.16))))
+        typical_left = int(round(median(box[0] for box in valid_boxes)))
+
+        box_width = max(1, bbox[2] - bbox[0])
+        maximum_shift = max(4, min(12, int(round(box_width * 0.06))))
+        desired_left = max(bbox[0] + minimum_inset, typical_left)
+        if desired_left - bbox[0] > maximum_shift:
+            desired_left = bbox[0] + minimum_inset
+
+        return desired_left + offset_x
+
+    @staticmethod
+    def _resolve_centered_text_left(
+        item,
+        bbox,
+        offset_x,
+        text_width,
+        layout_left,
+    ):
+        """Center translated glyphs on the original source-glyph center."""
+        source_box = item.get("ink_bbox") or bbox
+        if (
+            len(source_box) < 4
+            or source_box[2] <= source_box[0]
+        ):
+            source_box = bbox
+
+        source_left = max(bbox[0], min(source_box[0], bbox[2]))
+        source_right = max(source_left, min(source_box[2], bbox[2]))
+        if source_right <= source_left:
+            source_left = bbox[0]
+            source_right = bbox[2]
+
+        source_center = (
+            (source_left + source_right) / 2.0
+            + offset_x
+        )
+        desired_left = int(round(source_center - text_width / 2.0))
+
+        layout_right = bbox[2] + offset_x
+        latest_left_without_overflow = layout_right - text_width
+        if latest_left_without_overflow < layout_left:
+            return layout_left
+        return max(
+            layout_left,
+            min(desired_left, latest_left_without_overflow),
+        )
+
     def show_results(
         self,
         results: list,
@@ -413,11 +484,16 @@ class ResultOverlay:
             # Let's align top-left but wrap at original box width?
             # User wants "background gray color according to size of text result"
             
-            # Use the OCR source box as the pixel anchor. The OCR box is the
-            # actual replacement area; derived ink masks can be noisy on
-            # textured game/manga backgrounds.
-            source_x = bbox[0] + offset_x
+            # Keep single-line UI labels at their OCR position. For merged
+            # paragraphs, use the typical source-line start and a tiny inset
+            # so one noisy left edge cannot pull the whole translation
+            # against the panel border.
+            source_x = self._resolve_text_anchor_x(item, bbox, offset_x)
             source_y = bbox[1] + offset_y
+            wrap_width = max(
+                1,
+                bbox[2] + offset_x - source_x - 2,
+            )
             
             # --- AUTO-FIT LOGIC ---
             min_font_size = 8
@@ -429,7 +505,7 @@ class ResultOverlay:
                 anchor="nw",
                 fill=overlay_fg,
                 font=font,
-                width=max(1, box_w - 2), # Wrap at original width
+                width=wrap_width,
                 justify="left",
                 tags="result"
             )
@@ -456,11 +532,20 @@ class ResultOverlay:
             t_bbox = self.canvas.bbox(text_id)
             if not t_bbox: continue
 
-            # Correct Tk font-metric padding so the rendered glyph box starts
-            # at the same pixel as the original OCR box.
+            # Remove Tk font-metric padding, then align the translated block
+            # by the center of the original English glyphs. Multi-line text
+            # remains left-justified inside the centered block.
+            text_width = t_bbox[2] - t_bbox[0]
+            target_x = self._resolve_centered_text_left(
+                item,
+                bbox,
+                offset_x,
+                text_width,
+                source_x,
+            )
             self.canvas.move(
                 text_id,
-                source_x - t_bbox[0],
+                target_x - t_bbox[0],
                 source_y - t_bbox[1]
             )
             t_bbox = self.canvas.bbox(text_id)

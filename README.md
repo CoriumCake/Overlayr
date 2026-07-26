@@ -1,6 +1,8 @@
 # Overlayr
 
-Overlayr is a Python-based screen translation tool that provides real-time Japanese to Thai translation overlay. It uses OCR (Optical Character Recognition) to extract text from a selected screen area and translates it using a translation service.
+Overlayr is a game-aware Windows translation overlay. It uses local OCR to
+extract text from a selected game or screen region, translates it in real time,
+and remembers settings and preferred terminology for each game.
 
 ## Features
 
@@ -9,11 +11,16 @@ Overlayr is a Python-based screen translation tool that provides real-time Japan
 - **Manual Capture**: Manually trigger capture and translation.
 - **Compact Mode**: Shows a transparent overlay with the translated text near the source.
 - **Overlay**: Displays translated text in a non-intrusive overlay window.
+- **Game Profiles**: Remembers language pairs, selected regions, and corrections
+  by game executable.
+- **Teach Translation**: Save a preferred item, character, or quest translation
+  and reuse it immediately for that game.
+- **Privacy-Safe Metrics**: Stores activation and usage counts locally without
+  OCR text, translations, screenshots, or window titles.
 
 ## Requirements
 
 - Python 3.x
-- Tesseract OCR (referenced by `ocr_engine.py`, make sure it's installed or configured if using a wrapper like `pytesseract` or `easyocr`)
 - See `requirements.txt` for Python dependencies.
 
 ## Installation
@@ -50,6 +57,9 @@ Overlayr is a Python-based screen translation tool that provides real-time Japan
 3.  **Capture & Translate**: Click to translate the current content of the selection.
 4.  **Real-time Mode**: Check this box to enable continuous monitoring and automatic translation when text changes.
 5.  **Compact Mode**: Minimizes the main window and shows a floating overlay near the text.
+6.  **Teach Translation**: After a translation is visible, select an application
+    source and click `Teach Translation` to save preferred wording to its game
+    profile.
 
 ## Structure
 
@@ -57,12 +67,25 @@ Overlayr is a Python-based screen translation tool that provides real-time Japan
 - `ocr_engine.py`: Handles OCR processing (likely using EasyOCR or Tesseract).
 - `translator.py`: Handles text translation (Japanese to Thai).
 - `image_utils.py`: Utilities for image comparison (for detecting changes).
-- `convert_icon.py`: Helper script for icon management.
+- `src/overlayr/services/game_profiles.py`: Local per-game context and
+  correction store.
+- `src/overlayr/services/product_analytics.py`: Privacy-safe local product
+  funnel events.
+
+## Product metrics
+
+Print the local funnel summary:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\product_metrics.py
+```
+
+See `docs/PMF_90_DAY_PLAN.md` for the alpha, pricing, and distribution gates.
 
 ## Building
 
 To build the executable (using PyInstaller), run:
 
 ```bash
-pyinstaller ScreenTranslator.spec
+pyinstaller Overlayr.spec
 ```

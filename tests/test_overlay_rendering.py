@@ -4,6 +4,85 @@ from PIL import Image
 from overlayr.ui.overlay import ResultOverlay
 
 
+def test_paragraph_anchor_uses_typical_source_line_start():
+    item = {
+        "glyph_height": 18,
+        "source_boxes": [
+            [95, 10, 300, 24],
+            [101, 28, 320, 42],
+            [100, 46, 290, 60],
+            [100, 64, 310, 78],
+        ]
+    }
+
+    anchor_x = ResultOverlay._resolve_text_anchor_x(
+        item,
+        bbox=[95, 10, 320, 78],
+        offset_x=7,
+    )
+
+    assert anchor_x == 107
+
+
+def test_paragraph_anchor_ignores_large_indentation_shift():
+    item = {
+        "glyph_height": 18,
+        "source_boxes": [
+            [95, 10, 140, 24],
+            [180, 28, 320, 42],
+            [185, 46, 290, 60],
+        ]
+    }
+
+    anchor_x = ResultOverlay._resolve_text_anchor_x(
+        item,
+        bbox=[95, 10, 320, 60],
+        offset_x=7,
+    )
+
+    assert anchor_x == 105
+
+
+def test_single_line_anchor_keeps_ocr_box_position():
+    item = {"source_boxes": [[95, 10, 160, 24]]}
+
+    anchor_x = ResultOverlay._resolve_text_anchor_x(
+        item,
+        bbox=[95, 10, 160, 24],
+        offset_x=7,
+    )
+
+    assert anchor_x == 102
+
+
+def test_translated_text_centers_on_source_ink():
+    item = {"ink_bbox": [100, 10, 200, 24]}
+
+    text_left = ResultOverlay._resolve_centered_text_left(
+        item,
+        bbox=[95, 10, 210, 24],
+        offset_x=7,
+        text_width=60,
+        layout_left=102,
+    )
+
+    assert text_left == 127
+
+
+def test_centered_text_is_clamped_to_replacement_area():
+    item = {"ink_bbox": [100, 10, 200, 24]}
+
+    text_left = ResultOverlay._resolve_centered_text_left(
+        item,
+        bbox=[95, 10, 210, 24],
+        offset_x=7,
+        text_width=120,
+        layout_left=102,
+    )
+
+    assert text_left == 102
+
+
 def test_inpaint_source_region_removes_original_glyphs_and_keeps_background_shape():
     """The replacement patch must retain the captured background dimensions."""
     pixels = np.zeros((24, 32, 3), dtype=np.uint8)

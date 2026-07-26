@@ -7,7 +7,10 @@ from overlayr.core.frame_pipeline import (
     LatestFrameBuffer,
     build_region_fingerprints,
 )
-from overlayr.ui.main_window import MainWindow
+from overlayr.ui.main_window import (
+    MainWindow,
+    _requires_overlay_capture_exclusion,
+)
 
 
 def _window_without_tk():
@@ -25,6 +28,18 @@ def _source_with_text_panel():
     pixels = np.full((200, 300, 3), 25, dtype=np.uint8)
     pixels[70:120, 80:240] = 215
     return Image.fromarray(pixels)
+
+
+def test_application_capture_does_not_toggle_overlay_affinity():
+    assert _requires_overlay_capture_exclusion("window", True) is False
+
+
+def test_screen_capture_excludes_included_overlay_from_internal_frame():
+    assert _requires_overlay_capture_exclusion("screen", True) is True
+
+
+def test_screen_capture_without_overlay_inclusion_needs_no_toggle():
+    assert _requires_overlay_capture_exclusion("screen", False) is False
 
 
 def test_completed_ocr_is_dropped_when_source_region_disappeared():

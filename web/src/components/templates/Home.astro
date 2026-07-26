@@ -1,24 +1,144 @@
 ---
+import DownloadButton from "../DownloadButton.astro";
+import FeatureGrid from "../FeatureGrid.astro";
+import Hero from "../Hero.astro";
+import Pricing from "../Pricing.astro";
+import Support from "../sections/Support.astro";
 import Layout from "../../layouts/Layout.astro";
-import Hero from "../../components/Hero.astro";
-import FeatureGrid from "../../components/FeatureGrid.astro";
-import Support from "../../components/sections/Support.astro";
-import Contact from "../../components/sections/Contact.astro";
-import Pricing from "../../components/Pricing.astro";
 import { useTranslations } from "../../i18n/ui";
 
+type Lang = "en" | "ja" | "es" | "th";
+
 interface Props {
-    lang: "en" | "ja" | "es";
+    lang: Lang;
 }
 
 const { lang } = Astro.props;
 const t = useTranslations(lang);
+
+const ctaCopy: Record<Lang, { eyebrow: string; title: string; body: string }> = {
+    en: {
+        eyebrow: "The next chapter is readable",
+        title: "Stop waiting for the localization.",
+        body: "Download Overlayr, choose a game window, and understand what happens next.",
+    },
+    th: {
+        eyebrow: "อ่านเนื้อเรื่องบทต่อไปได้แล้ว",
+        title: "ไม่ต้องรอเกมแปลอย่างเป็นทางการ",
+        body: "ดาวน์โหลด Overlayr เลือกหน้าต่างเกม แล้วเข้าใจเนื้อเรื่องต่อได้ทันที",
+    },
+    ja: {
+        eyebrow: "次の物語を読めるように",
+        title: "ローカライズを待つ必要はありません。",
+        body: "Overlayr をダウンロードしてゲーム画面を選ぶだけ。物語の続きを理解できます。",
+    },
+    es: {
+        eyebrow: "El siguiente capítulo ya se puede leer",
+        title: "No esperes a la localización.",
+        body: "Descarga Overlayr, elige la ventana del juego y entiende lo que viene después.",
+    },
+};
+
+const cta = ctaCopy[lang];
 ---
 
-<Layout title="Overlayr - High Performance Overlay Tool">
+<Layout
+    title="Overlayr — Live game translation that remembers"
+    description="Translate dialogue, quests, and game UI in a live Windows overlay. Overlayr remembers each game, capture region, and the words you teach it."
+>
     <Hero lang={lang} />
     <FeatureGrid lang={lang} />
     <Pricing lang={lang} />
     <Support lang={lang} />
-    <Contact lang={lang} />
+
+    <section class="final-cta">
+        <div class="container cta-panel">
+            <div class="cta-copy">
+                <span class="eyebrow">{cta.eyebrow}</span>
+                <h2>{cta.title}</h2>
+                <p>{cta.body}</p>
+            </div>
+            <div class="cta-actions">
+                <DownloadButton label={t("hero.cta")} />
+                <span>{t("hero.compatibility")}</span>
+            </div>
+        </div>
+    </section>
 </Layout>
+
+<style>
+    .final-cta {
+        padding: clamp(1rem, 3vw, 2rem) 0 var(--space-xl);
+        background: #0a0d0a;
+    }
+
+    .cta-panel {
+        position: relative;
+        display: grid;
+        min-height: 390px;
+        padding: clamp(2rem, 6vw, 5rem);
+        overflow: hidden;
+        border: 1px solid var(--color-border-strong);
+        border-radius: 1.35rem;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: end;
+        gap: 3rem;
+        background:
+            radial-gradient(circle at 85% 20%, rgba(217, 255, 99, 0.18), transparent 26%),
+            radial-gradient(circle at 62% 120%, rgba(157, 140, 255, 0.18), transparent 38%),
+            #121611;
+    }
+
+    .cta-panel::before {
+        position: absolute;
+        top: -55%;
+        right: -7%;
+        width: 420px;
+        height: 420px;
+        border: 1px solid rgba(217, 255, 99, 0.14);
+        border-radius: 50%;
+        content: "";
+        box-shadow:
+            0 0 0 48px rgba(217, 255, 99, 0.025),
+            0 0 0 96px rgba(217, 255, 99, 0.018);
+    }
+
+    .cta-copy,
+    .cta-actions {
+        position: relative;
+        z-index: 1;
+    }
+
+    .cta-copy h2 {
+        max-width: 760px;
+        margin-top: 1.25rem;
+        font-size: clamp(2.5rem, 6vw, 5rem);
+    }
+
+    .cta-copy p {
+        max-width: 590px;
+        margin-top: 1.25rem;
+    }
+
+    .cta-actions {
+        display: flex;
+        align-items: center;
+        flex-direction: column;
+        gap: 0.8rem;
+    }
+
+    .cta-actions > span {
+        color: #81897e;
+        font-size: 0.72rem;
+    }
+
+    @media (max-width: 800px) {
+        .cta-panel {
+            grid-template-columns: 1fr;
+        }
+
+        .cta-actions {
+            align-items: flex-start;
+        }
+    }
+</style>

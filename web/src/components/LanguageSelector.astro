@@ -1,210 +1,163 @@
 ---
-import { languages } from "../i18n/ui";
 import { getRelativeLocaleUrl } from "astro:i18n";
+import { languages } from "../i18n/ui";
 
 const currentLang = Astro.currentLocale || "en";
 const currentPath =
     Astro.url.pathname.replace(new RegExp(`^/${currentLang}`), "") || "/";
-
 const label = languages[currentLang as keyof typeof languages] || "Language";
 ---
 
 <div class="lang-dropdown" id="lang-dropdown">
     <button
-        class="lang-btn"
-        id="lang-btn"
+        class="lang-button"
+        id="lang-button"
+        type="button"
         aria-haspopup="true"
         aria-expanded="false"
-        aria-label="Select Language"
+        aria-label="Select language"
     >
-        <span class="current-lang">{label}</span>
-        <svg
-            class="chevron"
-            xmlns="http://www.w3.org/2000/svg"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-        >
-            <path d="m6 9 6 6 6-6"></path>
-        </svg>
+        <span>{label}</span>
+        <i aria-hidden="true">⌄</i>
     </button>
 
-    <div class="lang-menu" id="lang-menu">
-        {
-            Object.entries(languages).map(([lang, label]) => (
-                <a
-                    href={getRelativeLocaleUrl(lang, currentPath)}
-                    class:list={["menu-item", { active: currentLang === lang }]}
-                >
-                    {label}
-                    {currentLang === lang && (
-                        <svg
-                            class="check"
-                            xmlns="http://www.w3.org/2000/svg"
-                            width="16"
-                            height="16"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="3"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                        >
-                            <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                    )}
-                </a>
-            ))
-        }
+    <div class="lang-menu" id="lang-menu" role="menu">
+        {Object.entries(languages).map(([lang, languageLabel]) => (
+            <a
+                href={getRelativeLocaleUrl(lang, currentPath)}
+                class:list={["lang-option", { active: currentLang === lang }]}
+                role="menuitem"
+            >
+                <span>{languageLabel}</span>
+                {currentLang === lang && <i aria-hidden="true">•</i>}
+            </a>
+        ))}
     </div>
 </div>
 
 <style>
     .lang-dropdown {
         position: relative;
-        z-index: 50;
+        z-index: 60;
     }
 
-    .lang-btn {
-        appearance: none;
+    .lang-button {
         display: flex;
+        min-height: 38px;
+        padding: 0.55rem 0.75rem;
+        border: 1px solid var(--color-border);
+        border-radius: 0.65rem;
         align-items: center;
-        gap: 0.5rem;
-        padding: 0.5rem 1rem;
-        background: rgba(255, 255, 255, 0.9);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 1px solid rgba(255, 255, 255, 0.5);
-        border-radius: 999px; /* Pill shape */
-        color: #1a1a1a;
-        font-family: var(--font-body);
-        font-size: 0.875rem;
-        font-weight: 600;
+        gap: 0.45rem;
+        color: #bdc3b9;
+        background: rgba(255, 255, 255, 0.035);
         cursor: pointer;
-        transition: all 0.2s ease;
-        box-shadow:
-            0 4px 12px -2px rgba(0, 0, 0, 0.1),
-            0 0 15px rgba(255, 255, 255, 0.2);
+        font-size: 0.78rem;
+        font-weight: 600;
     }
 
-    .lang-btn:hover,
-    .lang-btn[aria-expanded="true"] {
-        transform: translateY(-1px);
-        box-shadow:
-            0 6px 16px -4px rgba(0, 0, 0, 0.15),
-            0 0 20px rgba(255, 255, 255, 0.4);
-        border-color: rgba(255, 255, 255, 0.8);
+    .lang-button:hover,
+    .lang-button[aria-expanded="true"] {
+        border-color: rgba(255, 255, 255, 0.24);
+        color: #fff;
     }
 
-    .chevron {
-        opacity: 0.6;
-        transition: transform 0.2s;
+    .lang-button i {
+        color: var(--color-primary);
+        font-size: 0.9rem;
+        font-style: normal;
+        transition: transform 160ms ease;
     }
 
-    .lang-btn[aria-expanded="true"] .chevron {
+    .lang-button[aria-expanded="true"] i {
         transform: rotate(180deg);
     }
 
-    /* Dropdown Menu */
     .lang-menu {
         position: absolute;
-        top: calc(100% + 8px);
+        top: calc(100% + 0.55rem);
         right: 0;
-        min-width: 160px;
-        background: rgba(255, 255, 255, 0.95);
-        backdrop-filter: blur(24px);
-        -webkit-backdrop-filter: blur(24px);
-        border: 1px solid rgba(255, 255, 255, 0.5);
-        border-radius: 1rem;
-        padding: 0.5rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.25rem;
-        box-shadow:
-            0 10px 40px -10px rgba(0, 0, 0, 0.2),
-            0 0 30px rgba(255, 255, 255, 0.15);
+        display: grid;
+        min-width: 170px;
+        padding: 0.45rem;
+        border: 1px solid var(--color-border);
+        border-radius: 0.8rem;
+        gap: 0.15rem;
+        visibility: hidden;
         opacity: 0;
-        transform: translateY(-10px);
-        pointer-events: none;
+        background: rgba(13, 16, 13, 0.97);
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+        transform: translateY(-6px);
         transition:
-            opacity 0.2s,
-            transform 0.2s;
-        z-index: 1000; /* Ensure high z-index */
+            opacity 140ms ease,
+            transform 140ms ease,
+            visibility 140ms ease;
+        backdrop-filter: blur(20px);
     }
 
     .lang-menu.show {
+        visibility: visible;
         opacity: 1;
         transform: translateY(0);
-        pointer-events: auto;
     }
 
-    .menu-item {
+    .lang-option {
         display: flex;
+        padding: 0.65rem 0.7rem;
+        border-radius: 0.45rem;
         align-items: center;
         justify-content: space-between;
-        padding: 0.625rem 1rem;
-        color: #1a1a1a;
-        text-decoration: none;
-        border-radius: 0.5rem;
-        font-size: 0.9rem;
-        font-weight: 500;
-        transition: background 0.2s;
-        white-space: nowrap;
+        color: #9fa69c;
+        font-size: 0.8rem;
     }
 
-    .menu-item:hover {
-        background: rgba(0, 0, 0, 0.05);
-        color: var(--color-primary);
+    .lang-option:hover,
+    .lang-option.active {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.055);
     }
 
-    .menu-item.active {
-        /* Use hsla logic since rgb var is missing */
-        background: hsla(var(--hue-primary), 100%, 50%, 0.1);
+    .lang-option i {
         color: var(--color-primary);
-        font-weight: 700;
+        font-style: normal;
     }
 
-    .check {
-        color: var(--color-primary);
-        margin-left: 0.5rem;
+    @media (max-width: 520px) {
+        .lang-button span {
+            display: none;
+        }
+
+        .lang-button {
+            width: 38px;
+            justify-content: center;
+        }
     }
 </style>
 
 <script>
-    const btn = document.getElementById("lang-btn");
+    const button = document.getElementById("lang-button");
     const menu = document.getElementById("lang-menu");
     const container = document.getElementById("lang-dropdown");
 
-    function toggleMenu() {
-        const isExpanded = btn?.getAttribute("aria-expanded") === "true";
-        btn?.setAttribute("aria-expanded", String(!isExpanded));
-        menu?.classList.toggle("show");
-    }
-
-    function closeMenu() {
-        btn?.setAttribute("aria-expanded", "false");
+    const closeMenu = () => {
+        button?.setAttribute("aria-expanded", "false");
         menu?.classList.remove("show");
-    }
+    };
 
-    btn?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        toggleMenu();
+    button?.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const isOpen = button.getAttribute("aria-expanded") === "true";
+        button.setAttribute("aria-expanded", String(!isOpen));
+        menu?.classList.toggle("show", !isOpen);
     });
 
-    // Close on click outside
-    document.addEventListener("click", (e) => {
-        if (container && !container.contains(e.target as Node)) {
+    document.addEventListener("click", (event) => {
+        if (container && !container.contains(event.target as Node)) {
             closeMenu();
         }
     });
 
-    // Close on escape
-    document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") closeMenu();
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeMenu();
     });
 </script>

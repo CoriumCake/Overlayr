@@ -85,3 +85,46 @@ def test_window_source_bounds_match_wgc_frame_dimensions(monkeypatch):
         "width": 1920,
         "height": 1009,
     }
+
+
+def test_full_source_capture_ignores_existing_roi(monkeypatch):
+    captured_bounds = None
+
+    class FakeMSS:
+        monitors = [
+            {"left": 0, "top": 0, "width": 8, "height": 6},
+            {"left": 0, "top": 0, "width": 8, "height": 6},
+        ]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def grab(self, bounds):
+            nonlocal captured_bounds
+            captured_bounds = dict(bounds)
+            size = (bounds["width"], bounds["height"])
+            return SimpleNamespace(
+                size=size,
+                bgra=b"\x00\x00\x00\xff" * (size[0] * size[1]),
+            )
+
+    monkeypatch.setattr(
+        "overlayr.core.capture_engine.mss.mss",
+        lambda: FakeMSS(),
+    )
+    engine = _capture_engine_without_initializing_wgc()
+    engine.mode = "screen"
+    engine.target = {
+        "id": 0,
+        "bounds": {"left": 0, "top": 0, "width": 8, "height": 6},
+    }
+    engine.roi = (0.25, 0.25, 0.5, 0.5)
+
+    image, bounds = engine.capture_full_source()
+
+    assert image.size == (8, 6)
+    assert bounds == {"left": 0, "top": 0, "width": 8, "height": 6}
+    assert captured_bounds == bounds

@@ -15,7 +15,13 @@ from ..core.frame_pipeline import (
     compare_region_fingerprints,
 )
 from ..core.region_selection import selection_to_roi
+from ..services.game_profiles import GameProfileService
+from ..services.product_analytics import ProductAnalytics
 from ..services.source_manager import SourceManager
+from ..ui.components.correction_dialog import (
+    CorrectionDialog,
+    feedback_items_from_results,
+)
 from ..ui.components.loading_spinner import LoadingSpinner
 from ..ui.components.source_card import SourceCard
 from ..ui.overlay import ResultOverlay
@@ -30,6 +36,14 @@ from ..utils.display_utils import (
 from .theme import apply_theme_to_window, get_theme
 
 
+def _requires_overlay_capture_exclusion(
+    source_type: Optional[str],
+    include_overlay_in_capture: bool,
+) -> bool:
+    """Only full-screen capture can see the separate overlay window."""
+    return bool(include_overlay_in_capture and source_type == "screen")
+
+
 class MainWindow(ctk.CTk):
     def __init__(self, auth_service=None, config_service=None):
         print("Initializing MainWindow with Auth...")
@@ -40,6 +54,13 @@ class MainWindow(ctk.CTk):
 
         self.auth_service = auth_service
         self.config_service = config_service
+        self.game_profile_service = GameProfileService()
+        try:
+            self.product_analytics = ProductAnalytics.for_default_location()
+            self.product_analytics.record("app_started")
+        except Exception as error:
+            self.product_analytics = None
+            print(f"Product analytics unavailable: {error}", flush=True)
 
         # Theme
         initial_mode = self.config_service.get("appearance_mode", "Dark") if self.config_service else "Dark"
@@ -160,6 +181,9 @@ class MainWindow(ctk.CTk):
             self.capture_engine = CaptureEngine()
             self.source_manager = SourceManager()
             self.async_engine = AsyncEngine()
+            self.async_engine.set_game_profile_service(
+                self.game_profile_service
+            )
             
             # Pass our async loop to the engine so it can schedule background tasks safely
             if hasattr(self, 'loop') and self.loop:
@@ -244,6 +268,7 @@ class MainWindow(ctk.CTk):
         if self._closing:
             return
         self._closing = True
+        self._track_product_event("app_closed")
         self.is_streaming = False
         self._stream_generation += 1
 
@@ -568,6 +593,21 @@ class MainWindow(ctk.CTk):
             font=("Segoe UI", 13)
         )
         self.btn_define_roi.pack(side="right", padx=8, pady=8)
+
+        self.btn_feedback = ctk.CTkButton(
+            self.footer_frame,
+            text="Teach Translation",
+            command=self.open_translation_feedback,
+            state="disabled",
+            width=130,
+            height=36,
+            corner_radius=8,
+            fg_color=colors["secondary_accent"],
+            hover_color=colors["bg_hover"],
+            text_color=colors["text_primary"],
+            font=("Segoe UI", 13),
+        )
+        self.btn_feedback.pack(side="right", padx=8, pady=8)
         
         self.btn_stream = ctk.CTkButton(
             self.footer_frame, 
@@ -826,13 +866,25 @@ class MainWindow(ctk.CTk):
             self.config_service.set("source_lang", self.var_source_lang.get())
             self.config_service.set("target_lang", self.var_target_lang.get())
             
-        if not self.async_engine: return
-        
         src_name = self.var_source_lang.get()
         tgt_name = self.var_target_lang.get()
         
         src_code = self.languages.get(src_name, 'ja')
         tgt_code = self.languages.get(tgt_name, 'en')
+        game_profiles = self.__dict__.get("game_profile_service")
+        if game_profiles is not None:
+            game_profiles.update_active_languages(
+                src_code,
+                tgt_code,
+            )
+        self._track_product_event(
+            "language_changed",
+            source_language=src_code,
+            target_language=tgt_code,
+            profile_id=self._active_profile_id(),
+        )
+        if not self.async_engine:
+            return
         
         print(f"Language changed: {src_name} -> {tgt_name}")
         self.lbl_status.configure(text=f"Switching: {src_name} -> {tgt_name}...")
@@ -1009,9 +1061,45 @@ class MainWindow(ctk.CTk):
             if self.capture_engine:
                 self.capture_engine.set_roi(None)
             self._set_area_button_active(False)
+        profile = None
+        game_profiles = self.__dict__.get("game_profile_service")
+        if game_profiles is not None:
+            src_code = self.languages.get(
+                self.var_source_lang.get(),
+                "ja",
+            )
+            tgt_code = self.languages.get(
+                self.var_target_lang.get(),
+                "en",
+            )
+            profile = game_profiles.activate_source(
+                source,
+                source_language=src_code,
+                target_language=tgt_code,
+            )
+            if profile is not None and profile.roi:
+                self._pending_start_roi = (
+                    float(profile.roi["left"]),
+                    float(profile.roi["top"]),
+                    float(profile.roi["width"]),
+                    float(profile.roi["height"]),
+                )
+                self._set_area_button_active(True)
+        if hasattr(self, "btn_feedback"):
+            self.btn_feedback.configure(
+                state="normal" if profile is not None else "disabled"
+            )
         friendly_name = source.get('friendly_name') or source.get('name') or source.get('title') or "Unknown Source"
         
-        self.lbl_status.configure(text=f"Selected: {friendly_name}")
+        status = f"Selected: {friendly_name}"
+        if profile is not None:
+            status += f" • Game profile: {profile.name}"
+        self.lbl_status.configure(text=status)
+        self._track_product_event(
+            "source_selected",
+            source_type=str(source.get("type") or "unknown"),
+            profile_id=profile.id if profile is not None else "",
+        )
 
         
         # If engine is ready, enable button
@@ -1076,6 +1164,12 @@ class MainWindow(ctk.CTk):
                 self._last_rendered_results = None
             self.last_overlay_data = None
             self.async_engine.reset_frame_cache()
+            self._track_product_event(
+                "capture_started",
+                source_type=str(mode or "unknown"),
+                profile_id=self._active_profile_id(),
+                has_region=initial_roi is not None,
+            )
             
             # Start loop
             threading.Thread(
@@ -1099,6 +1193,10 @@ class MainWindow(ctk.CTk):
                 self._last_rendered_results = None
             self.last_overlay_data = None
             self.overlay.hide()
+            self._track_product_event(
+                "capture_stopped",
+                profile_id=self._active_profile_id(),
+            )
 
     def _check_visibility(self):
         """
@@ -1304,13 +1402,20 @@ class MainWindow(ctk.CTk):
                 # If the user wants external screenshots to include the
                 # translation, temporarily exclude the overlay only while the
                 # internal OCR frame is captured to avoid self-recognition.
-                include_overlay = getattr(self.overlay, "include_in_capture", False)
-                if include_overlay:
+                exclude_overlay = _requires_overlay_capture_exclusion(
+                    (
+                        self.selected_source.get("type")
+                        if self.selected_source
+                        else None
+                    ),
+                    getattr(self.overlay, "include_in_capture", False),
+                )
+                if exclude_overlay:
                     self.overlay.hide_for_capture()
                 try:
                     result = self.capture_engine.capture()
                 finally:
-                    if include_overlay:
+                    if exclude_overlay:
                         self.overlay.restore_after_capture()
                 
                 image, bounds = result if result else (None, None)
@@ -1535,6 +1640,15 @@ class MainWindow(ctk.CTk):
         self.overlay.show_results(
             results, x, y, visible=visible, source_image=source_image
         )
+        self._track_product_event(
+            "translation_rendered",
+            item_count=sum(
+                1
+                for result in results
+                if result.get("translated") is not None
+            ),
+            profile_id=self._active_profile_id(),
+        )
         
         # Cache for Instant Restore
         self.last_overlay_data = (results, x, y, geometry, source_image)
@@ -1575,26 +1689,20 @@ class MainWindow(ctk.CTk):
             )
             return
 
-        source_bounds = self.capture_engine.get_source_bounds(
-            self.selected_source.get("type"),
-            self.selected_source,
-        )
-        if not source_bounds:
-            self.lbl_status.configure(
-                text="The selected source is no longer available",
-                text_color="red",
-            )
-            return
-
         self._capture_revision += 1
         self._region_selection_active = True
         self.overlay.hide()
+        self.update_idletasks()
         self.lbl_status.configure(
             text="Drag an area to translate • Esc to cancel",
             text_color="cyan",
         )
 
         try:
+            frozen_frame, source_bounds = self.capture_engine.capture_full_source()
+            if frozen_frame is None or not source_bounds:
+                raise RuntimeError("the selected source is no longer available")
+
             self._region_selector = ScreenRegionSelector(
                 self,
                 source_bounds,
@@ -1602,6 +1710,7 @@ class MainWindow(ctk.CTk):
                     self._apply_region_selection(selection, bounds)
                 ),
                 on_cancel=self._cancel_region_selection,
+                source_image=frozen_frame,
             )
         except Exception as error:
             self._region_selector = None
@@ -1610,6 +1719,7 @@ class MainWindow(ctk.CTk):
                 text=f"Could not open area selector: {error}",
                 text_color="red",
             )
+            self._restore_cached_overlay()
 
     def _apply_region_selection(self, selection, source_bounds):
         self._region_selector = None
@@ -1624,6 +1734,16 @@ class MainWindow(ctk.CTk):
 
         self._active_roi = roi
         self._pending_start_roi = roi
+        game_profiles = self.__dict__.get("game_profile_service")
+        if game_profiles is not None:
+            game_profiles.save_active_roi(
+                {
+                    "left": roi[0],
+                    "top": roi[1],
+                    "width": roi[2],
+                    "height": roi[3],
+                }
+            )
         if self.is_streaming:
             self.capture_engine.set_roi(roi)
 
@@ -1633,6 +1753,10 @@ class MainWindow(ctk.CTk):
         self.lbl_status.configure(
             text="Area selected — translating only this region",
             text_color="cyan",
+        )
+        self._track_product_event(
+            "region_selected",
+            profile_id=self._active_profile_id(),
         )
 
         if not self.is_streaming:
@@ -1695,12 +1819,92 @@ class MainWindow(ctk.CTk):
         self._pending_start_roi = None
         if self.capture_engine:
             self.capture_engine.set_roi(None)
+        game_profiles = self.__dict__.get("game_profile_service")
+        if game_profiles is not None:
+            game_profiles.save_active_roi(None)
         self._reset_pipeline_for_area_change()
         self._set_area_button_active(False)
         self.lbl_status.configure(
             text="Area cleared — translating the full source",
             text_color="white",
         )
+        self._track_product_event(
+            "region_cleared",
+            profile_id=self._active_profile_id(),
+        )
+
+    def open_translation_feedback(self):
+        game_profiles = self.__dict__.get("game_profile_service")
+        profile = (
+            game_profiles.active_profile
+            if game_profiles is not None
+            else None
+        )
+        if profile is None:
+            self.lbl_status.configure(
+                text="Select an application to teach a game-specific translation",
+                text_color="orange",
+            )
+            return
+        last_data = getattr(self, "last_overlay_data", None)
+        results = last_data[0] if last_data else []
+        items = feedback_items_from_results(results)
+        if not items:
+            self.lbl_status.configure(
+                text="Translate something first, then teach the preferred wording",
+                text_color="orange",
+            )
+            return
+        CorrectionDialog(
+            self,
+            profile_name=profile.name,
+            items=items,
+            on_save=self._save_translation_feedback,
+        )
+
+    def _save_translation_feedback(
+        self,
+        source_text: str,
+        translated_text: str,
+    ) -> None:
+        try:
+            self.game_profile_service.add_translation_override(
+                source_text,
+                translated_text,
+            )
+            if self.async_engine:
+                self.async_engine.clear_translation_cache()
+            self._reset_pipeline_for_area_change()
+            self.lbl_status.configure(
+                text="Correction saved to this game profile",
+                text_color="green",
+            )
+            self._track_product_event(
+                "translation_corrected",
+                profile_id=self._active_profile_id(),
+            )
+        except Exception as error:
+            self.lbl_status.configure(
+                text=f"Could not save correction: {error}",
+                text_color="red",
+            )
+
+    def _active_profile_id(self) -> str:
+        service = self.__dict__.get("game_profile_service")
+        profile = service.active_profile if service is not None else None
+        return profile.id if profile is not None else ""
+
+    def _track_product_event(self, event: str, **properties) -> None:
+        analytics = self.__dict__.get("product_analytics")
+        if analytics is None:
+            return
+        try:
+            analytics.record(event, **properties)
+        except Exception as error:
+            print(
+                f"Product analytics event failed ({event}): {error}",
+                flush=True,
+            )
 
 if __name__ == "__main__":
     app = MainWindow()

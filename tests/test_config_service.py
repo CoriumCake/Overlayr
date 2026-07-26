@@ -1,8 +1,8 @@
 """Tests for ConfigService — settings persistence."""
-import pytest
-import json
 import os
-import tempfile
+
+import pytest
+
 from overlayr.services.config_service import ConfigService
 
 
@@ -24,6 +24,7 @@ class TestConfigDefaults:
         assert config.get("source_lang") == "Japanese"
         assert config.get("target_lang") == "Thai"
         assert config.get("grouping_mode") == "Group (Manga)"
+        assert config.get("ocr_use_directml") is True
         assert config.get("save_debug_output") is False
 
     def test_get_missing_key_returns_default(self, config):

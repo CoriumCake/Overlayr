@@ -1,6 +1,7 @@
 import json
 import os
 
+
 class ConfigService:
     def __init__(self, config_path="settings.json"):
         self.config_path = config_path
@@ -11,6 +12,7 @@ class ConfigService:
             "grouping_mode": "Group (Manga)",
             "ocr_engine": "RapidOCR",
             "ocr_use_angle_classifier": False,
+            "ocr_use_directml": True,
             "include_overlay_in_capture": False,
             "save_debug_output": False
         }

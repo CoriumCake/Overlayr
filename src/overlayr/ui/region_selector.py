@@ -6,6 +6,8 @@ import os
 import tkinter as tk
 from typing import Any, Callable, Mapping, Optional
 
+from PIL import Image, ImageTk
+
 from ..core.region_selection import (
     local_selection_to_screen,
     normalize_drag_selection,
@@ -27,6 +29,7 @@ class ScreenRegionSelector(tk.Toplevel):
         *,
         on_select: Callable[[Bounds], None],
         on_cancel: Callable[[], None],
+        source_image: Optional[Image.Image] = None,
     ) -> None:
         super().__init__(parent)
         self._source_bounds = {
@@ -39,25 +42,30 @@ class ScreenRegionSelector(tk.Toplevel):
         self._on_cancel = on_cancel
         self._drag_start: Optional[tuple[int, int]] = None
         self._closed = False
+        self._frozen_photo: Optional[ImageTk.PhotoImage] = None
 
         self.withdraw()
         self.title("Overlayr Area Selection")
         self.overrideredirect(True)
         self.attributes("-topmost", True)
-        self.configure(background=self._TRANSPARENT_KEY)
-        if os.name == "nt":
+        has_frozen_frame = source_image is not None
+        canvas_background = "black" if has_frozen_frame else self._TRANSPARENT_KEY
+        self.configure(background=canvas_background)
+        if os.name == "nt" and not has_frozen_frame:
             self.attributes("-transparentcolor", self._TRANSPARENT_KEY)
-        else:
+        elif os.name != "nt" and not has_frozen_frame:
             self.attributes("-alpha", 0.35)
 
         self.canvas = tk.Canvas(
             self,
-            background=self._TRANSPARENT_KEY,
+            background=canvas_background,
             cursor="crosshair",
             highlightthickness=0,
             borderwidth=0,
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
+        if source_image is not None:
+            self._draw_frozen_frame(source_image)
         self._draw_shade()
         self._instruction_id = self.canvas.create_text(
             24,
@@ -129,6 +137,24 @@ class ScreenRegionSelector(tk.Toplevel):
         except Exception:
             # Tk geometry remains a usable fallback.
             pass
+
+    def _draw_frozen_frame(self, source_image: Image.Image) -> None:
+        """Paint the captured source once so motion stays frozen while dragging."""
+        target_size = (
+            self._source_bounds["width"],
+            self._source_bounds["height"],
+        )
+        frame = source_image.convert("RGB")
+        if frame.size != target_size:
+            frame = frame.resize(target_size, Image.Resampling.LANCZOS)
+        self._frozen_photo = ImageTk.PhotoImage(frame, master=self)
+        self.canvas.create_image(
+            0,
+            0,
+            anchor="nw",
+            image=self._frozen_photo,
+            tags=("frozen_frame",),
+        )
 
     def _event_point(self, event: tk.Event) -> tuple[int, int]:
         width = self._source_bounds["width"]

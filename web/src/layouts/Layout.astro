@@ -1,762 +1,275 @@
 ---
-import "../styles/global.css";
-// import ThemeToggle from "../components/ThemeToggle.astro"; // Removed in favor of dropdown
+import { getRelativeLocaleUrl } from "astro:i18n";
 import LanguageSelector from "../components/LanguageSelector.astro";
 import { getLangFromUrl, useTranslations } from "../i18n/ui";
-import { getRelativeLocaleUrl } from "astro:i18n";
+import "../styles/global.css";
 
 const lang = getLangFromUrl(Astro.url);
 const t = useTranslations(lang);
-const currentLang = lang;
+const homeUrl = getRelativeLocaleUrl(lang, "");
 
 interface Props {
-	title: string;
-	description?: string;
+    title: string;
+    description?: string;
 }
 
 const {
-	title,
-	description = "Overlayr - The ultimate overlay tool for high-performance capture.",
+    title,
+    description = "Overlayr translates dialogue, quests, and game UI in a live Windows overlay—and remembers the words you teach it.",
 } = Astro.props;
-
-// Determine the home URL for the current language
-const homeUrl = getRelativeLocaleUrl(currentLang, "");
-// Ensure homeUrl ends with slash to append anchor correctly if needed, or handle how Astro formats it.
-// getRelativeLocaleUrl returns e.g. /ja/ or /
 ---
 
 <!doctype html>
-<html lang={currentLang}>
-	<head>
-		<meta charset="UTF-8" />
-		<title>{title}</title>
+<html lang={lang}>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="theme-color" content="#070908" />
+        <title>{title}</title>
+        <meta name="description" content={description} />
+        <meta name="generator" content={Astro.generator} />
+        <meta
+            name="keywords"
+            content="game translator, live game translation, OCR overlay, Windows translator, Japanese game translation, game subtitles"
+        />
+        <meta name="author" content="Overlayr Team" />
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
 
-		<meta name="viewport" content="width=device-width" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<meta name="generator" content={Astro.generator} />
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content={Astro.url} />
+        <meta property="og:title" content={title} />
+        <meta property="og:description" content={description} />
+        <meta property="og:image" content={new URL("/og.png", Astro.site)} />
+        <meta
+            property="og:image:alt"
+            content="Overlayr translating a Japanese game dialogue in a live Windows overlay"
+        />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content={title} />
+        <meta name="twitter:description" content={description} />
+        <meta name="twitter:image" content={new URL("/og.png", Astro.site)} />
 
-		<!-- Security Headers -->
-		<meta
-			http-equiv="Content-Security-Policy"
-			content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; script-src 'self' 'unsafe-inline' https://apis.google.com https://*.firebaseapp.com https://www.googletagmanager.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://*.cloudfunctions.net ws://localhost:*; frame-src 'self' https://*.firebaseapp.com https://accounts.google.com; object-src 'none'; base-uri 'self';"
-		/>
-		<meta http-equiv="X-Content-Type-Options" content="nosniff" />
+        <script
+            type="application/ld+json"
+            set:html={JSON.stringify({
+                "@context": "https://schema.org",
+                "@type": "SoftwareApplication",
+                name: "Overlayr",
+                operatingSystem: "Windows 10, Windows 11",
+                applicationCategory: "GameApplication",
+                offers: {
+                    "@type": "Offer",
+                    price: "0",
+                    priceCurrency: "THB",
+                },
+                description,
+            })}
+        />
+    </head>
+    <body>
+        <a class="skip-link" href="#main-content">Skip to content</a>
+        <header class="site-header">
+            <div class="container header-inner">
+                <a class="brand" href={homeUrl} aria-label="Overlayr home">
+                    <span class="brand-mark" aria-hidden="true">O</span>
+                    <span>Overlayr</span>
+                </a>
 
-		<!-- SEO & Meta Tags -->
-		<meta name="description" content={description} />
-		<link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
-		<meta
-			name="keywords"
-			content="overlay, translator, ocr, screen capture, windows, gaming overlay, real-time translation, japanese translator, game hud, directx overlay"
-		/>
-		<meta name="author" content="Overlayr Team" />
+                <nav class="desktop-nav" aria-label="Primary navigation">
+                    <a href={`${homeUrl}#features`}>Features</a>
+                    <a href={`${homeUrl}#how-it-works`}>How it works</a>
+                    <a href={`${homeUrl}#pricing`}>Pricing</a>
+                    <a href={`${homeUrl}#faq`}>FAQ</a>
+                </nav>
 
-		<!-- Open Graph / Facebook -->
-		<meta property="og:type" content="website" />
-		<meta property="og:url" content={Astro.url} />
-		<meta property="og:title" content={title} />
-		<meta property="og:description" content={description} />
-		<meta
-			property="og:image"
-			content={new URL("/og-image.png", Astro.site)}
-		/>
+                <div class="header-actions">
+                    <LanguageSelector />
+                    <a class="header-download" href="/#download">
+                        {t("hero.cta")}
+                    </a>
+                </div>
+            </div>
+        </header>
 
-		<!-- Twitter -->
-		<meta property="twitter:card" content="summary_large_image" />
-		<meta property="twitter:url" content={Astro.url} />
-		<meta property="twitter:title" content={title} />
-		<meta property="twitter:description" content={description} />
-		<meta
-			property="twitter:image"
-			content={new URL("/og-image.png", Astro.site)}
-		/>
+        <main id="main-content">
+            <slot />
+        </main>
 
-		<!-- Structured Data (JSON-LD) -->
-		<script
-			type="application/ld+json"
-			set:html={JSON.stringify({
-				"@context": "https://schema.org",
-				"@type": "SoftwareApplication",
-				name: "Overlayr",
-				operatingSystem: "Windows 10, Windows 11",
-				applicationCategory: "MultimediaApplication",
-				offers: {
-					"@type": "Offer",
-					price: "0",
-					priceCurrency: "USD",
-				},
-				description: description,
-				softwareVersion: "1.0.0", // Update dynamically if possible
-			})}
-		/>
-
-		<!-- Theme Init Script -->
-		<script is:inline>
-			const theme = (() => {
-				if (
-					typeof localStorage !== "undefined" &&
-					localStorage.getItem("theme")
-				) {
-					return localStorage.getItem("theme");
-				}
-				if (
-					window.matchMedia("(prefers-color-scheme: light)").matches
-				) {
-					return "light";
-				}
-				return "dark";
-			})();
-			if (theme === "light") {
-				document.documentElement.setAttribute("data-theme", "light");
-			} else {
-				document.documentElement.removeAttribute("data-theme");
-			}
-
-			// Language Detection Script
-			const savedLang = localStorage.getItem("lang");
-			const userLang = navigator.language.split("-")[0];
-			const currentPath = window.location.pathname;
-
-			// Only redirect from root if no specific lang path is present
-			if (currentPath === "/" && !savedLang) {
-				const supported = ["ja", "es"];
-				if (supported.includes(userLang)) {
-					window.location.href = `/${userLang}/`;
-				}
-			}
-		</script>
-	</head>
-	<body>
-		<!-- Global Noise Overlay -->
-		<div class="noise-overlay" aria-hidden="true"></div>
-
-		<!-- Global Background Effects -->
-		<div class="background-effects" aria-hidden="true">
-			<div class="orb primary"></div>
-			<div class="orb accent"></div>
-		</div>
-
-		<!-- Header / Nav -->
-		<header class="main-header container">
-			<a href={homeUrl} class="logo">Overlayr</a>
-			<div class="nav-right">
-				<!-- nav removed -->
-				<slot name="header-actions" />
-				<div class="controls">
-					<div class="user-menu-container">
-						<button
-							id="user-menu-btn"
-							class="dropdown-trigger"
-							aria-label="User Menu"
-						>
-							<!-- Default Person Icon -->
-							<svg
-								xmlns="http://www.w3.org/2000/svg"
-								width="24"
-								height="24"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								class="person-icon"
-								><path
-									d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"
-								></path><circle cx="12" cy="7" r="4"
-								></circle></svg
-							>
-						</button>
-
-						<div id="user-dropdown" class="dropdown-menu">
-							<!-- Sign In -->
-							<a
-								href="/login?callback=web"
-								id="nav-signin"
-								class="dropdown-item"
-							>
-								<svg
-									xmlns="http://www.w3.org/2000/svg"
-									width="18"
-									height="18"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-									><path
-										d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"
-									></path><polyline points="10 17 15 12 10 7"
-									></polyline><line
-										x1="15"
-										y1="12"
-										x2="3"
-										y2="12"></line></svg
-								>
-								Sign In with Google
-							</a>
-
-							<!-- Profile (Hidden by default) -->
-							<a
-								href="/profile"
-								id="nav-profile"
-								class="dropdown-item"
-								style="display: none;"
-							>
-								<svg
-									xmlns="http://www.w3.org/2000/svg"
-									width="18"
-									height="18"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-									><path
-										d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"
-									></path><circle cx="12" cy="7" r="4"
-									></circle></svg
-								>
-								Profile Management
-							</a>
-
-							<div class="dropdown-divider"></div>
-
-							<!-- Theme Toggle -->
-							<button
-								id="dropdown-theme-toggle"
-								class="dropdown-item theme-toggle-item"
-							>
-								<span>Dark Mode</span>
-								<!-- Moon/Sun Icon managed by script -->
-								<svg
-									class="theme-icon-moon"
-									xmlns="http://www.w3.org/2000/svg"
-									width="18"
-									height="18"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-									><path
-										d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"
-									></path></svg
-								>
-								<svg
-									class="theme-icon-sun"
-									xmlns="http://www.w3.org/2000/svg"
-									width="18"
-									height="18"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-									style="display: none;"
-									><circle cx="12" cy="12" r="5"
-									></circle><line
-										x1="12"
-										y1="1"
-										x2="12"
-										y2="3"></line><line
-										x1="12"
-										y1="21"
-										x2="12"
-										y2="23"></line><line
-										x1="4.22"
-										y1="4.22"
-										x2="5.64"
-										y2="5.64"></line><line
-										x1="18.36"
-										y1="18.36"
-										x2="19.78"
-										y2="19.78"></line><line
-										x1="1"
-										y1="12"
-										x2="3"
-										y2="12"></line><line
-										x1="21"
-										y1="12"
-										x2="23"
-										y2="12"></line><line
-										x1="4.22"
-										y1="19.78"
-										x2="5.64"
-										y2="18.36"></line><line
-										x1="18.36"
-										y1="5.64"
-										x2="19.78"
-										y2="4.22"></line></svg
-								>
-							</button>
-
-							<!-- Logout (Hidden by default) -->
-							<button
-								id="nav-logout"
-								class="dropdown-item"
-								style="display: none; color: #f87171;"
-							>
-								<svg
-									xmlns="http://www.w3.org/2000/svg"
-									width="18"
-									height="18"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-									><path
-										d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"
-									></path><polyline points="16 17 21 12 16 7"
-									></polyline><line
-										x1="21"
-										y1="12"
-										x2="9"
-										y2="12"></line></svg
-								>
-								Logout
-							</button>
-						</div>
-					</div>
-					<LanguageSelector />
-				</div>
-			</div>
-		</header>
-
-		<main>
-			<slot />
-		</main>
-
-		<footer class="main-footer container">
-			<div class="footer-bottom">
-				<p>
-					&copy; {new Date().getFullYear()} Overlayr. {
-						t("footer.rights")
-					}
-				</p>
-				<div class="footer-links">
-					<a href={getRelativeLocaleUrl(currentLang, "privacy")}
-						>{t("footer.privacy")}</a
-					>
-					<a href={getRelativeLocaleUrl(currentLang, "terms")}
-						>{t("footer.terms")}</a
-					>
-				</div>
-			</div>
-		</footer>
-	</body>
+        <footer class="site-footer">
+            <div class="container footer-grid">
+                <div>
+                    <a class="brand footer-brand" href={homeUrl}>
+                        <span class="brand-mark" aria-hidden="true">O</span>
+                        <span>Overlayr</span>
+                    </a>
+                    <p class="footer-note">
+                        Understand the game. Stay in the moment.
+                    </p>
+                </div>
+                <div class="footer-links">
+                    <a href={getRelativeLocaleUrl(lang, "privacy")}>
+                        {t("footer.privacy")}
+                    </a>
+                    <a href={getRelativeLocaleUrl(lang, "terms")}>
+                        {t("footer.terms")}
+                    </a>
+                    <a href={getRelativeLocaleUrl(lang, "contact")}>Contact</a>
+                    <a href="/login?callback=web">Sign in</a>
+                </div>
+            </div>
+            <div class="container footer-bottom">
+                <span>© {new Date().getFullYear()} Overlayr</span>
+                <span>Built for players, not pop-ups.</span>
+            </div>
+        </footer>
+    </body>
 </html>
 
 <style>
-	.main-footer {
-		padding-block: 2rem;
-		border-top: 1px solid var(--glass-border);
-		margin-top: 4rem;
-		font-size: 0.875rem;
-		color: var(--color-text-muted);
-	}
+    .skip-link {
+        position: fixed;
+        z-index: 100;
+        top: 1rem;
+        left: 1rem;
+        padding: 0.75rem 1rem;
+        color: #0d1008;
+        background: var(--color-primary);
+        transform: translateY(-180%);
+    }
 
-	/* Noise Overlay */
-	.noise-overlay {
-		position: fixed;
-		inset: 0;
-		width: 100%;
-		height: 100%;
-		pointer-events: none;
-		z-index: 9999;
-		/* Use the CSS variable we defined */
-		background-image: var(--noise-url);
-		opacity: 0.4;
-		mix-blend-mode: overlay;
-	}
-	.footer-bottom {
-		display: flex;
-		justify-content: space-between;
-		flex-wrap: wrap;
-		gap: 1rem;
-	}
-	.footer-links {
-		display: flex;
-		gap: 1.5rem;
-	}
-	:global(nav a) {
-		margin-right: 1.5rem;
-		font-weight: 500;
-		font-size: 0.9rem;
-		transition: color 0.2s;
-	}
-	:global(nav a:hover) {
-		color: var(--color-primary);
-	}
+    .skip-link:focus {
+        transform: translateY(0);
+    }
 
-	/* Global Transition for Theme Switch */
-	:global(.theme-transition),
-	:global(.theme-transition *) {
-		transition:
-			background-color 0.3s ease,
-			color 0.3s ease,
-			border-color 0.3s ease !important;
-	}
+    .site-header {
+        position: sticky;
+        z-index: 50;
+        top: 0;
+        height: var(--header-height);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        background: rgba(7, 9, 8, 0.78);
+        backdrop-filter: blur(20px);
+    }
 
-	.main-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding-block: 1.5rem;
-		position: absolute;
-		top: 0;
-		left: 0;
-		right: 0;
-		z-index: 50;
-	}
+    .header-inner {
+        display: flex;
+        height: 100%;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1.5rem;
+    }
 
-	.logo {
-		font-family: var(--font-heading);
-		font-weight: 900;
-		font-size: 1.5rem;
-		letter-spacing: -0.02em;
-	}
+    .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.65rem;
+        font-family: var(--font-heading);
+        font-size: 1.15rem;
+        font-weight: 700;
+        letter-spacing: -0.04em;
+    }
 
-	.nav-right {
-		display: flex;
-		align-items: center;
-		gap: 2rem;
-	}
+    .brand-mark {
+        display: grid;
+        width: 2rem;
+        height: 2rem;
+        place-items: center;
+        border-radius: 0.55rem;
+        color: #101409;
+        background: var(--color-primary);
+        font-size: 0.8rem;
+        font-weight: 800;
+    }
 
-	.controls {
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-	}
+    .desktop-nav {
+        display: flex;
+        align-items: center;
+        gap: clamp(1rem, 2.5vw, 2rem);
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
 
-	.user-menu-container {
-		position: relative;
-	}
+    .desktop-nav a,
+    .footer-links a {
+        transition: color 160ms ease;
+    }
 
-	.dropdown-trigger {
-		background: transparent;
-		border: 1px solid var(--glass-border);
-		border-radius: 50%;
-		cursor: pointer;
-		width: 40px;
-		height: 40px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: var(--color-text-main);
-		transition: all 0.2s ease;
-		overflow: hidden;
-	}
+    .desktop-nav a:hover,
+    .footer-links a:hover {
+        color: var(--color-primary);
+    }
 
-	.dropdown-trigger:hover,
-	.dropdown-trigger.active {
-		background: var(--glass-bg-hover);
-		border-color: var(--color-primary);
-	}
+    .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+    }
 
-	.dropdown-trigger svg {
-		width: 20px;
-		height: 20px;
-	}
+    .header-download {
+        padding: 0.7rem 1rem;
+        border-radius: 0.65rem;
+        color: #101409;
+        background: var(--color-primary);
+        font-size: 0.86rem;
+        font-weight: 700;
+    }
 
-	.user-avatar {
-		width: 100%;
-		height: 100%;
-		object-fit: cover;
-	}
+    .site-footer {
+        position: relative;
+        padding: 4rem 0 2rem;
+        border-top: 1px solid var(--color-border);
+        background: #090b09;
+    }
 
-	.dropdown-menu {
-		position: absolute;
-		top: calc(100% + 10px);
-		right: 0;
-		width: 220px;
-		background: var(--glass-bg);
-		backdrop-filter: blur(var(--acrylic-blur))
-			saturate(var(--acrylic-saturate));
-		-webkit-backdrop-filter: blur(var(--acrylic-blur))
-			saturate(var(--acrylic-saturate));
-		border: 1px solid var(--glass-border);
-		border-radius: 1rem;
-		padding: 0.5rem;
-		display: none;
-		flex-direction: column;
-		gap: 0.25rem;
-		box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
-		z-index: 100;
-	}
+    .footer-grid,
+    .footer-bottom {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 2rem;
+    }
 
-	.dropdown-menu.show {
-		display: flex;
-		animation: fadeIn 0.1s ease-out;
-	}
+    .footer-brand {
+        margin-bottom: 1rem;
+    }
 
-	@keyframes fadeIn {
-		from {
-			opacity: 0;
-			transform: translateY(-10px);
-		}
-		to {
-			opacity: 1;
-			transform: translateY(0);
-		}
-	}
+    .footer-note {
+        font-size: 0.95rem;
+    }
 
-	.dropdown-item {
-		display: flex;
-		align-items: center;
-		gap: 0.75rem;
-		padding: 0.75rem 1rem;
-		color: var(--color-text-main);
-		text-decoration: none;
-		border-radius: 0.5rem;
-		transition: background-color 0.2s;
-		font-size: 0.9375rem;
-		cursor: pointer;
-		background: transparent;
-		border: none;
-		width: 100%;
-		text-align: left;
-		font-family: inherit;
-	}
+    .footer-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.5rem;
+        color: var(--color-text-muted);
+        font-size: 0.88rem;
+    }
 
-	.dropdown-item:hover {
-		background: var(--glass-bg-hover);
-		color: var(--color-primary);
-	}
+    .footer-bottom {
+        margin-top: 3rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--color-border);
+        color: #747b71;
+        font-size: 0.78rem;
+    }
 
-	.dropdown-item svg {
-		opacity: 0.8;
-	}
+    @media (max-width: 900px) {
+        .desktop-nav {
+            display: none;
+        }
+    }
 
-	.dropdown-divider {
-		height: 1px;
-		background: var(--glass-border);
-		margin: 0.25rem 0;
-	}
+    @media (max-width: 620px) {
+        .header-download {
+            display: none;
+        }
 
-	/* Theme Toggle specific styles inside dropdown */
-	.theme-toggle-item {
-		justify-content: space-between;
-	}
-
-	/* Global Background Animation */
-	.background-effects {
-		position: fixed;
-		inset: 0;
-		overflow: hidden;
-		pointer-events: none;
-		z-index: -1;
-	}
-
-	.orb {
-		position: absolute;
-		width: 60vw;
-		height: 60vw;
-		border-radius: 50%;
-		filter: blur(100px);
-		opacity: 0.15;
-		animation: float 20s infinite ease-in-out;
-	}
-
-	/* Light Mode Enhancements for Global Background */
-	:global([data-theme="light"]) .orb {
-		opacity: 0.3; /* Increased for visibility on light bg */
-		filter: blur(80px); /* Sharper for better definition */
-	}
-
-	.orb.primary {
-		top: -10%;
-		left: -10%;
-		background: var(--color-primary);
-		animation-delay: 0s;
-	}
-
-	.orb.accent {
-		bottom: -10%;
-		right: -10%;
-		background: var(--color-accent);
-		animation-delay: -10s;
-	}
-
-	@keyframes float {
-		0%,
-		100% {
-			transform: translate(0, 0) scale(1);
-		}
-		33% {
-			transform: translate(5%, 10%) scale(1.1);
-		}
-		66% {
-			transform: translate(-5%, 5%) scale(0.95);
-		}
-	}
-
-	@media (max-width: 768px) {
-		.orb {
-			width: 100vw;
-			height: 100vw;
-			opacity: 0.15;
-		}
-	}
+        .footer-grid,
+        .footer-bottom {
+            align-items: flex-start;
+            flex-direction: column;
+        }
+    }
 </style>
-
-<script>
-	import { auth } from "../lib/firebase";
-	import {
-		onAuthStateChanged,
-		signOut,
-		GoogleAuthProvider,
-		signInWithPopup,
-	} from "firebase/auth";
-
-	// Make login function global for Pricing component
-	// @ts-ignore
-	window.openLoginPopup = async () => {
-		const provider = new GoogleAuthProvider();
-		try {
-			await signInWithPopup(auth, provider);
-			// Auth state listener will handle UI updates
-		} catch (error) {
-			console.error("Login Failed:", error);
-		}
-	};
-
-	// Elements
-	const menuBtn = document.getElementById("user-menu-btn");
-	const dropdown = document.getElementById("user-dropdown");
-	const signInLink = document.getElementById("nav-signin");
-	const profileLink = document.getElementById("nav-profile");
-	const logoutBtn = document.getElementById("nav-logout");
-	const themeToggleBtn = document.getElementById("dropdown-theme-toggle");
-	const sunIcon = themeToggleBtn?.querySelector(
-		".theme-icon-sun",
-	) as HTMLElement;
-	const moonIcon = themeToggleBtn?.querySelector(
-		".theme-icon-moon",
-	) as HTMLElement;
-
-	// Toggle Dropdown or Login
-	menuBtn?.addEventListener("click", (e) => {
-		e.stopPropagation();
-		if (auth.currentUser) {
-			// If logged in, toggle dropdown
-			dropdown?.classList.toggle("show");
-			menuBtn.classList.toggle("active");
-		} else {
-			// If logged out, open login popup directly
-			// @ts-ignore
-			window.openLoginPopup();
-		}
-	});
-
-	// Close Dropdown on outside click
-	document.addEventListener("click", (e) => {
-		if (
-			dropdown?.classList.contains("show") &&
-			!menuBtn?.contains(e.target as Node) &&
-			!dropdown.contains(e.target as Node)
-		) {
-			dropdown.classList.remove("show");
-			menuBtn?.classList.remove("active");
-		}
-	});
-
-	// Auth State Listener
-	onAuthStateChanged(auth, (user) => {
-		if (user) {
-			// Logged In
-			if (signInLink) signInLink.style.display = "none";
-			if (profileLink) profileLink.style.display = "flex";
-			if (logoutBtn) logoutBtn.style.display = "flex";
-
-			// Update Trigger Icon to Avatar
-			if (menuBtn) {
-				menuBtn.innerHTML = ""; // Clear icon
-				const img = document.createElement("img");
-				const fallbackUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.email || "User")}&background=random`;
-
-				img.src = user.photoURL || fallbackUrl;
-				img.alt = "Profile";
-				img.className = "user-avatar";
-
-				// Fix for Google images returning 403 on some origins
-				img.referrerPolicy = "no-referrer";
-
-				// Fallback if image fails to load
-				img.onerror = () => {
-					if (img.src !== fallbackUrl) {
-						img.src = fallbackUrl;
-					}
-				};
-
-				menuBtn.appendChild(img);
-			}
-		} else {
-			// Logged Out
-			if (signInLink) signInLink.style.display = "flex";
-			if (profileLink) profileLink.style.display = "none";
-			if (logoutBtn) logoutBtn.style.display = "none";
-
-			// Reset Trigger to Person Icon
-			if (menuBtn) {
-				menuBtn.innerHTML =
-					'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="person-icon"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>';
-			}
-		}
-	});
-
-	// Logout Handler
-	logoutBtn?.addEventListener("click", async () => {
-		try {
-			await signOut(auth);
-			window.location.reload();
-		} catch (error) {
-			console.error("Logout Error:", error);
-		}
-	});
-
-	// Theme Toggle Handler
-	const updateThemeIcon = (theme: string) => {
-		if (theme === "light") {
-			if (sunIcon) sunIcon.style.display = "block";
-			if (moonIcon) moonIcon.style.display = "none";
-		} else {
-			if (sunIcon) sunIcon.style.display = "none";
-			if (moonIcon) moonIcon.style.display = "block";
-		}
-	};
-
-	// Initialize Theme Icon
-	const currentTheme =
-		document.documentElement.getAttribute("data-theme") === "light"
-			? "light"
-			: "dark";
-	updateThemeIcon(currentTheme);
-
-	themeToggleBtn?.addEventListener("click", () => {
-		const element = document.documentElement;
-		element.classList.add("theme-transition");
-
-		const isLight = element.getAttribute("data-theme") === "light";
-		const nextTheme = isLight ? "dark" : "light";
-
-		if (nextTheme === "light") {
-			element.setAttribute("data-theme", "light");
-		} else {
-			element.removeAttribute("data-theme");
-		}
-
-		localStorage.setItem("theme", nextTheme);
-		updateThemeIcon(nextTheme);
-
-		setTimeout(() => {
-			element.classList.remove("theme-transition");
-		}, 500);
-	});
-</script>

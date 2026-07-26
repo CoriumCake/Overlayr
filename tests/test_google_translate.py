@@ -124,6 +124,14 @@ class TestErrorHandling:
 
 class TestDomainGlossary:
     @pytest.mark.asyncio
+    async def test_ftb_rewards_ocr_error_is_corrected_without_network(self, service):
+        with patch.object(service, "_translate_single") as mock:
+            result = await service.translate(["Tasks", "Fiends"])
+
+        assert result == ["ภารกิจ", "รางวัล"]
+        mock.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_minecraft_labels_use_glossary_without_network(self, service):
         with patch.object(service, "_translate_single") as mock:
             result = await service.translate(["Chest", "Minecraft"])
@@ -142,3 +150,22 @@ class TestDomainGlossary:
             )
 
         assert result == "หน้าอก"
+
+    @pytest.mark.asyncio
+    async def test_ftb_sentence_canonicalizes_watering_can_term(self, service):
+        source = (
+            "Fill a wooden watering can with water and use it to water "
+            "your plants."
+        )
+        machine_translation = "เติมน้ำลงในกระป๋องไม้แล้วใช้รดน้ำต้นไม้"
+        with patch.object(
+            service,
+            "_translate_single",
+            return_value=machine_translation,
+        ):
+            result = await service.translate(
+                source,
+                context_texts=["Tasks", "Rewards", source],
+            )
+
+        assert result == "เติมน้ำลงในบัวรดน้ำไม้แล้วใช้รดน้ำต้นไม้"

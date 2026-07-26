@@ -1,108 +1,604 @@
 ---
 import { useTranslations } from "../i18n/ui";
 
+type Lang = "en" | "ja" | "es" | "th";
+
 interface Props {
-    lang?: "en" | "ja" | "es";
+    lang?: Lang;
 }
+
 const { lang = "en" } = Astro.props;
 const t = useTranslations(lang);
 
-const features = [
-    {
-        title: t("feature.latency.title"),
-        description: t("feature.latency.desc"),
-        icon: "⚡",
+const detailCopy: Record<Lang, {
+    eyebrow: string;
+    heading: string;
+    lede: string;
+    howEyebrow: string;
+    howHeading: string;
+    steps: Array<{ number: string; title: string; body: string }>;
+    privacyTitle: string;
+    privacyBody: string;
+}> = {
+    en: {
+        eyebrow: "Built around your game",
+        heading: "Translation that gets better the longer you play.",
+        lede: "Generic screen translators forget everything between sessions. Overlayr builds a lightweight memory for each game—without sending your screenshots to an analytics cloud.",
+        howEyebrow: "Three steps. Then keep playing.",
+        howHeading: "From unknown text to readable dialogue in seconds.",
+        steps: [
+            { number: "01", title: "Pick the game window", body: "Overlayr detects the running game and creates a dedicated local profile." },
+            { number: "02", title: "Frame the dialogue", body: "Select the subtitle or UI region once. The profile remembers it next time." },
+            { number: "03", title: "Teach the important words", body: "Correct names, items, and lore once. Your preferred translation is reused instantly." },
+        ],
+        privacyTitle: "Your game stays on your screen.",
+        privacyBody: "OCR runs locally. Product metrics never include screenshots, captured text, translations, or window titles.",
     },
-    {
-        title: t("feature.support.title"),
-        description: t("feature.support.desc"),
-        icon: "🎮",
+    th: {
+        eyebrow: "สร้างมาเพื่อเกมของคุณ",
+        heading: "คำแปลที่เก่งขึ้น ยิ่งคุณเล่นนานขึ้น",
+        lede: "ตัวแปลหน้าจอทั่วไปลืมทุกอย่างเมื่อปิดโปรแกรม แต่ Overlayr จดจำการตั้งค่าและคำศัพท์แยกตามเกม โดยไม่ส่งภาพหน้าจอไปยังระบบวิเคราะห์",
+        howEyebrow: "สามขั้นตอน แล้วเล่นต่อได้เลย",
+        howHeading: "จากข้อความที่อ่านไม่ออก สู่บทสนทนาที่เข้าใจได้ในไม่กี่วินาที",
+        steps: [
+            { number: "01", title: "เลือกหน้าต่างเกม", body: "Overlayr ตรวจจับเกมและสร้างโปรไฟล์เฉพาะไว้ในเครื่อง" },
+            { number: "02", title: "กำหนดพื้นที่บทสนทนา", body: "เลือกพื้นที่คำบรรยายหรือ UI ครั้งเดียว ระบบจะจำไว้ครั้งต่อไป" },
+            { number: "03", title: "สอนคำศัพท์สำคัญ", body: "แก้ชื่อ ไอเทม หรือศัพท์เฉพาะครั้งเดียว แล้วใช้คำที่คุณเลือกทันที" },
+        ],
+        privacyTitle: "เกมของคุณยังอยู่บนหน้าจอของคุณ",
+        privacyBody: "OCR ทำงานในเครื่อง และข้อมูลวัดผลจะไม่บันทึกภาพ ข้อความ คำแปล หรือชื่อหน้าต่าง",
     },
-    {
-        title: t("feature.live.title"),
-        description: t("feature.live.desc"),
-        icon: "🌐",
+    ja: {
+        eyebrow: "ゲームごとに最適化",
+        heading: "プレイするほど、翻訳があなたのゲームに馴染んでいく。",
+        lede: "一般的な画面翻訳とは違い、Overlayr はゲームごとの設定と用語をローカルに記憶します。",
+        howEyebrow: "3ステップですぐにプレイ",
+        howHeading: "読めないテキストを、数秒で理解できる会話へ。",
+        steps: [
+            { number: "01", title: "ゲーム画面を選択", body: "実行中のゲームを検出し、専用プロファイルを作成します。" },
+            { number: "02", title: "会話領域を指定", body: "字幕やUIの範囲を一度選ぶと、次回から自動で復元します。" },
+            { number: "03", title: "重要な用語を教える", body: "名前やアイテムを一度修正すれば、その訳をすぐ再利用します。" },
+        ],
+        privacyTitle: "ゲーム画面は、あなたの画面の中に。",
+        privacyBody: "OCR はローカルで動作し、画像・認識テキスト・翻訳・ウィンドウ名を分析データに含めません。",
     },
-    // Add more translations for others if needed, using generic keys for now
-];
+    es: {
+        eyebrow: "Creado alrededor de tu juego",
+        heading: "Una traducción que mejora cuanto más juegas.",
+        lede: "Overlayr recuerda localmente la región, los idiomas y tus términos preferidos para cada juego.",
+        howEyebrow: "Tres pasos. Sigue jugando.",
+        howHeading: "De texto desconocido a diálogos legibles en segundos.",
+        steps: [
+            { number: "01", title: "Elige la ventana", body: "Overlayr detecta el juego y crea un perfil local dedicado." },
+            { number: "02", title: "Marca el diálogo", body: "Selecciona una vez la zona de subtítulos o interfaz. Se recordará después." },
+            { number: "03", title: "Enseña los términos clave", body: "Corrige nombres y objetos una vez. Tu traducción se reutiliza al instante." },
+        ],
+        privacyTitle: "Tu juego permanece en tu pantalla.",
+        privacyBody: "El OCR se ejecuta localmente. Las métricas nunca incluyen capturas, texto, traducciones ni títulos de ventanas.",
+    },
+};
+
+const copy = detailCopy[lang];
 ---
 
-<section class="features">
+<section class="features-section" id="features">
     <div class="container">
-        <h2 class="section-title">{t("section.why")}</h2>
-        <div class="grid">
-            {
-                features.map((feature) => (
-                    <div class="glass-panel feature-card">
-                        <div class="icon-wrapper">{feature.icon}</div>
-                        <h3>{feature.title}</h3>
-                        <p>{feature.description}</p>
+        <div class="section-intro">
+            <span class="eyebrow">{copy.eyebrow}</span>
+            <h2 class="section-heading">{copy.heading}</h2>
+            <p class="section-lede">{copy.lede}</p>
+        </div>
+
+        <div class="bento-grid">
+            <article class="feature-card memory-card">
+                <div class="feature-index">01 / GAME MEMORY</div>
+                <div class="memory-ui" aria-hidden="true">
+                    <div class="memory-row active">
+                        <span class="game-initial">M</span>
+                        <span><strong>Moonlit Vale</strong><small>Japanese → English</small></span>
+                        <i>24 terms</i>
                     </div>
-                ))
-            }
+                    <div class="memory-row">
+                        <span class="game-initial purple">S</span>
+                        <span><strong>Starlight Archive</strong><small>Japanese → Thai</small></span>
+                        <i>11 terms</i>
+                    </div>
+                    <div class="memory-row">
+                        <span class="game-initial coral">N</span>
+                        <span><strong>Neon District</strong><small>Korean → English</small></span>
+                        <i>7 terms</i>
+                    </div>
+                </div>
+                <div>
+                    <h3>{t("feature.latency.title")}</h3>
+                    <p>{t("feature.latency.desc")}</p>
+                </div>
+            </article>
+
+            <article class="feature-card teach-card">
+                <div class="feature-index">02 / YOUR WORDS</div>
+                <div class="correction-ui">
+                    <span class="term-label">Original</span>
+                    <strong>星喰い</strong>
+                    <span class="term-label">Use this translation</span>
+                    <div class="correction-input">Star Eater <i>Saved</i></div>
+                </div>
+                <div>
+                    <h3>{t("feature.support.title")}</h3>
+                    <p>{t("feature.support.desc")}</p>
+                </div>
+            </article>
+
+            <article class="feature-card overlay-card">
+                <div>
+                    <div class="feature-index">03 / IN THE MOMENT</div>
+                    <h3>{t("feature.live.title")}</h3>
+                    <p>{t("feature.live.desc")}</p>
+                </div>
+                <div class="latency-readout" aria-hidden="true">
+                    <span class="pulse"></span>
+                    <div><strong>LIVE</strong><small>capture active</small></div>
+                    <b>OCR</b>
+                </div>
+            </article>
+        </div>
+    </div>
+</section>
+
+<section class="how-section" id="how-it-works">
+    <div class="container">
+        <div class="how-header">
+            <div>
+                <span class="eyebrow">{copy.howEyebrow}</span>
+                <h2 class="section-heading">{copy.howHeading}</h2>
+            </div>
+            <p>
+                No browser tabs. No copy and paste. No breaking the scene to understand what happens next.
+            </p>
+        </div>
+
+        <div class="steps">
+            {copy.steps.map((step) => (
+                <article class="step">
+                    <span>{step.number}</span>
+                    <h3>{step.title}</h3>
+                    <p>{step.body}</p>
+                </article>
+            ))}
+        </div>
+
+        <div class="privacy-band">
+            <div class="privacy-mark" aria-hidden="true">LOCAL</div>
+            <div>
+                <h3>{copy.privacyTitle}</h3>
+                <p>{copy.privacyBody}</p>
+            </div>
+            <ul>
+                <li>Local profile storage</li>
+                <li>Privacy-safe metrics</li>
+                <li>No game injection</li>
+            </ul>
         </div>
     </div>
 </section>
 
 <style>
-    .features {
+    .features-section,
+    .how-section {
         padding-block: var(--space-xl);
     }
 
-    .section-title {
-        text-align: center;
-        font-size: var(--text-h2);
-        margin-bottom: var(--space-xl);
+    .section-intro {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 0.55fr);
+        column-gap: 4rem;
+        align-items: end;
     }
 
-    .grid {
+    .section-intro .eyebrow,
+    .section-intro .section-heading {
+        grid-column: 1;
+    }
+
+    .section-intro .section-lede {
+        grid-column: 2;
+        grid-row: 1 / span 2;
+        margin-top: 0;
+    }
+
+    .bento-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-        gap: var(--space-lg);
+        grid-template-columns: 1.12fr 0.88fr;
+        gap: 1rem;
+        margin-top: clamp(3rem, 6vw, 5rem);
     }
 
     .feature-card {
-        padding: var(--space-lg);
-        background: rgba(255, 255, 255, 0.9);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 1px solid rgba(255, 255, 255, 0.5);
-        border-radius: 1rem;
-        box-shadow:
-            0 20px 40px -10px rgba(0, 0, 0, 0.1),
-            0 0 20px rgba(255, 255, 255, 0.2);
-        transition:
-            transform 0.3s ease,
-            background 0.3s ease,
-            border-color 0.3s ease;
-    }
-
-    .feature-card:hover {
-        transform: translateY(-5px);
-        border-color: var(--color-primary);
-    }
-
-    .icon-wrapper {
-        font-size: 2.5rem;
-        margin-bottom: var(--space-md);
-        background: rgba(0, 0, 0, 0.05); /* Light grey background for icon */
-        width: 64px;
-        height: 64px;
         display: flex;
+        min-height: 400px;
+        padding: clamp(1.5rem, 3vw, 2.25rem);
+        overflow: hidden;
+        border: 1px solid var(--color-border);
+        border-radius: 1.2rem;
+        flex-direction: column;
+        justify-content: space-between;
+        background: #111411;
+    }
+
+    .feature-card h3 {
+        max-width: 450px;
+        margin-bottom: 0.75rem;
+        font-size: clamp(1.5rem, 3vw, 2.25rem);
+    }
+
+    .feature-card p {
+        max-width: 530px;
+        font-size: 0.98rem;
+    }
+
+    .feature-index {
+        color: #6f766d;
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+    }
+
+    .memory-card {
+        position: relative;
+        background:
+            radial-gradient(circle at 100% 0, rgba(217, 255, 99, 0.08), transparent 45%),
+            #111411;
+    }
+
+    .memory-ui {
+        display: flex;
+        margin: 2rem 0;
+        flex-direction: column;
+        gap: 0.6rem;
+        transform: rotate(-1.5deg);
+    }
+
+    .memory-row {
+        display: grid;
+        padding: 0.8rem;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        border-radius: 0.75rem;
+        grid-template-columns: 40px 1fr auto;
         align-items: center;
-        justify-content: center;
-        border-radius: 12px;
-        border: 1px solid rgba(0, 0, 0, 0.1);
+        gap: 0.75rem;
+        color: #8b9288;
+        background: rgba(255, 255, 255, 0.025);
+        font-size: 0.7rem;
     }
 
-    h3 {
-        font-size: var(--text-h3);
-        margin-bottom: var(--space-sm);
-        color: #1a1a1a; /* Force dark text */
+    .memory-row.active {
+        border-color: var(--color-border-strong);
+        background: rgba(217, 255, 99, 0.06);
+        transform: translateX(1rem);
     }
 
-    p {
-        color: #666; /* Force dark muted text */
-        font-size: var(--text-body);
+    .game-initial {
+        display: grid;
+        width: 36px;
+        height: 36px;
+        place-items: center;
+        border-radius: 0.55rem;
+        color: #101409;
+        background: var(--color-primary);
+        font-family: var(--font-heading);
+        font-weight: 700;
+    }
+
+    .game-initial.purple {
+        color: #fff;
+        background: var(--color-accent);
+    }
+
+    .game-initial.coral {
+        color: #1c100c;
+        background: var(--color-coral);
+    }
+
+    .memory-row > span:nth-child(2) {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .memory-row strong {
+        color: #e5e9e1;
+        font-size: 0.8rem;
+    }
+
+    .memory-row small {
+        color: #72796f;
+    }
+
+    .memory-row i {
+        font-style: normal;
+    }
+
+    .teach-card {
+        background:
+            radial-gradient(circle at 100% 100%, rgba(157, 140, 255, 0.13), transparent 52%),
+            #111411;
+    }
+
+    .correction-ui {
+        display: flex;
+        margin: 2rem 0;
+        padding: 1rem;
+        border: 1px solid rgba(157, 140, 255, 0.2);
+        border-radius: 0.8rem;
+        flex-direction: column;
+        background: rgba(8, 9, 9, 0.55);
+    }
+
+    .term-label {
+        color: #767d74;
+        font-size: 0.63rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+
+    .correction-ui > strong {
+        margin: 0.3rem 0 1rem;
+        color: #fff;
+        font-size: 1.15rem;
+    }
+
+    .correction-input {
+        display: flex;
+        margin-top: 0.35rem;
+        padding: 0.75rem;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 0.45rem;
+        align-items: center;
+        justify-content: space-between;
+        color: #e9ece6;
+        background: #0d0f0d;
+        font-size: 0.82rem;
+    }
+
+    .correction-input i {
+        padding: 0.2rem 0.45rem;
+        border-radius: 999px;
+        color: var(--color-primary);
+        background: rgba(217, 255, 99, 0.08);
+        font-size: 0.58rem;
+        font-style: normal;
+        font-weight: 700;
+        text-transform: uppercase;
+    }
+
+    .overlay-card {
+        min-height: 270px;
+        grid-column: 1 / -1;
+        flex-direction: row;
+        align-items: flex-end;
+        background:
+            linear-gradient(120deg, rgba(255, 140, 103, 0.06), transparent 45%),
+            #111411;
+    }
+
+    .latency-readout {
+        display: flex;
+        min-width: 260px;
+        padding: 1rem 1.15rem;
+        border: 1px solid rgba(217, 255, 99, 0.18);
+        border-radius: 0.8rem;
+        align-items: center;
+        gap: 0.8rem;
+        background: rgba(217, 255, 99, 0.045);
+    }
+
+    .latency-readout .pulse {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--color-primary);
+        box-shadow: 0 0 18px rgba(217, 255, 99, 0.8);
+    }
+
+    .latency-readout div {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+    }
+
+    .latency-readout strong {
+        color: var(--color-primary);
+        font-size: 0.7rem;
+        letter-spacing: 0.12em;
+    }
+
+    .latency-readout small {
+        color: #798075;
+    }
+
+    .latency-readout b {
+        color: #fff;
+        font-family: var(--font-heading);
+        font-size: 1.4rem;
+    }
+
+    .how-section {
+        border-top: 1px solid var(--color-border);
+        background: #0a0d0a;
+    }
+
+    .how-header {
+        display: grid;
+        grid-template-columns: 1fr minmax(250px, 0.42fr);
+        align-items: end;
+        gap: 4rem;
+    }
+
+    .how-header > p {
+        padding-bottom: 0.5rem;
+    }
+
+    .steps {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        margin-top: clamp(3.5rem, 7vw, 6rem);
+        border-top: 1px solid var(--color-border);
+    }
+
+    .step {
+        min-height: 270px;
+        padding: 1.75rem 2rem 1rem 0;
+        border-right: 1px solid var(--color-border);
+    }
+
+    .step + .step {
+        padding-left: 2rem;
+    }
+
+    .step:last-child {
+        border-right: 0;
+    }
+
+    .step > span {
+        color: var(--color-primary);
+        font-family: var(--font-heading);
+        font-size: 0.8rem;
+    }
+
+    .step h3 {
+        margin-top: 4rem;
+        font-size: 1.35rem;
+    }
+
+    .step p {
+        margin-top: 0.8rem;
+        font-size: 0.92rem;
+    }
+
+    .privacy-band {
+        display: grid;
+        margin-top: 4rem;
+        padding: clamp(1.5rem, 4vw, 2.75rem);
+        border: 1px solid var(--color-border-strong);
+        border-radius: 1.2rem;
+        grid-template-columns: auto 1fr auto;
+        align-items: center;
+        gap: clamp(1.5rem, 4vw, 3rem);
+        background: rgba(217, 255, 99, 0.035);
+    }
+
+    .privacy-mark {
+        display: grid;
+        width: 76px;
+        height: 76px;
+        place-items: center;
+        border: 1px solid rgba(217, 255, 99, 0.24);
+        border-radius: 50%;
+        color: var(--color-primary);
+        font-size: 0.63rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+    }
+
+    .privacy-band h3 {
+        margin-bottom: 0.5rem;
+        font-size: 1.5rem;
+    }
+
+    .privacy-band p {
+        max-width: 600px;
+        font-size: 0.9rem;
+    }
+
+    .privacy-band ul {
+        display: grid;
+        gap: 0.4rem;
+        color: #9ba298;
+        font-size: 0.75rem;
+        list-style: none;
+    }
+
+    .privacy-band li::before {
+        margin-right: 0.55rem;
+        color: var(--color-primary);
+        content: "✓";
+    }
+
+    @media (max-width: 860px) {
+        .section-intro,
+        .how-header {
+            display: block;
+        }
+
+        .section-intro .section-lede,
+        .how-header > p {
+            margin-top: 1.5rem;
+        }
+
+        .bento-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .overlay-card {
+            grid-column: auto;
+        }
+
+        .steps {
+            grid-template-columns: 1fr;
+        }
+
+        .step,
+        .step + .step {
+            min-height: auto;
+            padding: 1.5rem 0;
+            border-right: 0;
+            border-bottom: 1px solid var(--color-border);
+        }
+
+        .step h3 {
+            margin-top: 2rem;
+        }
+
+        .privacy-band {
+            grid-template-columns: auto 1fr;
+        }
+
+        .privacy-band ul {
+            grid-column: 2;
+        }
+    }
+
+    @media (max-width: 580px) {
+        .feature-card {
+            min-height: 380px;
+        }
+
+        .overlay-card {
+            align-items: stretch;
+            flex-direction: column;
+        }
+
+        .latency-readout {
+            min-width: 0;
+        }
+
+        .memory-row {
+            grid-template-columns: 36px 1fr;
+        }
+
+        .memory-row i {
+            display: none;
+        }
+
+        .memory-row.active {
+            transform: none;
+        }
+
+        .privacy-band {
+            grid-template-columns: 1fr;
+        }
+
+        .privacy-band ul {
+            grid-column: auto;
+        }
     }
 </style>

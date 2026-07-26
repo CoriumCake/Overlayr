@@ -1,5 +1,6 @@
 """Tests for TextPostProcessor — regex cleaning and custom rules."""
 import pytest
+
 from overlayr.core.post_processing import TextPostProcessor
 
 
@@ -13,9 +14,9 @@ class TestCleanText:
     def test_empty_string(self, processor):
         assert processor.clean_text("") == ""
 
-    def test_removes_isolated_symbols(self, processor):
+    def test_preserves_isolated_symbols(self, processor):
         result = processor.clean_text("Hello | World")
-        assert "|" not in result
+        assert "|" in result
         assert "Hello" in result
         assert "World" in result
 
@@ -50,10 +51,9 @@ class TestCorrectText:
     def test_empty_returns_empty(self, processor):
         assert processor.correct_text("") == ""
 
-    def test_applies_custom_rules_before_correction(self, processor):
-        # Even without SymSpell, custom rules should still apply
+    def test_automatic_correction_is_disabled(self, processor):
         result = processor.correct_text("H0ME")
-        assert "home" in result.lower()
+        assert result == "H0ME"
 
 
 class TestFuzzyMatch:

@@ -44,7 +44,7 @@ export const POST: APIRoute = async ({ request }) => {
                     customer: customerId,
                 });
 
-                const features = entitlements.data.map((e) => e.feature.lookup_key);
+                const features = entitlements.data.map((e) => e.lookup_key);
 
                 await db.collection('users').doc(uid).set({
                     stripeCustomerId: customerId,
@@ -90,7 +90,7 @@ export const POST: APIRoute = async ({ request }) => {
                     const entitlements = await stripe.entitlements.activeEntitlements.list({
                         customer: customerId,
                     });
-                    const features = entitlements.data.map((e) => e.feature.lookup_key);
+                    const features = entitlements.data.map((e) => e.lookup_key);
 
                     await userDoc.ref.update({
                         isPro: features.length > 0,
@@ -117,7 +117,7 @@ export const POST: APIRoute = async ({ request }) => {
                 const entitlements = await stripe.entitlements.activeEntitlements.list({
                     customer: customerId,
                 });
-                const features = entitlements.data.map((e) => e.feature.lookup_key);
+                const features = entitlements.data.map((e) => e.lookup_key);
 
                 await userDoc.ref.update({
                     isPro: features.length > 0,

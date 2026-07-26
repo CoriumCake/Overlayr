@@ -7,6 +7,8 @@ from typing import List, Optional, Union
 from deep_translator import GoogleTranslator
 
 from .translation_glossary import (
+    canonicalize_embedded_translation,
+    correct_contextual_ocr_labels,
     detect_translation_domain,
     lookup_translation_override,
 )
@@ -123,8 +125,13 @@ class GoogleTranslateService:
             return text
 
         is_single = isinstance(text, str)
-        texts = [text] if is_single else text
-        domain = detect_translation_domain(context_texts or texts)
+        texts = correct_contextual_ocr_labels(
+            [text] if is_single else text
+        )
+        domain_context = correct_contextual_ocr_labels(
+            context_texts or texts
+        )
+        domain = detect_translation_domain(domain_context)
 
         # Check cache
         cache_prefix = f"{self.source}_{self.target}_{domain}_"
@@ -187,6 +194,14 @@ class GoogleTranslateService:
             # Update cache and results
             for idx, trans in zip(indices_to_translate, translated):
                 key = cache_prefix + texts[idx]
+                if trans is not None:
+                    trans = canonicalize_embedded_translation(
+                        texts[idx],
+                        trans,
+                        source=self.source,
+                        target=self.target,
+                        domain=domain,
+                    )
                 results[idx] = trans
                 if trans is None:
                     continue
