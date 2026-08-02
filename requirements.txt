@@ -7,6 +7,7 @@ aiohttp
 deep-translator
 Pillow
 opencv-python
+numpy
 keyboard
 winocr
 langdetect
@@ -17,3 +18,4 @@ requests
 winsdk
 
 onnxruntime-directml
+pyclipper

@@ -15,6 +15,7 @@ from ..ui.components.source_card import SourceCard
 from ..ui.components.loading_spinner import LoadingSpinner
 # from ..ui.components.profile_menu import ProfileMenu
 from .theme import get_theme, apply_theme_to_window
+from ..utils.image_utils import calculate_similarity
 
 class ROISelector(ctk.CTkToplevel):
     def __init__(self, parent, on_confirm):
@@ -1003,16 +1004,8 @@ class MainWindow(ctk.CTk):
         """
         if not self.is_streaming: return
         
+        # User requested: always show translation overlay, don't hide when switching windows
         is_active = True
-        try:
-            import ctypes
-            active_hwnd = ctypes.windll.user32.GetForegroundWindow()
-            if self.selected_source.get('type') == 'window':
-                target_hwnd = self.selected_source.get('id')
-                # Strict check: Active window must be target
-                if active_hwnd != target_hwnd:
-                    is_active = False
-        except: pass
         
         # Check for state change
         prev_state = getattr(self, 'is_target_active', True)
@@ -1026,25 +1019,9 @@ class MainWindow(ctk.CTk):
              if not is_active:
                  self.overlay.show_results([], 0, 0, visible=False)
              else:
-                 # If becoming active, show known data?
-                 # Or wait for next update?
-                 # We can just set visible=True with empty/current results?
-                 # Ideally show_results(..., visible=True) with LAST results?
-                 # For now, just rely on next update or just ensure window is shown?
-                 # To force show, we can call show_results with visible=True but no data clearing?
-                 # Actually show_results clears canvas if new results passed.
-                 # Let's just update the flag. The stream loop updates overlay anyway.
-                 # BUT user wants INSTANT show.
-                 # If we have last results, maybe redraw?
-                 # For now, just hiding instantly is the priority.
-                 # Showing will happen on next frame (which is processed in background).
-                 # Showing will happen on next frame (which is processed in background).
-                 
                  # NEW: Instant Show using Cached Data
                  last_data = getattr(self, 'last_overlay_data', None)
                  if last_data:
-                     # print("Instant Show Restore!", flush=True)
-                     # args: results, x, y, geometry
                      results, x, y, geometry = last_data
                      if geometry:
                         self.overlay.set_geometry(geometry)
@@ -1088,23 +1065,25 @@ class MainWindow(ctk.CTk):
                 if image and bounds:
                     last_bounds = bounds
                     
-
+                    # NEW: Image similarity check (>85% -> skip and delay 0.2s)
+                    last_img = getattr(self, 'last_translated_image', None)
+                    if last_img:
+                        sim = calculate_similarity(image, last_img)
+                        if sim > 85.0:
+                            # print(f"Image similar ({sim:.1f}%), skipping frame.")
+                            time.sleep(0.2)
+                            continue
+                            
+                    self.last_translated_image = image
                     
                     # Focus check moved to _check_visibility loop
                     is_active = getattr(self, 'is_target_active', True)
-
-                    # if not is_active:
-                    #      self.after(0, lambda: self.overlay.show_results([], 0, 0, visible=False)) 
-                    
-                    # Start new processing 
                     
                     # Start new processing
                     pending_future = asyncio.run_coroutine_threadsafe(
                         self.process_image(image, bounds), 
                         self.loop
                     )
-
-
                 
             except Exception as e:
                 print(f"Stream error: {e}")

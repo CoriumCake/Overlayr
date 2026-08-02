@@ -1,6 +1,20 @@
 import cv2
 import numpy as np
+import os
 
+try:
+    import onnxruntime as ort
+    HAS_ORT = True
+except ImportError:
+    HAS_ORT = False
+
+try:
+    import pyclipper
+    HAS_PYCLIPPER = True
+except ImportError:
+    HAS_PYCLIPPER = False
+
+_dbnet_session = None
 def preprocess_image_for_ocr(image_source):
     """
     Reads an image and applies preprocessing to improve OCR accuracy.
@@ -555,3 +569,123 @@ def apply_cuts_to_original(image_path):
     img_final = cv2.resize(img_scaled_bgr, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_AREA)
     
     return img_final
+
+
+def get_expanded_polygon(contour, expand_ratio=2.5):
+    """Expands bounding polygon for text regions using pyclipper."""
+    if not HAS_PYCLIPPER:
+        return contour
+        
+    area = cv2.contourArea(contour)
+    perimeter = cv2.arcLength(contour, True)
+    if perimeter == 0:
+        return contour
+        
+    # Calculate expansion distance (DBNet formula)
+    distance = area * expand_ratio / perimeter
+    
+    # Expand polygon
+    offset = pyclipper.PyclipperOffset()
+    offset.AddPath(contour.reshape(-1, 2).tolist(), pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
+    expanded = offset.Execute(distance)
+    
+    if len(expanded) == 0:
+        return contour
+        
+    # Execute can return multiple polygons, we take the largest one
+    largest_expanded = max(expanded, key=lambda p: cv2.contourArea(np.array(p).astype(np.int32)))
+    expanded_polygon = np.array(largest_expanded).reshape(-1, 1, 2).astype(np.int32)
+    
+    # Simplify polygon slightly to reduce point count
+    epsilon = 0.005 * cv2.arcLength(expanded_polygon, True)
+    approx_polygon = cv2.approxPolyDP(expanded_polygon, epsilon, True)
+    
+    return approx_polygon
+
+
+def detect_text_regions_dbnet(image_source, model_path=None):
+    """
+    Detects text regions using the DBNet ONNX model.
+    Falls back to bubble detection if onnxruntime or the model is missing.
+    
+    Args:
+        image_source: Path to image (str) or numpy array (BGR).
+        model_path: Optional path to the ONNX model file.
+                    Defaults to assets/models/Detec_Manga-English.onnx relative to project.
+    """
+    global _dbnet_session
+    if not HAS_ORT:
+        print("onnxruntime is not installed. Falling back to bubble detection.")
+        return detect_speech_bubbles(image_source)
+
+    if isinstance(image_source, str):
+        orig_img = cv2.imread(image_source)
+        if orig_img is None: return []
+    else:
+        orig_img = image_source
+        if len(orig_img.shape) == 2:
+            orig_img = cv2.cvtColor(orig_img, cv2.COLOR_GRAY2BGR)
+
+    orig_h, orig_w = orig_img.shape[:2]
+    target_size = 640
+    
+    if _dbnet_session is None:
+        if model_path is None:
+            # Try common locations
+            candidates = [
+                os.path.join(os.path.dirname(__file__), '..', '..', '..', 'assets', 'models', 'Detec_Manga-English.onnx'),
+                os.path.join(os.path.dirname(__file__), '..', 'assets', 'models', 'Detec_Manga-English.onnx'),
+            ]
+            for c in candidates:
+                c = os.path.abspath(c)
+                if os.path.exists(c):
+                    model_path = c
+                    break
+        
+        if model_path is None or not os.path.exists(model_path):
+             print(f"DBNet model not found. Falling back to bubble detection.")
+             return detect_speech_bubbles(image_source)
+        
+        # Load ONNX model
+        _dbnet_session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+        
+    img = cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB)
+    img_resized = cv2.resize(img, (target_size, target_size))
+    
+    # Normalize: (I/255.0 - mean) / std
+    img_normalized = img_resized.astype(np.float32) / 255.0
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    img_normalized = (img_normalized - mean) / std
+    
+    # HWC to CHW and add batch dimension
+    tensor = np.transpose(img_normalized, (2, 0, 1))
+    tensor = np.expand_dims(tensor, axis=0)
+    
+    input_name = _dbnet_session.get_inputs()[0].name
+    outputs = _dbnet_session.run(None, {input_name: tensor})
+    
+    prob_map = outputs[0]
+    if len(prob_map.shape) == 4:
+        prob = prob_map[0, 0]
+    else:
+        prob = prob_map[0]
+        
+    # Scale back to original resolution
+    prob = cv2.resize(prob, (orig_w, orig_h))
+    
+    # Binarize
+    threshold = 0.15
+    mask = (prob > threshold).astype(np.uint8) * 255
+    
+    # Extract contours
+    contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    
+    polygons = []
+    for contour in contours:
+        if cv2.contourArea(contour) < 10:
+            continue
+        poly = get_expanded_polygon(contour, expand_ratio=2.5)
+        polygons.append(poly)
+        
+    return polygons

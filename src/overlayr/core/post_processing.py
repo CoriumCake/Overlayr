@@ -92,13 +92,85 @@ class TextPostProcessor:
         
         return text
 
+    def _apply_ocr_corrections(self, text: str) -> str:
+        """
+        Regex-based OCR misreading corrections.
+        Ported from WindowOCR-Refining/ocr_postprocessor.py.
+        """
+        if not text: return text
+
+        # 1. PONT -> DONT
+        text = re.sub(r'\bPONT\b', 'DONT', text)
+        
+        # 2. PO -> DO (standalone)
+        text = re.sub(r'\bPO\b', 'DO', text)
+        
+        # 3. 1 -> I before specific verbs
+        text = re.sub(r"(^|\s)1(?=\s+(?:AM|CAN\'?T|DON\'?T|WAS|WILL|HAVE|HAD|SHOULD|COULD|MUST)\b)", r'\1I', text, flags=re.IGNORECASE)
+
+        # 4. 15 -> IS in context
+        text = re.sub(r'\bNAME\s+15\b', 'NAME IS', text)
+        text = re.sub(r'\b15(?=\s+(?:THAT|THIS|THE|IT|WHAT|THERE)\b)', 'IS', text)
+        
+        # 4.1: Standalone "15" with no other digits -> IS
+        digit_count = sum(c.isdigit() for c in text)
+        if digit_count == 2 and "15" in text.split(): 
+            text = re.sub(r'\b15\b', 'IS', text)
+        
+        # 5. € -> G
+        text = text.replace('€', 'G')
+        
+        # 6. Specific corrections
+        text = re.sub(r'\bBUT 1\b', 'BUT I', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bTHAN 1\b', 'THAN I', text, flags=re.IGNORECASE)
+        text = re.sub(r'\b1 G0T\b', 'I GOT', text, flags=re.IGNORECASE)
+        text = re.sub(r'\b0Nce\b', 'ONce', text)
+        text = re.sub(r'\beo\b', 'Go', text)
+        text = text.replace('•••', '. . .')
+        text = re.sub(r'\$ELF\b', 'SELF', text, flags=re.IGNORECASE)
+        
+        # Generic 0 -> O at word start
+        text = re.sub(r'\b0(?=[A-Za-z]{2,})', 'O', text)
+
+        # 7. OJT -> OUT
+        text = re.sub(r'\bOJT\b', 'OUT', text)
+        
+        # 8. 60 -> GO at start
+        if text.startswith("60 "):
+            text = "GO " + text[3:]
+        elif text == "60":
+            text = "GO"
+            
+        # 9. N& -> NG
+        text = re.sub(r'N&', 'NG', text)
+        
+        # 10. Strip leading/trailing non-alphanumeric artifacts
+        text = re.sub(r'^[\/\|\)\(\\]+\s*', '', text)
+        text = re.sub(r'\s*[\/\|\)\(\\]+$', '', text)
+        
+        # 11. 1 at start -> I
+        text = re.sub(r'^1(?=\s|$)', 'I', text)
+        
+        # 12. 5 mixed with letters -> S
+        def fix_5_to_S(match):
+            word = match.group(0)
+            if re.search(r'[A-Za-z]', word):
+                return word.replace('5', 'S')
+            return word
+        text = re.sub(r'\w+', fix_5_to_S, text)
+
+        return text
+
     def correct_text(self, text: str) -> str:
         """
         Apply SymSpell correction then Fuzzy fallback.
         """
         if not text: return text
         
-        # 0. Custom Rules (Pre-correction)
+        # 0. OCR-specific corrections (regex rules)
+        text = self._apply_ocr_corrections(text)
+        
+        # 1. Custom Rules (character-level substitutions)
         text = self._apply_custom_rules(text)
         
         if not self.sym_spell:

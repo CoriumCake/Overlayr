@@ -3,7 +3,7 @@ from typing import Optional, Tuple, Callable, List, Dict, Any
 from PIL import Image
 import numpy as np
 from ..services.windows_ocr import WindowsOCREngine
-from ..services.google_translate import GoogleTranslateService
+from ..services.deepseek_translate import DeepSeekTranslateService
 from ..services.validation_service import ValidationService
 from ..utils.singleton import SingletonMeta
 from PIL import ImageEnhance, ImageFilter
@@ -20,8 +20,8 @@ class AsyncEngine(metaclass=SingletonMeta):
         print("AsyncEngine: Init start...", flush=True)
         self.ocr_service = WindowsOCREngine()
         print("AsyncEngine: Windows OCR initialized.", flush=True)
-        self.translator_service = GoogleTranslateService()
-        print("AsyncEngine: Google Translate initialized.", flush=True)
+        self.translator_service = DeepSeekTranslateService()
+        print("AsyncEngine: DeepSeek Translate initialized.", flush=True)
         self.post_processor = TextPostProcessor()
         print("AsyncEngine: PostProcessor initialized.", flush=True)
         self._is_running = False
@@ -93,48 +93,7 @@ class AsyncEngine(metaclass=SingletonMeta):
         import time
         t0 = time.time()
         
-        # --- NEW PIPELINE (Optimized: MedianBlur > Gray/CLAHE > Upscale > Bin > CCA LUT) ---
-        import time
-        import os
-        
-        # Helper to log time and save debug images
-        last_time = time.perf_counter()
-        debug_dir = os.path.join(os.getcwd(), "debug_images")
-        # if not os.path.exists(debug_dir): os.makedirs(debug_dir) # Only create if needed
-        timestamp = int(time.time() * 1000)
-        
-        # TOGGLE: Debug Image Saving
-        SAVE_INTERMEDIATE_DEBUG = False
-        SAVE_FINAL_DEBUG = False
-
-        if SAVE_INTERMEDIATE_DEBUG or SAVE_FINAL_DEBUG:
-            if not os.path.exists(debug_dir):
-                os.makedirs(debug_dir, exist_ok=True)
-
-        def log_and_save(name, img_cv, suffix):
-            nonlocal last_time
-            now = time.perf_counter()
-            print(f"[DEBUG] Preprocessing - {name}: {(now - last_time)*1000:.2f} ms", flush=True)
-            last_time = now
-            
-            # Save debug image
-            if SAVE_INTERMEDIATE_DEBUG:
-                try:
-                    fname = f"step_{suffix}_{timestamp}.png"
-                    # cv2.imwrite expects BGR or Grayscale.
-                    cv2.imwrite(os.path.join(debug_dir, fname), img_cv)
-                except Exception as e:
-                    print(f"[DEBUG] Save Fail ({name}): {e}", flush=True)
-
-        # Convert PIL to CV2 (BGR)
-        padding = 50
-        open_cv_image = np.array(image.convert('RGB')) 
-        open_cv_image = open_cv_image[:, :, ::-1].copy()
-        
-        # 1. Smart Scaling (Optimize for Speed/Accuracy)
-        w, h = image.size
-        # The new WindowsOCREngine handles its own preprocessing (Grayscale, CLAHE, etc.)
-        # so we just pass the original PIL image to it.
+        # --- OCR Execution ---
         
         # Execute OCR
         ocr_start = time.perf_counter()

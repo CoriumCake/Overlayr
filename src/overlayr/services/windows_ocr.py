@@ -16,7 +16,7 @@ from winsdk.windows.storage import StorageFile, FileAccessMode
 from difflib import SequenceMatcher
 
 try:
-    from .ocr_preprocessor import preprocess_image_for_ocr, detect_speech_bubbles
+    from .ocr_preprocessor import preprocess_image_for_ocr, detect_speech_bubbles, detect_text_regions_dbnet
     HAS_OPENCV = True
 except ImportError:
     print("Warning: ocr_preprocessor not found. Advanced processing disabled.")
@@ -32,7 +32,8 @@ class TextLine:
         self.sources = {source} if source else set()
 
 class Rect:
-    def __init__(self, x, y, w, h):
+    def __init__(self, text, x, y, w, h):
+        self.text = text
         self.x, self.y, self.width, self.height = x, y, w, h
 
 async def get_software_bitmap_from_file(file_path):
@@ -242,7 +243,7 @@ def correct_geometry(ocr_result, technique, scale, img_shape, matrix_mode='auto'
             ys = [p[1] for p in corrected_corners]
             min_x, max_x = min(xs), max(xs)
             min_y, max_y = min(ys), max(ys)
-            new_rect = Rect(min_x / scale, min_y / scale, (max_x - min_x) / scale, (max_y - min_y) / scale)
+            new_rect = Rect(word.text, min_x / scale, min_y / scale, (max_x - min_x) / scale, (max_y - min_y) / scale)
             new_words.append(new_rect)
             
         lines.append(TextLine(line.text, new_words, source=technique))
@@ -323,8 +324,120 @@ def merge_text_lines(base_lines, new_lines):
             merged.append(new_line)
     return merged
 
+def cluster_text_lines(all_lines):
+    """
+    Pool-All → Spatial Clustering algorithm.
+    Groups duplicate/overlapping TextLines across techniques into single representatives.
+    Uses Text Similarity + IoU + Center Distance for clustering.
+    Representative Selection: Longest text wins (not frequency).
+    """
+    if not all_lines: return []
+    
+    clusters = []
+    
+    def get_box(line):
+        if not line.words: return 0, 0, 0, 0
+        lx = min([w.x for w in line.words])
+        ly = min([w.y for w in line.words])
+        lw = max([w.x+w.width for w in line.words]) - lx
+        lh = max([w.y+w.height for w in line.words]) - ly
+        return lx, ly, lw, lh
+        
+    unprocessed = list(all_lines)
+    while unprocessed:
+        seed = unprocessed.pop(0)
+        group = [seed]
+        
+        changed = True
+        while changed:
+            changed = False
+            i = 0
+            while i < len(unprocessed):
+                cand = unprocessed[i]
+                cx, cy, cw, ch = get_box(cand)
+                if cw == 0 or ch == 0: 
+                    i += 1
+                    continue
+                c_cx, c_cy = cx + cw/2.0, cy + ch/2.0
+                
+                is_close = False
+                for g in group:
+                    gx, gy, gw, gh = get_box(g)
+                    if gw == 0 or gh == 0: continue
+                    g_cx, g_cy = gx + gw/2.0, gy + gh/2.0
+                    
+                    x_overlap = max(0, min(gx+gw, cx+cw) - max(gx, cx))
+                    y_overlap = max(0, min(gy+gh, cy+ch) - max(gy, cy))
+                    intersection = x_overlap * y_overlap
+                    union = gw*gh + cw*ch - intersection
+                    iou = intersection / union if union > 0 else 0
+                    
+                    dist = math.sqrt((g_cx - c_cx)**2 + (g_cy - c_cy)**2)
+                    
+                    min_h = min(gh, ch)
+                    max_h = max(gh, ch)
+                    
+                    # 1. Check Text Similarity
+                    clean_cand = cand.text.strip()
+                    clean_g = g.text.strip()
+                    is_same_text = (clean_cand == clean_g) and (len(clean_cand) > 0)
+                    
+                    # Merge if texts are identical and they are in the same general vicinity
+                    if is_same_text and dist < max_h * 2.5:
+                        is_close = True
+                        break
+                        
+                    # 2. Strict Geometry Check (Fallback for different texts)
+                    if iou > 0.3 or dist < min_h * 0.4:
+                        is_close = True
+                        break
+                        
+                if is_close:
+                    group.append(cand)
+                    unprocessed.pop(i)
+                    changed = True
+                else:
+                    i += 1
+        clusters.append(group)
+        
+    final_lines = []
+    for group in clusters:
+        all_sources = set()
+        for g in group:
+            all_sources.update(g.sources)
+            
+        text_counts = {}
+        text_to_orig = {}
+        for g in group:
+            t = g.text.strip()
+            if not t: continue
+            
+            clean_t = t.replace(" ", "").upper()
+            if clean_t not in text_counts:
+                text_counts[clean_t] = 0
+                text_to_orig[clean_t] = g
+            text_counts[clean_t] += 1
+            
+            # Prefer longer raw text (more punctuation/spaces) for the same normalized content
+            if len(t) > len(text_to_orig[clean_t].text):
+                text_to_orig[clean_t] = g
+
+        if not text_counts:
+            best_line_obj = group[0]
+            best_line_obj.sources = all_sources
+            final_lines.append(best_line_obj)
+            continue
+            
+        # Sort by raw length (desc), then by frequency (desc)
+        best_clean = sorted(text_counts.keys(), key=lambda k: (len(text_to_orig[k].text), text_counts[k]), reverse=True)[0]
+        
+        best_line_obj = text_to_orig[best_clean]
+        best_line_obj.sources = all_sources
+        final_lines.append(best_line_obj)
+        
+    return final_lines
+
 def calculate_match_score(candidates, references):
-    from difflib import SequenceMatcher
     score = 0
     for cand in candidates:
         cand_text = cand.text.strip()
@@ -388,7 +501,6 @@ def filter_redundant_geometry(base_lines, geom_lines, technique_name="Geometry")
             if r_area > 0 and area_overlap > 0:
                 overlap_ratio = area_overlap / r_area
                 if overlap_ratio > 0.3:
-                    from difflib import SequenceMatcher
                     r_text = r_line.text.strip()
                     b_text = b_line.text.strip()
                     similarity = SequenceMatcher(None, r_text, b_text).ratio()
@@ -401,20 +513,244 @@ def filter_redundant_geometry(base_lines, geom_lines, technique_name="Geometry")
         if keep: filtered.append(r_line)
     return filtered
 
+def deduplicate_in_group(group_lines):
+    """
+    Multi-layer noise pruning within a text group.
+    Removes ghost lines from shear/rotate techniques using:
+    - Strict Merge (high overlap + high similarity)
+    - Soft Merge (same line + moderate similarity)
+    - Weak Line Pruning (weak source overlapping strong)
+    - Weak Containment (high overlap, regardless of text)
+    - Weak-Weak Containment
+    - Substring/Exact Match Drift
+    """
+    if not group_lines: return []
+    unique = []
+    
+    for line in group_lines:
+        is_dupe = False
+        l_box = line.words
+        if not l_box: continue
+        lx = min([w.x for w in l_box])
+        ly = min([w.y for w in l_box])
+        lw = max([w.x+w.width for w in l_box]) - lx
+        lh = max([w.y+w.height for w in l_box]) - ly
+        l_area = lw * lh
+        
+        for idx, ex_line in enumerate(unique):
+             if line is ex_line:
+                 is_dupe = True
+                 break
+                 
+             ex_box = ex_line.words
+             exx = min([w.x for w in ex_box])
+             exy = min([w.y for w in ex_box])
+             exw = max([w.x+w.width for w in ex_box]) - exx
+             exh = max([w.y+w.height for w in ex_box]) - exy
+             ex_area = exw * exh
+             
+             x_overlap = max(0, min(lx+lw, exx+exw) - max(lx, exx))
+             y_overlap = max(0, min(ly+lh, exy+exh) - max(ly, exy))
+             area_overlap = x_overlap * y_overlap
+             
+             min_area = min(l_area, ex_area)
+             ratio = area_overlap / min_area if min_area > 0 else 0
+             
+             # Vertical Overlap (Same line check)
+             min_h = min(lh, exh)
+             y_overlap_ratio = y_overlap / min_h if min_h > 0 else 0
+             
+             # Text Similarity
+             similarity = SequenceMatcher(None, line.text, ex_line.text).ratio()
+             sim_lower = SequenceMatcher(None, line.text.lower(), ex_line.text.lower()).ratio()
+             
+             # Centroid X distance
+             l_cx = lx + lw/2
+             ex_cx = exx + exw/2
+             dist_x = abs(l_cx - ex_cx)
+             max_w = max(lw, exw)
+             
+             # Strict Merge (High Area Overlap + Identical/High Sim)
+             if min_area > 0 and ratio > 0.5 and sim_lower > 0.8:
+                  is_dupe = True
+                  ex_line.sources.update(line.sources)
+                  break
+             
+             # Soft Merge (Same Line + Moderate Sim + Close Proximity)
+             if y_overlap_ratio > 0.5:
+                 if sim_lower > 0.85:
+                      is_dupe = True
+                      ex_line.sources.update(line.sources)
+                      break
+                 if sim_lower > 0.4 and dist_x < max_w * 0.8:
+                      n_sources_line = len(line.sources)
+                      n_sources_ex = len(ex_line.sources)
+                      # Safety: Don't merge Strong into Weak with low similarity
+                      if n_sources_line >= 3 and n_sources_ex < 3 and sim_lower < 0.7:
+                           pass  # Skip
+                      else:
+                           is_dupe = True
+                           ex_line.sources.update(line.sources)
+                           break
+                      
+             # Weak Line Pruning
+             n_sources_line = len(line.sources)
+             n_sources_ex = len(ex_line.sources)
+             is_weak_line = n_sources_line < 3
+             is_strong_ex = n_sources_ex >= 3
+             is_weak_ex = n_sources_ex < 3
+             is_strong_line = n_sources_line >= 3
+             
+             # Weak Containment: Weak heavily overlapping Strong
+             if (is_weak_line and is_strong_ex) and ratio > 0.6:
+                   is_dupe = True
+                   ex_line.sources.update(line.sources)
+                   break
+             
+             if (is_weak_ex and is_strong_line) and ratio > 0.6:
+                   is_dupe = True
+                   line.sources.update(ex_line.sources)
+                   unique[idx] = line
+                   break
+                   
+             # Weak-Weak Containment
+             l_cy, ex_cy = ly + lh/2, exy + exh/2
+             center_dist = math.sqrt((l_cx - ex_cx)**2 + (l_cy - ex_cy)**2)
+             
+             is_weak_weak_dupe = (ratio > 0.7) or \
+                                 (y_overlap_ratio > 0.4 and dist_x < max_w * 0.5 and sim_lower > 0.7) or \
+                                 (center_dist < 25.0 and sim_lower > 0.7)
+                                 
+             if is_weak_line and is_weak_ex and is_weak_weak_dupe:
+                   is_dupe = True
+                   if n_sources_line > n_sources_ex or (n_sources_line == n_sources_ex and len(line.text) > len(ex_line.text)):
+                        line.sources.update(ex_line.sources)
+                        unique[idx] = line
+                   else:
+                        ex_line.sources.update(line.sources)
+                   break
+
+             # Weak -> Strong Text-based merge with spatial confirmation
+             if (is_weak_line and is_strong_ex) or (is_weak_ex and is_strong_line):
+                  if (min_area > 0 and ratio > 0.1) or (y_overlap_ratio > 0.3 and dist_x < max_w * 0.5):
+                      if sim_lower > 0.35: 
+                           is_dupe = True
+                           if is_strong_line and is_weak_ex:
+                               unique[idx] = line
+                           elif is_weak_line and is_strong_ex:
+                               ex_line.sources.update(line.sources)
+                           break
+                           
+             # Substring/Exact Match Drift
+             if not is_dupe:
+                 clean_line_text = line.text.replace(" ", "")
+                 clean_ex_text = ex_line.text.replace(" ", "")
+                 
+                 is_exact = clean_line_text == clean_ex_text and center_dist < 50.0
+                 is_substring = (clean_line_text in clean_ex_text or clean_ex_text in clean_line_text) and center_dist < max_w * 1.5
+                 
+                 if is_exact or is_substring:
+                     is_dupe = True
+                     if len(line.text) > len(ex_line.text) or (len(line.text) == len(ex_line.text) and n_sources_line > n_sources_ex):
+                         line.sources.update(ex_line.sources)
+                         unique[idx] = line
+                     else:
+                         ex_line.sources.update(line.sources)
+                     break
+        if not is_dupe:
+            unique.append(line)
+    return unique
+
 def group_text_lines(final_lines, image):
     """
-    Groups text lines based on proximity if speech bubbles cannot be detected.
-    Re-adapted from WinOCR to just return grouping.
+    Groups text lines based on:
+    1. Speech Bubble Containment (DBNet Regions)
+    2. Word-by-word region assignment + Line Splitting
+    3. Column-Based Clustering
+    4. Proximity (if not in bubble)
     """
     if not HAS_OPENCV: return [{"lines": final_lines, "type": "page"}]
 
-    # Fallback to proximity clustering
-    ungrouped = list(final_lines)
-    proximity_groups = []
+    # 1. Detect Text Regions
+    text_regions = detect_text_regions_dbnet(image)
     
+    # 2. Assign to Text Regions
+    region_groups = [[] for _ in text_regions]
+    ungrouped = []
+    
+    for line in final_lines:
+        # Center of the line
+        if not line.words: 
+            ungrouped.append(line)
+            continue
+            
+        # Refined Assignment Logic: Word-by-Word Split
+        word_regions = []
+        for w in line.words:
+            containing_regions = []
+            points_to_check = [
+                (w.x, w.y),
+                (w.x + w.width, w.y),
+                (w.x, w.y + w.height),
+                (w.x + w.width, w.y + w.height),
+                (w.x + w.width/2, w.y + w.height/2)
+            ]
+            for i, cnt in enumerate(text_regions):
+                is_inside = False
+                for pt in points_to_check:
+                    if cv2.pointPolygonTest(cnt, pt, False) >= 0:
+                        is_inside = True
+                        break
+                if is_inside:
+                    area = cv2.contourArea(cnt)
+                    containing_regions.append((i, area))
+            
+            best_i = -1
+            if containing_regions:
+                containing_regions.sort(key=lambda x: x[1])
+                best_i = containing_regions[0][0]
+            
+            word_regions.append((w, best_i))
+            
+        # Group adjacent words by region
+        grouped_sublines = []
+        current_region = None
+        current_words = []
+        
+        for w, r in word_regions:
+            if r != current_region:
+                if current_words:
+                    grouped_sublines.append((current_region, current_words))
+                current_region = r
+                current_words = [w]
+            else:
+                current_words.append(w)
+        if current_words:
+            grouped_sublines.append((current_region, current_words))
+            
+        # Create sub-lines and assign
+        for r_id, words in grouped_sublines:
+            sub_text = " ".join([getattr(w, 'text', '') for w in words]).strip()
+            if not sub_text:
+                continue
+            
+            srcs = list(line.sources) if hasattr(line, 'sources') and line.sources else []
+            src = srcs[0] if srcs else None
+            sub_line = TextLine(sub_text, words, source=src)
+            if hasattr(line, 'sources'):
+                sub_line.sources = set(line.sources)
+                
+            if r_id == -1:
+                ungrouped.append(sub_line)
+            else:
+                region_groups[r_id].append(sub_line)
+        
+    # 3. Cluster Ungrouped by Proximity
+    proximity_groups = []
     while ungrouped:
         seed = ungrouped.pop(0)
         group = [seed]
+        
         changed = True
         while changed:
             changed = False
@@ -446,31 +782,101 @@ def group_text_lines(final_lines, image):
                     group.append(candidate)
                     ungrouped.pop(i)
                     changed = True
+        
         proximity_groups.append(group)
 
-    # Simplified deduction for brevity, let's keep it simple for now as we just need basic block merging
-    # as engine.py handles Manga mode merges anyway.
-    
+    # Format Output
     final_groups = []
+    
+    # Regions (Column-Based Clustering)
+    for i, lines in enumerate(region_groups):
+        if not lines: continue
+        
+        lines = deduplicate_in_group(lines)
+        if not lines: continue
+            
+        lines.sort(key=lambda l: min([w.y for w in l.words]) if l.words else 0)
+        
+        heights = []
+        for l in lines:
+            if l.words:
+                ly = min([w.y for w in l.words])
+                lh = max([w.y+w.height for w in l.words]) - ly
+                heights.append(lh)
+        avg_h = sum(heights)/len(heights) if heights else 20
+        
+        split_groups = []
+        if lines:
+            split_groups.append([lines[0]])
+            
+        for j in range(1, len(lines)):
+            curr = lines[j]
+            if not curr.words: continue
+            
+            curr_y_top = min([w.y for w in curr.words])
+            curr_x_max = max([w.x+w.width for w in curr.words])
+            curr_x_min = min([w.x for w in curr.words])
+            
+            best_group_idx = -1
+            max_overlap = -1
+            
+            for k, group in enumerate(split_groups):
+                prev = group[-1]
+                if not prev.words: continue
+                
+                prev_y_bottom = max([w.y+w.height for w in prev.words])
+                prev_x_max = max([w.x+w.width for w in prev.words])
+                prev_x_min = min([w.x for w in prev.words])
+                
+                gap = curr_y_top - prev_y_bottom
+                cutoff = avg_h * 1.0
+                
+                if gap > cutoff:
+                    continue 
+                    
+                overlap_min = max(prev_x_min, curr_x_min)
+                overlap_max = min(prev_x_max, curr_x_max)
+                h_overlap = overlap_max - overlap_min
+                
+                if h_overlap > 0:
+                    if h_overlap > max_overlap:
+                        max_overlap = h_overlap
+                        best_group_idx = k
+            
+            if best_group_idx != -1:
+                split_groups[best_group_idx].append(curr)
+            else:
+                split_groups.append([curr])
+        
+        for sub_id, subgroup in enumerate(split_groups):
+             final_groups.append({"type": "region", "id": f"{i}_{sub_id}" if sub_id > 0 else i, "lines": subgroup})
+            
+    # Proximity Blocks
     for i, lines in enumerate(proximity_groups):
         if lines:
+            lines = deduplicate_in_group(lines)
             lines.sort(key=lambda l: min([w.y for w in l.words]) if l.words else 0)
             final_groups.append({"type": "block", "id": i, "lines": lines})
             
     final_groups.sort(key=lambda g: min([w.y for w in g["lines"][0].words]) if g["lines"] and g["lines"][0].words else 0)
+    
     return final_groups
 
 
 class WindowsOCREngine:
     """
-    Advanced Windows 10/11 OCR combining 10 image processing techniques.
-    Adapted from the experimental WinOCR script.
+    Advanced Windows 10/11 OCR using Pool-All → Spatial Clustering pipeline.
+    Active techniques: baseline, thicken, simple_threshold, clahe (4 parallel).
+    Adapted from WindowOCR-Refining.
     """
+    
+    # Active techniques for production (optimized for speed ~0.5s)
+    ACTIVE_TECHNIQUES = ['baseline', 'thicken', 'simple_threshold', 'clahe']
     
     def __init__(self):
         self._language = "en"
         self._status_callback = None
-        print("WindowsOCREngine (Advanced) initialized.")
+        print("WindowsOCREngine (Pool-All Cluster) initialized.")
 
     def set_callback(self, callback):
         self._status_callback = callback
@@ -499,27 +905,25 @@ class WindowsOCREngine:
     
     async def extract_text(self, image: Image.Image) -> List[Tuple[List[List[int]], str, float]]:
         """
-        Executes parallel OCR using up to 10 techniques and merges results.
+        Pool-All → Spatial Clustering OCR pipeline.
+        1. Run active techniques in parallel
+        2. Pool all raw results into a single list
+        3. cluster_text_lines() to deduplicate and select representatives
         Returns standard format: [(bbox, text, conf), ...]
         """
         start_total = time.perf_counter()
         
         # Convert PIL to CV2 BGR for opencv ops in `run_ocr`
-        cv_img = cvImage = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        cv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
         
-        task1 = run_ocr(cv_img, self._language, technique='baseline')
-        task2 = run_ocr(cv_img, self._language, technique='threshold')
-        task3 = run_ocr(cv_img, self._language, technique='inverted')
-        task4 = run_ocr(cv_img, self._language, technique='thicken')
-        task5 = run_ocr(cv_img, self._language, technique='shear')
-        task6 = run_ocr(cv_img, self._language, technique='rotate')
-        task7 = run_ocr(cv_img, self._language, technique='rotate_cw')
-        task8 = run_ocr(cv_img, self._language, technique='shear_right')
-        task9 = run_ocr(cv_img, self._language, technique='simple_threshold')
-        task10 = run_ocr(cv_img, self._language, technique='clahe')
+        # --- Step 1: Run active techniques in parallel ---
+        tasks = []
+        tech_names = []
+        for tech in self.ACTIVE_TECHNIQUES:
+            tasks.append(run_ocr(cv_img, self._language, technique=tech))
+            tech_names.append(tech)
         
-        # Concurrent execution
-        results = await asyncio.gather(task1, task2, task3, task4, task5, task6, task7, task8, task9, task10)
+        results = await asyncio.gather(*tasks)
         
         def process_result(res, tech, scale, processed, mode='auto'):
             if res:
@@ -527,52 +931,33 @@ class WindowsOCREngine:
                  return correct_geometry(res, tech, scale, shape, matrix_mode=mode)
             return []
 
-        # Reconstruct and merge based on WinOCR logic
-        lines1 = process_result(results[0][0], 'baseline', results[0][1], results[0][2])
-        final_lines = list(lines1)
+        # --- Step 2: Pool all raw lines ---
+        all_raw_lines = []
+        for i, tech in enumerate(tech_names):
+            res, scale, processed, duration = results[i]
+            if res:
+                lines = process_result(res, tech, scale, processed)
+                all_raw_lines.extend(lines)
         
-        for i, tech in enumerate(['threshold', 'inverted', 'thicken', None, None, None, None, 'simple_threshold', 'clahe']):
-            if tech and results[i][0]:
-                final_lines = merge_text_lines(final_lines, process_result(results[i][0], tech, results[i][1], results[i][2]))
-                
-        reference_lines = list(final_lines) 
+        if not all_raw_lines:
+            end_total = time.perf_counter()
+            print(f"Windows OCR (Pool-All) Finished: {end_total - start_total:.2f}s (no results)")
+            return []
         
-        if results[7][0]: # shear_right
-            shear_r_lines = process_result(results[7][0], 'shear_right', results[7][1], results[7][2])
-            filtered_shear_r = filter_redundant_geometry(final_lines, shear_r_lines, technique_name="Shear_Right")
-            final_lines = merge_text_lines(final_lines, filtered_shear_r)
-            
-        reference_lines = list(final_lines)
-            
-        if results[4][0]: # shear
-            shear_lines = process_result(results[4][0], 'shear', results[4][1], results[4][2])
-            filtered_shear = filter_redundant_geometry(final_lines, shear_lines, technique_name="Shear")
-            final_lines = merge_text_lines(final_lines, filtered_shear)
-            
-        # Rotate (Tech 6 & 7)
-        for idx_res, tech_name in [(5, 'rotate'), (6, 'rotate_cw')]:
-            if results[idx_res][0]:
-                lines_fwd = process_result(results[idx_res][0], tech_name, results[idx_res][1], results[idx_res][2], mode='forward')
-                lines_inv = process_result(results[idx_res][0], tech_name, results[idx_res][1], results[idx_res][2], mode='inverse')
-                
-                score_fwd = calculate_match_score(lines_fwd, reference_lines)
-                score_inv = calculate_match_score(lines_inv, reference_lines)
-                
-                if score_fwd > score_inv * 1.2:
-                    best_score, best_lines = score_fwd, lines_fwd
-                else:
-                    best_score, best_lines = score_inv, lines_inv
-                    
-                threshold = max(3, len(reference_lines) * 0.20)
-                if best_score >= threshold:
-                    filtered_lines = filter_redundant_geometry(final_lines, best_lines, technique_name=tech_name)
-                    final_lines = merge_text_lines(final_lines, filtered_lines)
-                    
-        final_lines.sort(key=lambda line: line.words[0].y if line.words else 0)
+        # --- Step 3: Spatial clustering (deduplication + representative selection) ---
+        final_lines = cluster_text_lines(all_raw_lines)
+        
+        # --- Step 4: Grouping & Region Splitting (DBNet) ---
+        grouped_results = group_text_lines(final_lines, cv_img)
+        
+        # Flatten grouped results back to list
+        flattened_lines = []
+        for group in grouped_results:
+            flattened_lines.extend(group["lines"])
         
         # Convert TextLines back to required format: (bbox, text, conf)
         output_results = []
-        for line in final_lines:
+        for line in flattened_lines:
             if not line.words: continue
             
             # Recompute total box for line
@@ -594,7 +979,7 @@ class WindowsOCREngine:
             output_results.append((bbox, line.text, 0.95))
             
         end_total = time.perf_counter()
-        print(f"Windows OCR (10-Tech Pipeline) Finished: {end_total - start_total:.2f}s")
+        print(f"Windows OCR (Pool-All, {len(self.ACTIVE_TECHNIQUES)} Techniques) Finished: {end_total - start_total:.2f}s")
         
         return output_results
     

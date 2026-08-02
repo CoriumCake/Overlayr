@@ -833,8 +833,24 @@ class WGCCapture:
             if hr != 0 or not frame_ptr:
                 return None
             
-            if hr != 0 or not frame_ptr:
-                return None
+            # --- DRAIN THE POOL TO GET THE LATEST FRAME ---
+            latest_frame_ptr = frame_ptr
+            while True:
+                next_frame_ptr = c_void_p()
+                hr_next = TryGetNextFrame(self.pool_ptr, byref(next_frame_ptr))
+                if hr_next == 0 and next_frame_ptr:
+                    # Release the older frame
+                    p_old = ctypes.cast(latest_frame_ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))
+                    vtbl_old = p_old.contents
+                    Release_old = ctypes.WINFUNCTYPE(ctypes.wintypes.ULONG, ctypes.c_void_p)(vtbl_old[2])
+                    Release_old(latest_frame_ptr)
+                    # Update to the newest frame
+                    latest_frame_ptr = next_frame_ptr
+                else:
+                    break
+            
+            frame_ptr = latest_frame_ptr
+            # ----------------------------------------------
             
             try:
                 # We got a frame!
