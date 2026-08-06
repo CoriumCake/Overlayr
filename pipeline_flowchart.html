@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Overlayr Pipeline Flowchart</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem;
+        }
+        h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            background: linear-gradient(90deg, #00d2ff, #7b2ff7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+        .subtitle {
+            color: #888;
+            font-size: 0.9rem;
+            margin-bottom: 2rem;
+        }
+        .mermaid {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 2rem;
+            max-width: 1200px;
+            width: 100%;
+            overflow-x: auto;
+        }
+        .legend {
+            margin-top: 1.5rem;
+            display: flex;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+            font-size: 0.85rem;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Overlayr — Pipeline Flowchart</h1>
+    <p class="subtitle">ตั้งแต่เลือกแหล่งแคปภาพ → ถึงแสดงผลการแปลภาษา</p>
+
+    <div class="mermaid">
+flowchart TD
+    A["👤 ผู้ใช้เปิดแอป Overlayr<br/>(main_window.py)"]
+    A --> B["📋 SourceManager สแกนหน้าจอ/หน้าต่าง<br/>(source_manager.py)"]
+    B --> C["🖥️ แสดง SourceCard ให้เลือก<br/>(source_card.py)"]
+    C --> D{"ผู้ใช้เลือก<br/>แหล่งแคปภาพ"}
+
+    D --> E["▶️ กด Start → toggle_stream()<br/>(main_window.py)"]
+    E --> F["📷 CaptureEngine เริ่มจับภาพ<br/>(capture_engine.py → wgc_capture.py)"]
+    F --> G["🔄 Drain Pool ดึงเฟรมล่าสุด<br/>(wgc_capture.py)"]
+
+    G --> H{"🔍 Similarity Check<br/>calculate_similarity()<br/>(image_utils.py)"}
+    H -- "คล้าย > 85%<br/>ข้าม OCR" --> SKIP["⏭️ ค้างคำแปลเดิม<br/>sleep 0.2s"]
+    SKIP --> G
+    H -- "ไม่คล้าย<br/>ดำเนินการต่อ" --> I
+
+    I["🧠 AsyncEngine.process_image()<br/>(engine.py)"]
+    I --> J["📝 Windows OCR สกัดข้อความ<br/>(windows_ocr.py)"]
+    J --> J1["🖼️ Preprocessing ภายใน<br/>DBNet + Binarization<br/>(ocr_preprocessor.py)"]
+    J1 --> J2["🔤 OCR อ่านตัวอักษร<br/>ได้ bbox + text + confidence"]
+
+    J2 --> K["🧹 Post-Processing<br/>clean_text + correct_text<br/>(post_processing.py)"]
+    K --> L["🚫 Validation Filter<br/>กรองข้อความขยะ<br/>(validation_service.py)"]
+    L --> M{"มีข้อความ<br/>ที่ผ่านตัวกรอง?"}
+    M -- "ไม่มี" --> EMPTY["📭 Return ผลว่าง"]
+    EMPTY --> G
+
+    M -- "มี" --> N["📦 Merge Text Blocks<br/>รวม bbox ใกล้กันเป็นย่อหน้า<br/>(engine.py)"]
+    N --> O{"🗄️ ตรวจ Translation Cache<br/>(LRU · 100 entries)"}
+    O -- "Cache Hit" --> P["✅ ใช้คำแปลจาก Cache"]
+    O -- "Cache Miss" --> Q["🌐 Batch Translation<br/>ส่ง Array → API เดียว<br/>(deepseek_translate.py<br/>หรือ gemini_translate.py)"]
+    Q --> R["📥 รับ JSON Array คำแปลกลับ<br/>แมปกลับเข้า Bounding Box"]
+    P --> S
+    R --> S
+
+    S["🎨 สร้างผลลัพธ์<br/>bbox + translated + bg_color"]
+    S --> T["🪟 Overlay แสดงคำแปล<br/>ซ้อนทับหน้าต่างเป้าหมาย<br/>(overlay.py)"]
+    T --> U["✨ topmost=True + DisplayAffinity<br/>ไม่ซ่อน & ไม่ถูกแคป"]
+    U --> G
+
+    classDef userAction fill:#1a5276,stroke:#2e86c1,color:#fff
+    classDef capture fill:#1b4332,stroke:#2d6a4f,color:#fff
+    classDef decision fill:#4a235a,stroke:#7d3c98,color:#fff
+    classDef skip fill:#7b241c,stroke:#cb4335,color:#fff
+    classDef ocr fill:#0e4d4d,stroke:#1abc9c,color:#fff
+    classDef translate fill:#1c2833,stroke:#5dade2,color:#fff
+    classDef display fill:#4a235a,stroke:#af7ac5,color:#fff
+
+    class A,C,D,E userAction
+    class F,G capture
+    class H,M,O decision
+    class SKIP,EMPTY skip
+    class I,J,J1,J2,K,L ocr
+    class N,P,Q,R translate
+    class S,T,U display
+    </div>
+
+    <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background:#1a5276"></div> User Interaction</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#1b4332"></div> Capture</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#4a235a"></div> Decision</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#7b241c"></div> Skip / Empty</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#0e4d4d"></div> OCR Pipeline</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#1c2833"></div> Translation</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#4a235a"></div> Display</div>
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'dark',
+            flowchart: {
+                curve: 'basis',
+                padding: 20,
+                nodeSpacing: 40,
+                rankSpacing: 50
+            },
+            themeVariables: {
+                primaryColor: '#1a5276',
+                primaryTextColor: '#fff',
+                primaryBorderColor: '#2e86c1',
+                lineColor: '#5dade2',
+                secondaryColor: '#4a235a',
+                tertiaryColor: '#1b4332'
+            }
+        });
+    </script>
+</body>
+</html>
