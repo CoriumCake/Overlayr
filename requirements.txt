@@ -1,21 +1,36 @@
+# Capture and window tracking
 mss
 pygetwindow
 screeninfo
+# win32pipe/win32file, for the single-instance named pipe in utils/single_instance.py
 pywin32
+
+# Interface
 customtkinter
-aiohttp
-deep-translator
 Pillow
+
+# OCR. winsdk is the Windows.Media.Ocr binding; the two onnxruntime models
+# (text detection, and the second reader for comic lettering) live in Model/.
+winsdk
 opencv-python
 numpy
-keyboard
-winocr
-langdetect
-fuzzywuzzy
-python-Levenshtein
-symspellpy
-requests
-winsdk
-
-onnxruntime-directml
 pyclipper
+# The DirectML build, not plain `onnxruntime`. Both install into the same
+# onnxruntime/ folder, so having both means whichever was installed last wins
+# and DirectML silently disappears from get_available_providers(). The detector
+# runs about 4.5x faster on it (96ms -> 21ms), so losing it is not obvious -
+# it just looks like a slow machine. Never install `onnxruntime` alongside.
+onnxruntime-directml
+
+# Text repair after OCR
+symspellpy
+fuzzywuzzy
+# fuzzywuzzy's optional C backend. Without it fuzzywuzzy still works, warns on
+# import, and runs its matching in pure Python - so this is not unused even
+# though nothing imports it by name.
+python-Levenshtein
+
+# Translation. requests drives the endpoint chain in google_translate;
+# deep-translator is the last-resort fallback behind it.
+requests
+deep-translator

@@ -9,13 +9,16 @@ from typing import Optional
 
 from ..core.engine import AsyncEngine
 from ..core.capture_engine import CaptureEngine
+from ..core.overlay_render import OVERLAY_STYLE_CHOICES, resolve_saved_style
+from ..core.scene import (AUTO_LABEL, SCENE_CHOICES, label_for,
+                          resolve_saved_scene, scene_from_label)
+from ..core.stream_controller import StreamController
 from ..services.source_manager import SourceManager
 from ..ui.overlay import ResultOverlay
 from ..ui.components.source_card import SourceCard
 from ..ui.components.loading_spinner import LoadingSpinner
 # from ..ui.components.profile_menu import ProfileMenu
 from .theme import get_theme, apply_theme_to_window
-from ..utils.image_utils import calculate_similarity
 
 class ROISelector(ctk.CTkToplevel):
     def __init__(self, parent, on_confirm):
@@ -99,11 +102,14 @@ class MainWindow(ctk.CTk):
         self.cached_monitors = []
         self.cached_windows = []
         self.selected_source = None
-        self.is_streaming = False
-        self.is_streaming = False
         self.loop = asyncio.new_event_loop()
-        self.current_merge_mode = "paragraph" # Default to Manga mode
-        
+
+        # The capture loop and everything about a running stream live in
+        # StreamController; it is created once the backend is ready.
+        self.controller: Optional[StreamController] = None
+        self.scene_override = self._load_scene_override()
+        self.overlay_style = self._load_overlay_style()
+
         # UI Cache to prevent flickering
         self.cards_cache = {"screens": {}, "apps": {}}
         
@@ -115,6 +121,7 @@ class MainWindow(ctk.CTk):
         self._load_assets()
         self._create_ui()
         self.overlay = ResultOverlay(self)
+        self.overlay.set_style(self.overlay_style)
 
         # Background Threads
         threading.Thread(target=self._run_async_loop, daemon=True).start()
@@ -165,9 +172,24 @@ class MainWindow(ctk.CTk):
             
             # Connect status callback (thread-safe via queue)
             self.async_engine.set_status_callback(self._thread_safe_status)
-            
+
+            # Terms the user pinned to a fixed translation - item, skill and
+            # character names that should read the same in every frame.
+            if self.config_service:
+                glossary = self.config_service.get("glossary", {})
+                if isinstance(glossary, dict) and glossary:
+                    self.async_engine.translator_service.set_glossary(glossary)
+                elif glossary:
+                    print(f"Ignoring 'glossary' in settings: expected a "
+                          f"term/translation object, got {type(glossary).__name__}.")
+
+
             # Warmup translator in background to avoid delay later
             self.async_engine.warmup()
+
+            self.controller = StreamController(
+                self, self.capture_engine, self.async_engine, self.loop,
+                scene_override=self.scene_override)
             
             # Now fetch sources
             self._fetch_sources_background()
@@ -305,7 +327,7 @@ class MainWindow(ctk.CTk):
             text_color=colors["text_primary"]
         )
         # Only update start button if not streaming
-        if not self.is_streaming:
+        if not self.is_running:
             self.btn_stream.configure(
                 fg_color=colors["success"] if self.selected_source else "gray",
                 text_color="white"
@@ -394,18 +416,17 @@ class MainWindow(ctk.CTk):
         )
         self.opt_target_lang.pack(side="left", padx=4)
         
-        # Grouping Mode
+        # Scene: Auto detects the source type; the rest lock it (CLAUDE.md 5D).
         ctk.CTkLabel(self.header_frame, text="Mode", font=("Segoe UI", 13, "bold"), text_color=colors["text_primary"]).pack(side="left", padx=(20, 5))
-        
-        # Load from config, Default to Manga if missing
-        initial_group_mode = self.config_service.get("grouping_mode", "Group (Manga)") if self.config_service else "Group (Manga)"
-        self.var_grouping_mode = ctk.StringVar(value=initial_group_mode)
 
-        self.opt_grouping_mode = ctk.CTkOptionMenu(
+        self.var_scene_mode = ctk.StringVar(
+            value=label_for(self.scene_override) if self.scene_override else AUTO_LABEL)
+
+        self.opt_scene_mode = ctk.CTkOptionMenu(
             self.header_frame,
-            values=["Group (Manga)", "Document (Lines)"],
-            variable=self.var_grouping_mode,
-            command=self._update_merge_mode,
+            values=SCENE_CHOICES,
+            variable=self.var_scene_mode,
+            command=self._on_scene_mode_change,
             width=150,
             height=32,
             corner_radius=8,
@@ -417,7 +438,31 @@ class MainWindow(ctk.CTk):
             dropdown_hover_color=colors["bg_card_hover"],
             dropdown_text_color=colors["text_primary"]
         )
-        self.opt_grouping_mode.pack(side="left", padx=4)
+        self.opt_scene_mode.pack(side="left", padx=4)
+
+        # How the translation is presented. Taste, not something the system can
+        # decide for the user - so it gets a dropdown, and only one.
+        ctk.CTkLabel(self.header_frame, text="Overlay", font=("Segoe UI", 13, "bold"), text_color=colors["text_primary"]).pack(side="left", padx=(20, 5))
+
+        self.var_overlay_style = ctk.StringVar(value=self.overlay_style)
+
+        self.opt_overlay_style = ctk.CTkOptionMenu(
+            self.header_frame,
+            values=OVERLAY_STYLE_CHOICES,
+            variable=self.var_overlay_style,
+            command=self._on_overlay_style_change,
+            width=120,
+            height=32,
+            corner_radius=8,
+            fg_color=colors["secondary_accent"],
+            button_color=colors["accent"],
+            button_hover_color=colors["accent_hover"],
+            text_color=colors["text_primary"],
+            dropdown_fg_color=colors["bg_card"],
+            dropdown_hover_color=colors["bg_card_hover"],
+            dropdown_text_color=colors["text_primary"]
+        )
+        self.opt_overlay_style.pack(side="left", padx=4)
         
         
         
@@ -745,15 +790,56 @@ class MainWindow(ctk.CTk):
 
 
 
-    def _update_merge_mode(self, choice):
+    def _load_scene_override(self):
+        """Read the saved scene lock from settings. None means Auto."""
+        if not self.config_service:
+            return None
+
+        scene = resolve_saved_scene(
+            self.config_service.get("scene_type"),
+            self.config_service.get("grouping_mode"),
+        )
+        # Write the resolved value back so the migration only happens once.
+        self.config_service.set("scene_type",
+                                label_for(scene) if scene else AUTO_LABEL)
+        return scene
+
+    def _load_overlay_style(self):
+        """Read the saved overlay style. Falls back to Replace."""
+        if not self.config_service:
+            return resolve_saved_style(None)
+
+        style = resolve_saved_style(self.config_service.get("overlay_style"))
+        # Write the resolved value back so an unknown one is only reported once.
+        self.config_service.set("overlay_style", style)
+        return style
+
+    def _on_overlay_style_change(self, choice):
+        self.overlay_style = resolve_saved_style(choice)
         if self.config_service:
-            self.config_service.set("grouping_mode", choice)
-            
-        if "Document" in choice:
-            self.current_merge_mode = "line"
+            self.config_service.set("overlay_style", self.overlay_style)
+
+        self.overlay.set_style(self.overlay_style)
+        # Redraw what is already on screen so the change is visible at once
+        # instead of after the next frame finishes translating.
+        if self.controller and self.controller.last_overlay_data:
+            results, geometry = self.controller.last_overlay_data
+            self.show_results(results, geometry, True)
+        self.lbl_status.configure(text=f"Overlay: {self.overlay_style}")
+
+    def _on_scene_mode_change(self, choice):
+        if self.config_service:
+            self.config_service.set("scene_type", choice)
+
+        self.scene_override = scene_from_label(choice)
+        if self.controller:
+            self.controller.set_scene_override(self.scene_override)
+
+        if self.scene_override is None:
+            # Back to Auto: the next processed frame decides.
+            self.lbl_status.configure(text="Mode: Auto (detecting)")
         else:
-            self.current_merge_mode = "paragraph"
-        print(f"Merge mode detected: {self.current_merge_mode}")
+            self.lbl_status.configure(text=f"Mode: {choice}")
 
     def _on_language_change(self, choice):
         if self.config_service:
@@ -771,45 +857,22 @@ class MainWindow(ctk.CTk):
         print(f"Language changed: {src_name} -> {tgt_name}")
         self.lbl_status.configure(text=f"Switching: {src_name} -> {tgt_name}...")
         
-        # Correctly schedule coroutine on the event loop
-        # Note: update_languages inside AsyncEngine uses create_task, which fails if called from thread without loop.
-        # But here we are on MainThread (Tkinter callback).
-        # We should invoke the AsyncEngine method which spawns the task.
-        # Wait, if we are on MainThread, create_task works IF the loop is running on MainThread.
-        # But AsyncEngine loop is running in a separate thread (self._run_async_loop).
-        
-        # We need to reach into that thread's loop.
-        # We stored self.loop in init.
-        
-        asyncio.run_coroutine_threadsafe(
-            self._update_langs_async(src_code, tgt_code), 
+        future = asyncio.run_coroutine_threadsafe(
+            self._update_langs_async(src_code, tgt_code),
             self.loop
         )
+        future.add_done_callback(self._log_future_error)
+
+    def _log_future_error(self, future):
+        """Surface exceptions from coroutines scheduled onto the async loop thread."""
+        try:
+            future.result()
+        except Exception as e:
+            print(f"Async task failed: {type(e).__name__}: {e}", flush=True)
 
     async def _update_langs_async(self, src, tgt):
-        # This runs inside the async loop thread
-        await self.async_engine.translator_service.load_model(src, tgt)
-        # Update OCR too
-        # But OCR update is sync/thread-locked... ideally run in executor or just call it?
-        # self.async_engine.update_languages helper does both.
-        # Let's fix AsyncEngine.update_languages to be async or just call logic manually here?
-        
-        # Let's call the logic manually to be safe about contexts
-        await self.async_engine.translator_service.load_model(src, tgt)
-        
-        # OCR update (sync, safe to call from here? OCREngine has locks)
-        ocr_code = src
-        if src == 'ja': ocr_code = 'ja'
-        elif src == 'ko': ocr_code = 'ko'
-        elif src.startswith('zh'): ocr_code = 'ch_sim'
-        elif src == 'th': ocr_code = 'th'
-        elif src == 'en': ocr_code = 'en'
-        
-        langs = [ocr_code]
-        if 'en' not in langs: langs.append('en')
-        self.async_engine.ocr_service.set_languages(langs)
-        
-        # Callback to UI
+        """Runs inside the async loop thread: update translator and OCR languages together."""
+        await self.async_engine.update_languages(src, tgt)
         self.after(0, lambda: self.lbl_status.configure(text=f"Languages Updated: {src}->{tgt}"))
 
     def refresh_sources(self, silent=False):
@@ -884,7 +947,7 @@ class MainWindow(ctk.CTk):
         self._update_source_grids(self.cached_monitors, self.cached_windows, silent=True)
         
         # Re-enable start button if selection exists
-        if self.selected_source and self.async_engine and not self.is_streaming:
+        if self.selected_source and self.async_engine and not self.is_running:
             self.btn_stream.configure(state="normal", fg_color="green")
 
     def _sync_grid(self, parent, new_sources, cache_key):
@@ -934,12 +997,16 @@ class MainWindow(ctk.CTk):
     def on_source_select(self, source):
         self.selected_source = source
         friendly_name = source.get('friendly_name') or source.get('name') or source.get('title') or "Unknown Source"
-        
+
+        # A different source is a different stream; old frames must not vote.
+        if self.controller:
+            self.controller.set_source(source)
+
         self.lbl_status.configure(text=f"Selected: {friendly_name}")
 
         
         # If engine is ready, enable button
-        if self.async_engine and not self.is_streaming:
+        if self.async_engine and not self.is_running:
              self.btn_stream.configure(state="normal", fg_color="green")
         elif not self.async_engine:
              self.btn_stream.configure(state="disabled", fg_color="gray") # Keep disabled until ready
@@ -954,7 +1021,7 @@ class MainWindow(ctk.CTk):
         """Periodically refresh sources if not streaming."""
         interval_ms = 1000 # 1 second for "instant" feel
         
-        if not self.is_streaming and self.source_manager:
+        if not self.is_running and self.source_manager:
             if self.source_manager.has_window_list_changed():
                 # Perform a silent refresh to avoid flickering status bar
                 self.refresh_sources(silent=True)
@@ -974,217 +1041,45 @@ class MainWindow(ctk.CTk):
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
+    @property
+    def is_running(self) -> bool:
+        return bool(self.controller and self.controller.is_streaming)
+
     def toggle_stream(self):
-        if not self.is_streaming:
-            # Start
-            if not self.selected_source: return
-            
-            self.is_streaming = True
-            self.btn_stream.configure(text="Stop", fg_color="red")
-            
-            # Configure capture engine
-            mode = self.selected_source.get('type')
-            self.capture_engine.set_source(mode, self.selected_source)
-            
-            # Start loop
-            threading.Thread(target=self.stream_loop, daemon=True).start()
-            
-            # Start Visibility Loop (Decoupled for instant toggle)
-            self._check_visibility()
-        else:
-            # Stop
-            self.is_streaming = False
-            self.btn_stream.configure(text="Start", fg_color="green")
-            self.overlay.hide()
-
-    def _check_visibility(self):
-        """
-        Check active window frequently (10Hz) to specific overlay visibility instantly.
-        Separate from OCR loop to avoid lag.
-        """
-        if not self.is_streaming: return
-        
-        # User requested: always show translation overlay, don't hide when switching windows
-        is_active = True
-        
-        # Check for state change
-        prev_state = getattr(self, 'is_target_active', True)
-        
-        # Update state
-        self.is_target_active = is_active
-        
-        # Apply instantly if changed
-        if is_active != prev_state:
-             # print(f"Visibility Changed: {prev_state} -> {is_active}", flush=True)
-             if not is_active:
-                 self.overlay.show_results([], 0, 0, visible=False)
-             else:
-                 # NEW: Instant Show using Cached Data
-                 last_data = getattr(self, 'last_overlay_data', None)
-                 if last_data:
-                     results, x, y, geometry = last_data
-                     if geometry:
-                        self.overlay.set_geometry(geometry)
-                     self.overlay.show_results(results, x, y, visible=True)
-
-        # Schedule next check (100ms)
-        self.after(100, self._check_visibility)
-
-
-
-    def stream_loop(self):
-        print("Stream loop started.", flush=True)
-        pending_future = None
-        last_bounds = None
-        
-        while self.is_streaming:
-            # Check if previous processing is active
-            if pending_future is not None:
-                if not pending_future.done():
-                    # Processing is busy (e.g. waiting 5s display). 
-                    # Do not capture/hide. Just track window position.
-                    if last_bounds:
-                         self.after(0, lambda b=last_bounds: self.overlay.set_geometry(
-                             f"{b['width']}x{b['height']}+{b['left']}+{b['top']}"
-                         ))
-                    time.sleep(0.05)
-                    continue
-                else:
-                    pending_future = None
-
-            start_time = time.time()
-            try:
-                # Optimized Capture:
-                # We use SetWindowDisplayAffinity in overlay.py to make it invisible to capture.
-                # So we NO LONGER need to hide/restore it manually.
-                
-                result = self.capture_engine.capture()
-                
-                image, bounds = result if result else (None, None)
-                
-                if image and bounds:
-                    last_bounds = bounds
-                    
-                    # NEW: Image similarity check (>85% -> skip and delay 0.2s)
-                    last_img = getattr(self, 'last_translated_image', None)
-                    if last_img:
-                        sim = calculate_similarity(image, last_img)
-                        if sim > 85.0:
-                            # print(f"Image similar ({sim:.1f}%), skipping frame.")
-                            time.sleep(0.2)
-                            continue
-                            
-                    self.last_translated_image = image
-                    
-                    # Focus check moved to _check_visibility loop
-                    is_active = getattr(self, 'is_target_active', True)
-                    
-                    # Start new processing
-                    pending_future = asyncio.run_coroutine_threadsafe(
-                        self.process_image(image, bounds), 
-                        self.loop
-                    )
-                
-            except Exception as e:
-                print(f"Stream error: {e}")
-            
-            # Target ~30fps (33ms per frame)
-            elapsed = time.time() - start_time
-            sleep_time = max(0, 0.033 - elapsed)
-            time.sleep(sleep_time)
-        
-        # Ensure cleanup on exit
-        self.after(0, self.overlay.hide)
-        print("Stream loop stopped.", flush=True)
-
-
-    async def process_image(self, image, bounds):
-        if not self.async_engine: return
-        
-        # Define callback to handle "Slow Motion" steps inside the engine
-        async def step_callback(stage, data):
-            if stage == "OCR":
-                # Step 2: OCR Done (Windows OCR) -> No Delay
-                # print("DEBUG: Step 2 - OCR Done. Waiting 2s...", flush=True)
-                raw_text = f"Found {len(data)} text blocks"
-                self.after(0, lambda: self.overlay.show_debug(f"STEP 2: OCR Done ({raw_text})"))
-                # await asyncio.sleep(2)
-                
-            elif stage == "MERGED":
-                # Step 3: Merge Text Blocks (Show Blue Boxes) -> NO DELAY
-                # print("DEBUG: Step 3 - Merged. Showing boxes. Waiting 2s...", flush=True)
-                
-                # Extract boxes for display
-                # Extract boxes for display
-                boxes = [item['bbox'] for item in data]
-                # Overlay window IS ALREADY at bounds['left'], bounds['top']
-                # So we draw relative to 0,0 of the overlay.
-                offset_x = 0 
-                offset_y = 0
-                geometry = f"{bounds['width']}x{bounds['height']}+{bounds['left']}+{bounds['top']}"
-                
-                self.after(0, lambda: self.overlay.set_geometry(geometry))
-                # self.after(0, lambda: self.overlay.show_boxes(boxes, offset_x, offset_y, color="#00ffff")) # Cyan/Blue
-                # self.after(0, lambda: self.overlay.show_debug("STEP 3: Text Merged (Blue Boxes)"))
-                
-                # Flow: Merge -> Immediate
-                # await asyncio.sleep(2)
-                
-            elif stage == "TRANSLATED":
-                pass # Skip delay here, we move straight to display
-
-        try:
-            # Pass the callback to the engine, skip translation enabled (Original Text)
-            # Use current_merge_mode (thread-safe string)
-            results, raw_text = await self.async_engine.process_image(
-                image, 
-                step_callback=step_callback, 
-                skip_translation=False,
-                merge_mode=self.current_merge_mode
-            )
-            
-            # Step 5: Draw Overlay Lines (Display Translated Result) -> Delay
-            
-            # print("DEBUG: Step 5 - Draw Overlay. Waiting...", flush=True)
-            self.after(0, lambda: self.overlay.show_debug("STEP 5: Result (Translated)"))
-            
-            # Use bounds directly from capture (always current)
-            # Use bounds directly from capture (always current)
-            # Fix: Overlay window is moved to bounds['left'], bounds['top'] via geometry.
-            # So the content should be drawn at offset 0,0 relative to the window.
-            offset_x = 0
-            offset_y = 0
-            geometry = f"{bounds['width']}x{bounds['height']}+{bounds['left']}+{bounds['top']}"
-
-            if self.is_streaming:
-                # Use stored visibility state
-                visible = getattr(self, 'is_target_active', True)
-                self.after(0, lambda: self._update_overlay_safe(results, raw_text, offset_x, offset_y, geometry, visible))
-                
-            # Wait 0 seconds (Immediate Yield) for max performance
-            await asyncio.sleep(0)
-            
-            # Request: Blue frame AND Text disappear after 5s delay
-            # User Change (1621): Keep overlay until next result replaces it.
-            # self.after(0, self.overlay.hide)
-
-        except Exception as e:
-            print(f"Proc Error: {e}")
-
-    def _update_overlay_safe(self, results, raw_text, x, y, geometry, visible=True):
-        if not self.is_streaming:
-            self.overlay.hide()
+        if not self.controller or not self.selected_source:
             return
-            
+
+        if self.is_running:
+            self.controller.stop()
+            self.btn_stream.configure(text="Start", fg_color="green")
+            return
+
+        self.controller.set_source(self.selected_source)
+        if self.controller.start():
+            self.btn_stream.configure(text="Stop", fg_color="red")
+
+    # Streaming lives in StreamController; MainWindow only supplies the view
+    # methods below, which are the only places the overlay is touched.
+
+    def schedule(self, callback):
+        self.after(0, callback)
+
+    def schedule_after(self, delay_ms, callback):
+        self.after(delay_ms, callback)
+
+    def show_results(self, results, geometry, visible=True):
         if geometry:
             self.overlay.set_geometry(geometry)
-        self.overlay.show_results(results, x, y, visible=visible)
-        
-        # Cache for Instant Restore
-        self.last_overlay_data = (results, x, y, geometry)
-        
-        # self.overlay.show_debug(f"Raw: {raw_text[:50]}...")
-            
+        self.overlay.show_results(results, 0, 0, visible=visible)
+
+    def set_geometry(self, geometry):
+        self.overlay.set_geometry(geometry)
+
+    def hide_overlay(self):
+        self.overlay.hide()
+
+    def set_status(self, text):
+        self.lbl_status.configure(text=text)
 
     def define_roi(self):
         if not self.selected_source: 

@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import os
+import sys
 
 try:
     import onnxruntime as ort
@@ -15,6 +16,37 @@ except ImportError:
     HAS_PYCLIPPER = False
 
 _dbnet_session = None
+_dbnet_threshold = None
+
+# Detector models, best first. The probability threshold belongs to the model
+# rather than to the algorithm: each was swept with scripts/run_harness.py and
+# the winner differs between them, so loading a different file must bring its
+# own cut-off along. Do not change a number here without a harness run.
+#
+#   Detec_Manga-English_lite  6.64M params, 120ms  comic line 0.796 word 0.721
+#   Detec_Manga-English      16.47M params, 924ms  comic line 0.794 word 0.721
+#
+# The lite model reads the sample pages as well as the larger one at a
+# fraction of the cost, which is why it leads (CLAUDE.md 9.26).
+DBNET_MODELS = (
+    ('Detec_Manga-English_lite.onnx', 0.11),
+    ('Detec_Manga-English.onnx', 0.15),
+)
+
+# Providers to try in order. DirectML runs the detector on whatever DX12 card
+# the machine has and needs no CUDA toolkit, which is the only reason it is
+# acceptable here at all: CLAUDE.md 1 rules out anything the user has to
+# install. Measured on the lite model at 640x640 (GTX 1050):
+#
+#   CPU         median 96ms   session load  58ms
+#   DirectML    median 21ms   session load 473ms
+#
+# The load cost is what `warmup_dbnet` exists to pay before the user is
+# waiting on it. CPU stays in the chain because a machine without a usable
+# DX12 device must still read comics, only slower.
+DBNET_PROVIDERS = ('DmlExecutionProvider', 'CPUExecutionProvider')
+
+
 def preprocess_image_for_ocr(image_source):
     """
     Reads an image and applies preprocessing to improve OCR accuracy.
@@ -603,6 +635,46 @@ def get_expanded_polygon(contour, expand_ratio=2.5):
     return approx_polygon
 
 
+def _make_dbnet_session(model_path):
+    """Open the detector on the fastest provider that will actually take it.
+
+    Each provider is tried on its own rather than handed to onnxruntime as one
+    list, so that a provider which loads but cannot serve gets caught here with
+    a line in the log instead of silently dropping the graph onto the CPU and
+    looking like a slow machine.
+    """
+    last_error = None
+    for provider in DBNET_PROVIDERS:
+        try:
+            return ort.InferenceSession(model_path, providers=[provider])
+        except Exception as e:
+            last_error = e
+            print(f"DBNet: {provider} unavailable ({type(e).__name__}: {e}); "
+                  f"trying the next one.", flush=True)
+
+    raise RuntimeError(f"No usable onnxruntime provider for {model_path}: "
+                       f"{last_error}")
+
+
+def warmup_dbnet():
+    """Load the detector and run it once, before anything is waiting on it.
+
+    DirectML compiles the graph on the way in, which costs about half a second
+    the first time and nothing afterwards. Paying it here means the first comic
+    frame is as quick as the rest instead of being the slowest of the session -
+    a delay the user reads as the program being slow, not as it warming up.
+    """
+    if not HAS_ORT:
+        return
+
+    try:
+        blank = np.zeros((64, 64, 3), dtype=np.uint8)
+        detect_text_regions_dbnet(blank)
+    except Exception as e:
+        print(f"DBNet warmup failed, first detection will be slower: "
+              f"{type(e).__name__}: {e}", flush=True)
+
+
 def detect_text_regions_dbnet(image_source, model_path=None):
     """
     Detects text regions using the DBNet ONNX model.
@@ -610,10 +682,10 @@ def detect_text_regions_dbnet(image_source, model_path=None):
     
     Args:
         image_source: Path to image (str) or numpy array (BGR).
-        model_path: Optional path to the ONNX model file.
-                    Defaults to assets/models/Detec_Manga-English.onnx relative to project.
+        model_path: Optional path to the ONNX model file. Defaults to the first
+                    entry of DBNET_MODELS found under Model/ at the project root.
     """
-    global _dbnet_session
+    global _dbnet_session, _dbnet_threshold
     if not HAS_ORT:
         print("onnxruntime is not installed. Falling back to bubble detection.")
         return detect_speech_bubbles(image_source)
@@ -630,25 +702,41 @@ def detect_text_regions_dbnet(image_source, model_path=None):
     target_size = 640
     
     if _dbnet_session is None:
+        threshold = None
         if model_path is None:
-            # Try common locations
-            candidates = [
-                os.path.join(os.path.dirname(__file__), '..', '..', '..', 'assets', 'models', 'Detec_Manga-English.onnx'),
-                os.path.join(os.path.dirname(__file__), '..', 'assets', 'models', 'Detec_Manga-English.onnx'),
-            ]
-            for c in candidates:
-                c = os.path.abspath(c)
-                if os.path.exists(c):
-                    model_path = c
+            # Project root is three levels up from src/overlayr/services/
+            root = os.path.join(os.path.dirname(__file__), '..', '..', '..')
+            for name, model_threshold in DBNET_MODELS:
+                for folder in (os.path.join(root, 'Model'),
+                               os.path.join(root, 'assets', 'models'),
+                               os.path.join(getattr(sys, '_MEIPASS', root), 'Model')):
+                    candidate = os.path.abspath(os.path.join(folder, name))
+                    if os.path.exists(candidate):
+                        model_path, threshold = candidate, model_threshold
+                        break
+                if model_path is not None:
                     break
-        
+
         if model_path is None or not os.path.exists(model_path):
              print(f"DBNet model not found. Falling back to bubble detection.")
              return detect_speech_bubbles(image_source)
-        
+
+        if threshold is None:
+            # An explicitly passed model has no swept threshold of its own, so
+            # it gets the one belonging to a file of the same name if there is
+            # one, and the safer low cut-off otherwise: a region too many costs
+            # an OCR call, a region too few loses the text inside it.
+            named = dict(DBNET_MODELS)
+            threshold = named.get(os.path.basename(model_path), 0.11)
+
         # Load ONNX model
-        _dbnet_session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-        
+        _dbnet_session = _make_dbnet_session(model_path)
+        _dbnet_threshold = threshold
+        print(f"DBNet: loaded {os.path.basename(model_path)} on "
+              f"{_dbnet_session.get_providers()[0]} (threshold {threshold})",
+              flush=True)
+
+
     img = cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB)
     img_resized = cv2.resize(img, (target_size, target_size))
     
@@ -674,8 +762,10 @@ def detect_text_regions_dbnet(image_source, model_path=None):
     # Scale back to original resolution
     prob = cv2.resize(prob, (orig_w, orig_h))
     
-    # Binarize
-    threshold = 0.15
+    # Binarize. The cut-off travels with the model it was swept for; a session
+    # patched in from outside leaves it unset, so fall back to the leading
+    # model's value rather than to a number tuned for a different net.
+    threshold = _dbnet_threshold if _dbnet_threshold is not None else DBNET_MODELS[0][1]
     mask = (prob > threshold).astype(np.uint8) * 255
     
     # Extract contours

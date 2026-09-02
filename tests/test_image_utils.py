@@ -1,7 +1,8 @@
 """Tests for image_utils — RMS image comparison."""
 import pytest
 from PIL import Image
-from overlayr.utils.image_utils import is_different
+from overlayr.utils.image_utils import (frame_signature, is_different,
+                                        signature_similarity)
 
 
 class TestIsDifferent:
@@ -36,3 +37,44 @@ class TestIsDifferent:
         img2 = Image.new("RGB", (100, 100), color=(255, 255, 255))
         # Even very different images pass with high enough threshold
         assert is_different(img1, img2, threshold=999.0) is False
+
+
+class TestFrameSignature:
+    """The cheap stand-in used to compare frames while the pipeline is busy."""
+
+    def test_a_signature_has_a_fixed_size_whatever_the_frame(self):
+        wide = frame_signature(Image.new("RGB", (1920, 1080)))
+        small = frame_signature(Image.new("RGB", (320, 240)))
+
+        assert wide.shape == small.shape
+
+    def test_no_image_has_no_signature(self):
+        assert frame_signature(None) is None
+
+    def test_the_same_frame_scores_full_similarity(self):
+        signature = frame_signature(Image.new("RGB", (400, 300), (90, 90, 90)))
+
+        assert signature_similarity(signature, signature) == pytest.approx(100.0)
+
+    def test_black_against_white_scores_zero(self):
+        black = frame_signature(Image.new("RGB", (400, 300), (0, 0, 0)))
+        white = frame_signature(Image.new("RGB", (400, 300), (255, 255, 255)))
+
+        assert signature_similarity(black, white) == pytest.approx(0.0)
+
+    def test_a_missing_signature_is_never_similar(self):
+        signature = frame_signature(Image.new("RGB", (400, 300)))
+
+        assert signature_similarity(None, signature) == 0.0
+        assert signature_similarity(signature, None) == 0.0
+
+    def test_a_small_change_stays_similar(self):
+        """A cursor or a blinking caret must not read as a new page."""
+        base = Image.new("RGB", (400, 300), (255, 255, 255))
+        nudged = base.copy()
+        nudged.paste(Image.new("RGB", (8, 8), (0, 0, 0)), (10, 10))
+
+        similarity = signature_similarity(frame_signature(base),
+                                          frame_signature(nudged))
+
+        assert similarity > 90.0

@@ -22,8 +22,21 @@ class TestNoiseRejection:
     def test_high_symbol_density(self):
         assert ValidationService.is_valid_text("{}[][]=+", "en") is False
 
-    def test_no_vowels_in_english(self):
-        assert ValidationService.is_valid_text("bcdfgh", "en") is False
+    def test_vowel_free_words_are_kept(self):
+        # Comics are full of real text with no vowels. Rejecting it lost whole
+        # speech bubbles, which CLAUDE.md section 1 counts as the worst failure
+        # there is - so consonant runs are let through even though it means
+        # some genuine noise gets through with them.
+        assert ValidationService.is_valid_text("HMM", "en") is True
+        assert ValidationService.is_valid_text("PSST", "en") is True
+        assert ValidationService.is_valid_text("TSK", "en") is True
+
+    def test_stray_odd_characters_do_not_reject_a_line(self):
+        # A stylised G read as a currency sign should not cost the whole line.
+        assert ValidationService.is_valid_text("€ROUNP RULES", "en") is True
+
+    def test_mostly_foreign_text_is_still_rejected(self):
+        assert ValidationService.is_valid_text("日本語のテキスト", "en") is False
 
     def test_coordinates_noise(self):
         assert ValidationService.is_valid_text("(0.0)", "en") is False
@@ -43,8 +56,15 @@ class TestURLFiltering:
 
 
 class TestLengthBounds:
-    def test_too_short(self):
-        assert ValidationService.is_valid_text("a", "en") is False
+    def test_single_letter_is_kept(self):
+        # "I" and "A" are words, and a letter split off from its line is about
+        # to be rejoined by the merge step - dropping it here breaks the line.
+        assert ValidationService.is_valid_text("a", "en") is True
+        assert ValidationService.is_valid_text("I", "en") is True
+
+    def test_single_symbol_is_rejected(self):
+        assert ValidationService.is_valid_text("|", "en") is False
+        assert ValidationService.is_valid_text("7", "en") is False
 
     def test_too_long(self):
         assert ValidationService.is_valid_text("A" * 501, "en") is False

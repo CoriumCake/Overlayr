@@ -4,23 +4,36 @@ import cv2
 import numpy as np
 import math
 import sys
-import tempfile
 import time
 from collections import Counter
 from typing import List, Tuple, Any, Dict, Optional
 from PIL import Image
 
+from winsdk.windows.globalization import Language
 from winsdk.windows.media.ocr import OcrEngine
-from winsdk.windows.graphics.imaging import BitmapDecoder, SoftwareBitmap
+from winsdk.windows.graphics.imaging import (
+    BitmapAlphaMode, BitmapDecoder, BitmapPixelFormat, SoftwareBitmap)
 from winsdk.windows.storage import StorageFile, FileAccessMode
+from winsdk.windows.storage.streams import DataWriter
 from difflib import SequenceMatcher
 
+from ..core.scene import SceneType
+from .lexicon import dictionary_ratio
+from .neural_ocr import (CROP_PADDING, NeuralLineReader, choose_reading,
+                         is_suspect)
+from .ocr_profile import get_profile, prepare_region
+from .region_provider import find_regions
+
 try:
-    from .ocr_preprocessor import preprocess_image_for_ocr, detect_speech_bubbles, detect_text_regions_dbnet
+    from .ocr_preprocessor import (preprocess_image_for_ocr, detect_speech_bubbles,
+                                   detect_text_regions_dbnet, warmup_dbnet)
     HAS_OPENCV = True
 except ImportError:
     print("Warning: ocr_preprocessor not found. Advanced processing disabled.")
     HAS_OPENCV = False
+
+    def warmup_dbnet():
+        """Nothing to warm up when the detector could not be imported."""
 
 ROTATION_PADDING = 150 # Padding to prevent text clipping during rotation
 RAW_MODE = False
@@ -30,6 +43,10 @@ class TextLine:
         self.text = text
         self.words = words # List of Rect objects
         self.sources = {source} if source else set()
+        # Share of the reads covering this spot that agreed on this text.
+        # A line no other read contradicts stays at 1.0.
+        self.confidence = 1.0
+        self.region = None
 
 class Rect:
     def __init__(self, text, x, y, w, h):
@@ -50,10 +67,66 @@ async def get_software_bitmap_from_file(file_path):
         print(f"Error loading image: {e}")
         return None
 
+def get_software_bitmap_from_array(bgr_image):
+    """Build a SoftwareBitmap straight from a BGR numpy array, with no disk I/O.
+
+    Windows OCR accepts Bgra8; the alpha channel is filled opaque so
+    PREMULTIPLIED and straight alpha are equivalent here.
+    """
+    try:
+        if bgr_image.ndim == 2:
+            bgra = cv2.cvtColor(bgr_image, cv2.COLOR_GRAY2BGRA)
+        elif bgr_image.shape[2] == 4:
+            bgra = bgr_image
+        else:
+            bgra = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2BGRA)
+        bgra = np.ascontiguousarray(bgra)
+        height, width = bgra.shape[:2]
+
+        writer = DataWriter()
+        writer.write_bytes(bgra.tobytes())
+        buffer = writer.detach_buffer()
+        return SoftwareBitmap.create_copy_from_buffer(
+            buffer, BitmapPixelFormat.BGRA8, width, height, BitmapAlphaMode.PREMULTIPLIED)
+    except Exception as e:
+        print(f"Error building SoftwareBitmap from memory: {e}")
+        return None
+
+
+def sauvola_threshold(gray, window: int = 25, k: float = 0.2, r: float = 128.0):
+    """Binarise with a threshold computed per neighbourhood rather than per image.
+
+    Sauvola's rule: a pixel is ink when it is darker than the local mean by an
+    amount that shrinks where the local contrast is low. On a comic page that
+    matters because screentone, a shaded panel and a white bubble all want
+    different cut-offs, and Otsu can only choose one.
+
+    Built from box filters, which are separable and run in constant time per
+    pixel whatever the window size - so this costs about as much as any of the
+    other techniques rather than being the expensive one.
+    """
+    if window % 2 == 0:
+        window += 1
+
+    source = gray.astype(np.float32)
+    size = (window, window)
+    mean = cv2.boxFilter(source, -1, size, normalize=True,
+                         borderType=cv2.BORDER_REFLECT)
+    mean_square = cv2.boxFilter(source * source, -1, size, normalize=True,
+                                borderType=cv2.BORDER_REFLECT)
+    deviation = cv2.sqrt(cv2.max(mean_square - mean * mean, 0))
+
+    threshold = mean * (1.0 + k * (deviation / r - 1.0))
+    return np.where(source > threshold, 255, 0).astype(np.uint8)
+
+
 async def run_ocr(image_source, language, technique='baseline'):
     try:
-        lang = __import__("winsdk.windows.globalization").windows.globalization.Language(language)
-        ocr_engine = OcrEngine.try_create_from_language(lang)
+        # Imported at the top rather than by name here. A string import is
+        # invisible to PyInstaller's analysis, so the packaged build shipped
+        # without this module and every OCR call failed at this line - while
+        # running from source worked perfectly.
+        ocr_engine = OcrEngine.try_create_from_language(Language(language))
     except Exception as e:
         print(f"Error creating OCR engine: {e}")
         return None, 1.0, None, 0.0
@@ -93,6 +166,37 @@ async def run_ocr(image_source, language, technique='baseline'):
              elif technique == 'simple_threshold':
                  img_scaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
                  _, binary = cv2.threshold(img_scaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                 processed_img = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+                 scale_factor = 2.0
+                 pre_result = (processed_img, scale_factor)
+             elif technique == 'sauvola':
+                 # A local threshold, one decision per neighbourhood instead of
+                 # one for the whole crop (CLAUDE.md section 6). Otsu picks a
+                 # single cut-off and loses lettering that sits over screentone
+                 # or a shaded panel, because the page is not one brightness.
+                 img_scaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+                 binary = sauvola_threshold(img_scaled)
+                 processed_img = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+                 scale_factor = 2.0
+                 pre_result = (processed_img, scale_factor)
+             elif technique == 'tophat':
+                 # Keeps thin bright strokes and drops whatever is larger than
+                 # the kernel, which is how outlined comic lettering is pulled
+                 # off the art behind it.
+                 img_scaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+                 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
+                 hat = cv2.morphologyEx(img_scaled, cv2.MORPH_BLACKHAT, kernel)
+                 _, binary = cv2.threshold(hat, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                 processed_img = cv2.cvtColor(cv2.bitwise_not(binary), cv2.COLOR_GRAY2BGR)
+                 scale_factor = 2.0
+                 pre_result = (processed_img, scale_factor)
+             elif technique == 'despeckle':
+                 # Screentone dots survive a plain threshold and break up the
+                 # glyphs around them; a small median filter removes them while
+                 # leaving strokes intact (CLAUDE.md section 6, COMIC).
+                 img_scaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+                 denoised = cv2.medianBlur(img_scaled, 3)
+                 _, binary = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                  processed_img = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
                  scale_factor = 2.0
                  pre_result = (processed_img, scale_factor)
@@ -161,22 +265,22 @@ async def run_ocr(image_source, language, technique='baseline'):
 
     if pre_result and pre_result[0] is not None:
         processed_img, scale_factor = pre_result
-        try:
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                tmp_path = tmp.name
-            cv2.imwrite(tmp_path, processed_img)
-            bitmap = await get_software_bitmap_from_file(tmp_path)
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except Exception as e:
-            print(f"Error handling temp file for OCR: {e}")
-            bitmap = None
+        bitmap = get_software_bitmap_from_array(processed_img)
             
     if not bitmap:
         if isinstance(image_source, str):
             bitmap = await get_software_bitmap_from_file(image_source)
-        elif not HAS_OPENCV:
-             bitmap = image_source 
+        elif isinstance(image_source, np.ndarray):
+            scale_factor = 1.0
+            processed_img = None
+            bitmap = get_software_bitmap_from_array(image_source)
+        elif isinstance(image_source, Image.Image):
+            scale_factor = 1.0
+            processed_img = None
+            bitmap = get_software_bitmap_from_array(
+                cv2.cvtColor(np.array(image_source), cv2.COLOR_RGB2BGR))
+        else:
+            bitmap = image_source
 
     if not bitmap:
          return None, 1.0, None, 0.0
@@ -324,6 +428,48 @@ def merge_text_lines(base_lines, new_lines):
             merged.append(new_line)
     return merged
 
+# How much each technique is trusted when nothing else separates two readings.
+# Baseline is the unaltered image, so it comes first; the rest follow by how
+# much they distort the glyphs to get a reading.
+TECHNIQUE_TRUST = ('baseline', 'clahe', 'simple_threshold', 'threshold',
+                   'thicken', 'inverted')
+
+
+def technique_rank(line):
+    """Position of a line`s technique in TECHNIQUE_TRUST; unknown ranks last."""
+    best = len(TECHNIQUE_TRUST)
+    for source in getattr(line, 'sources', ()):
+        name = str(source).split('@')[0]
+        if name in TECHNIQUE_TRUST:
+            best = min(best, TECHNIQUE_TRUST.index(name))
+    return best
+
+
+def place_lines_in_frame(lines, region, extra_scale, source):
+    """Move lines read from a region crop back into full-frame coordinates.
+
+    ``correct_geometry`` has already undone the scaling a technique applied, so
+    what is left is the extra enlargement this crop was given and the offset of
+    the region within the frame.
+    """
+    inverse = 1.0 / extra_scale if extra_scale else 1.0
+    placed = []
+    for line in lines:
+        words = []
+        for word in line.words:
+            words.append(Rect(
+                getattr(word, "text", ""),
+                word.x * inverse + region.left,
+                word.y * inverse + region.top,
+                word.width * inverse,
+                word.height * inverse,
+            ))
+        moved = TextLine(line.text, words, source=source)
+        moved.region = region
+        placed.append(moved)
+    return placed
+
+
 def cluster_text_lines(all_lines):
     """
     Pool-All → Spatial Clustering algorithm.
@@ -425,16 +571,34 @@ def cluster_text_lines(all_lines):
         if not text_counts:
             best_line_obj = group[0]
             best_line_obj.sources = all_sources
+            best_line_obj.confidence = 0.0
             final_lines.append(best_line_obj)
             continue
-            
-        # Sort by raw length (desc), then by frequency (desc)
-        best_clean = sorted(text_counts.keys(), key=lambda k: (len(text_to_orig[k].text), text_counts[k]), reverse=True)[0]
-        
+
+        # Consensus vote (CLAUDE.md section 6): the reading most techniques
+        # agree on wins, and ties are settled by which reading looks most like
+        # language, then by length, then by how much the technique is trusted.
+        # Length alone used to decide this, which let one technique`s longest
+        # garbled string outrank the reading every other technique produced.
+        best_clean = max(text_counts.keys(), key=lambda k: (
+            text_counts[k],
+            dictionary_ratio(text_to_orig[k].text),
+            len(text_to_orig[k].text),
+            -technique_rank(text_to_orig[k]),
+        ))
+
         best_line_obj = text_to_orig[best_clean]
         best_line_obj.sources = all_sources
+        # Windows OCR reports no confidence of its own (CLAUDE.md section 3), so
+        # the score is how many of the reads covering this spot agreed on the
+        # winning text. One read on its own is unconfirmed, not wrong: a line
+        # only a single technique could see is exactly the line the region pass
+        # exists to rescue, so it keeps a usable score rather than a zero.
+        total_votes = sum(text_counts.values())
+        best_line_obj.confidence = (text_counts[best_clean] / total_votes
+                                    if total_votes else 0.0)
         final_lines.append(best_line_obj)
-        
+
     return final_lines
 
 def calculate_match_score(candidates, references):
@@ -661,19 +825,30 @@ def deduplicate_in_group(group_lines):
             unique.append(line)
     return unique
 
-def group_text_lines(final_lines, image):
+def group_text_lines(final_lines, image, text_regions=None, scene=None):
     """
     Groups text lines based on:
     1. Speech Bubble Containment (DBNet Regions)
     2. Word-by-word region assignment + Line Splitting
     3. Column-Based Clustering
     4. Proximity (if not in bubble)
+
+    ``text_regions`` are the contours the caller already found. Passing them in
+    matters for comics: detection costs a detector run, and doing it a second
+    time here would pay for it twice for no new information.
+
+    Finding them here is only worth it for a comic, which is the one scene the
+    detector was trained for. A game or a document arrives with regions of its
+    own from a far cheaper finder, and when that finder legitimately returns
+    nothing there is no reason to spend a manga detector run to disagree.
     """
     if not HAS_OPENCV: return [{"lines": final_lines, "type": "page"}]
 
     # 1. Detect Text Regions
-    text_regions = detect_text_regions_dbnet(image)
-    
+    if text_regions is None:
+        text_regions = (detect_text_regions_dbnet(image)
+                        if scene == SceneType.COMIC else [])
+
     # 2. Assign to Text Regions
     region_groups = [[] for _ in text_regions]
     ungrouped = []
@@ -739,7 +914,10 @@ def group_text_lines(final_lines, image):
             sub_line = TextLine(sub_text, words, source=src)
             if hasattr(line, 'sources'):
                 sub_line.sources = set(line.sources)
-                
+            sub_line.confidence = getattr(line, 'confidence', 1.0)
+            sub_line.region = getattr(line, 'region', None)
+
+
             if r_id == -1:
                 ungrouped.append(sub_line)
             else:
@@ -876,6 +1054,7 @@ class WindowsOCREngine:
     def __init__(self):
         self._language = "en"
         self._status_callback = None
+        self.neural_reader = NeuralLineReader()
         print("WindowsOCREngine (Pool-All Cluster) initialized.")
 
     def set_callback(self, callback):
@@ -903,53 +1082,80 @@ class WindowsOCREngine:
             
         print(f"OCR language set to: {self._language}")
     
-    async def extract_text(self, image: Image.Image) -> List[Tuple[List[List[int]], str, float]]:
+    async def extract_text(self, image: Image.Image,
+                           scene=None) -> List[Tuple[List[List[int]], str, float]]:
+        """Read an image and return [(bbox, text, confidence), ...]."""
+        results, _ = await self.extract_text_with_regions(image, scene)
+        return results
+
+    async def extract_text_with_regions(self, image: Image.Image, scene=None):
         """
-        Pool-All → Spatial Clustering OCR pipeline.
-        1. Run active techniques in parallel
-        2. Pool all raw results into a single list
-        3. cluster_text_lines() to deduplicate and select representatives
+        Region-first OCR pipeline (CLAUDE.md section 4).
+
+        Returns the readings together with the regions they were found in. The
+        grouper needs those regions to forbid merging across a bubble, a column
+        or a panel, and finding them a second time would cost another detector
+        run - about 0.7s for a comic page.
+        1. Pick the technique profile for the scene
+        2. Read the whole frame with the profile's safety-net techniques
+        3. Read each detected region separately, normalised for its own contrast
+        4. Pool everything and cluster it into one line per position
         Returns standard format: [(bbox, text, conf), ...]
         """
         start_total = time.perf_counter()
-        
+
         # Convert PIL to CV2 BGR for opencv ops in `run_ocr`
         cv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        
-        # --- Step 1: Run active techniques in parallel ---
-        tasks = []
-        tech_names = []
-        for tech in self.ACTIVE_TECHNIQUES:
-            tasks.append(run_ocr(cv_img, self._language, technique=tech))
-            tech_names.append(tech)
-        
-        results = await asyncio.gather(*tasks)
-        
-        def process_result(res, tech, scale, processed, mode='auto'):
-            if res:
-                 shape = processed.shape if processed is not None else cv_img.shape
-                 return correct_geometry(res, tech, scale, shape, matrix_mode=mode)
-            return []
 
-        # --- Step 2: Pool all raw lines ---
+        profile = get_profile(scene)
+        regions = find_regions(cv_img, scene) if profile.uses_regions else []
+
+        # --- Step 1: Whole frame, then each region, all in parallel ---
+        tasks = []
+        # Each entry describes how to map one result back to frame coordinates.
+        placements = []
+
+        for tech in profile.full_frame:
+            tasks.append(run_ocr(cv_img, self._language, technique=tech))
+            placements.append((tech, None, 1.0, cv_img.shape))
+
+        for index, region in enumerate(regions):
+            crop = region.crop(cv_img)
+            if crop.size == 0:
+                continue
+            prepared, extra_scale = prepare_region(crop, profile)
+            for tech in profile.region:
+                tasks.append(run_ocr(prepared, self._language, technique=tech))
+                placements.append((f"{tech}@{index}", region, extra_scale,
+                                   prepared.shape))
+
+        results = await asyncio.gather(*tasks)
+
+        # --- Step 2: Pool every read into one list of frame-space lines ---
         all_raw_lines = []
-        for i, tech in enumerate(tech_names):
-            res, scale, processed, duration = results[i]
-            if res:
-                lines = process_result(res, tech, scale, processed)
-                all_raw_lines.extend(lines)
-        
+        for (source, region, extra_scale, fallback_shape), result in zip(placements, results):
+            res, scale, processed, duration = result
+            if not res:
+                continue
+            shape = processed.shape if processed is not None else fallback_shape
+            technique = source.split("@")[0]
+            lines = correct_geometry(res, technique, scale, shape)
+            if region is not None:
+                lines = place_lines_in_frame(lines, region, extra_scale, source)
+            all_raw_lines.extend(lines)
+
         if not all_raw_lines:
             end_total = time.perf_counter()
-            print(f"Windows OCR (Pool-All) Finished: {end_total - start_total:.2f}s (no results)")
-            return []
-        
+            print(f"Windows OCR (Region-first) Finished: {end_total - start_total:.2f}s (no results)")
+            return [], regions
+
         # --- Step 3: Spatial clustering (deduplication + representative selection) ---
         final_lines = cluster_text_lines(all_raw_lines)
-        
-        # --- Step 4: Grouping & Region Splitting (DBNet) ---
-        grouped_results = group_text_lines(final_lines, cv_img)
-        
+
+        # --- Step 4: Grouping & Region Splitting ---
+        contours = [region.to_contour() for region in regions] if regions else None
+        grouped_results = group_text_lines(final_lines, cv_img, contours, scene=scene)
+
         # Flatten grouped results back to list
         flattened_lines = []
         for group in grouped_results:
@@ -976,12 +1182,69 @@ class WindowsOCREngine:
                 [int(min_x), int(max_y)]
             ]
             
-            output_results.append((bbox, line.text, 0.95))
-            
+            output_results.append((bbox, line.text, getattr(line, "confidence", 1.0)))
+
+        if profile.uses_neural_reader:
+            output_results = self._second_opinion(output_results, cv_img)
+
         end_total = time.perf_counter()
-        print(f"Windows OCR (Pool-All, {len(self.ACTIVE_TECHNIQUES)} Techniques) Finished: {end_total - start_total:.2f}s")
-        
-        return output_results
-    
+        print(f"Windows OCR ({len(profile.full_frame)} full-frame + "
+              f"{len(regions)} regions) Finished: {end_total - start_total:.2f}s")
+
+        return output_results, regions
+
+    def _second_opinion(self, results, cv_img):
+        """Re-read the lines the dictionary distrusts, and keep the better one.
+
+        Runs after clustering rather than alongside the techniques, because the
+        vote in `cluster_text_lines` counts heads: the profile's techniques are
+        all the same engine reading the same pixels, so when they are wrong they
+        are wrong together and a single dissenting reader would lose five to one
+        no matter how right it was (CLAUDE.md 9.28).
+        """
+        if not results or not self.neural_reader.available:
+            return results
+
+        height, width = cv_img.shape[:2]
+        suspects, crops = [], []
+        for index, (bbox, text, _conf) in enumerate(results):
+            if not is_suspect(text):
+                continue
+            points = np.array(bbox)
+            left, top = max(0, int(points[:, 0].min())), max(0, int(points[:, 1].min()))
+            right = min(width, int(points[:, 0].max()))
+            bottom = min(height, int(points[:, 1].max()))
+            if right <= left or bottom <= top:
+                continue
+            left = max(0, left - CROP_PADDING)
+            top = max(0, top - CROP_PADDING)
+            right = min(width, right + CROP_PADDING)
+            bottom = min(height, bottom + CROP_PADDING)
+            suspects.append(index)
+            crops.append(cv_img[top:bottom, left:right])
+
+        if not crops:
+            return results
+
+        readings = self.neural_reader.read(crops)
+        replaced = 0
+        for index, (neural_text, confidence) in zip(suspects, readings):
+            bbox, windows_text, conf = results[index]
+            chosen = choose_reading(windows_text, neural_text, confidence)
+            if chosen != windows_text:
+                replaced += 1
+                results[index] = (bbox, chosen, conf)
+
+        print(f"[DEBUG] Second opinion: {len(crops)}/{len(results)} lines "
+              f"re-read, {replaced} replaced", flush=True)
+        return results
+
     def warmup(self):
-        pass
+        """Pay the one-off costs now, on the caller's background thread.
+
+        Called from AsyncEngine.warmup during start-up, well before a source is
+        picked, so the detector's session load lands there rather than in the
+        middle of the first frame the user asks for.
+        """
+        warmup_dbnet()
+        self.neural_reader.warmup()

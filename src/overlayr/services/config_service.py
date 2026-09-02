@@ -8,7 +8,15 @@ class ConfigService:
             "appearance_mode": "Dark",
             "source_lang": "Japanese",
             "target_lang": "Thai",
-            "grouping_mode": "Group (Manga)"
+            # "Auto" lets the SceneClassifier decide; "Game"/"Document"/"Comic"
+            # lock it. The old "grouping_mode" key is migrated on first read.
+            "scene_type": "Auto",
+            # How translations are drawn: "Replace" paints over the original
+            # text so it disappears, "Card" floats a panel above it.
+            "overlay_style": "Replace",
+            # Terms pinned to a fixed translation, e.g. {"Elixir": "ยาอมตะ"}.
+            # Item, skill and character names otherwise drift between frames.
+            "glossary": {}
         }
         self.load()
 

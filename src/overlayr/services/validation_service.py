@@ -20,33 +20,55 @@ class ValidationService:
         re.compile(r'[a-z0-9]+\.[a-z]{2,}/', re.I),  # site.something/
     ]
 
+    # Share of a string that has to be foreign to its source language before it
+    # is treated as noise. A stray character is an OCR slip inside real text,
+    # not a reason to throw the whole line away.
+    FOREIGN_CHAR_LIMIT = 0.35
+
+    @staticmethod
+    def _is_asiatic(c: str) -> bool:
+        code = ord(c)
+        return (0x0E00 <= code <= 0x0E7F        # Thai
+                or 0x4E00 <= code <= 0x9FFF     # CJK
+                or 0x3040 <= code <= 0x30FF     # Hiragana / Katakana
+                or 0xAC00 <= code <= 0xD7AF)    # Hangul
+
     @staticmethod
     def _has_asiatic_chars(text: str) -> bool:
         """Checks for Thai, CJK, etc."""
-        for c in text:
-            code = ord(c)
-            # Thai
-            if 0x0E00 <= code <= 0x0E7F: return True
-            # CJK
-            if 0x4E00 <= code <= 0x9FFF: return True
-            # Hiragana/Katakana
-            if 0x3040 <= code <= 0x30FF: return True
-            # Hangul
-            if 0xAC00 <= code <= 0xD7AF: return True
-        return False
+        return any(ValidationService._is_asiatic(c) for c in text)
+
+    @staticmethod
+    def _asiatic_ratio(text: str) -> float:
+        stripped = [c for c in text if not c.isspace()]
+        if not stripped:
+            return 0.0
+        return sum(1 for c in stripped if ValidationService._is_asiatic(c)) / len(stripped)
 
     @staticmethod
     def is_valid_text(text: str, source_lang: str) -> bool:
         """
         Determines if a piece of text is likely real content rather than noise.
+
+        The filter is deliberately conservative (CLAUDE.md section 1): it cuts
+        only what is obviously junk - symbols, bare numbers, URLs. Dropping a
+        line that carried meaning breaks the reader`s train of thought, which
+        the project counts as worse than an clumsy translation, so anything that
+        might be words is let through.
         """
         text = text.strip()
-        
+
         # Basic length and sanity checks
         length = len(text)
-        if not text or length < 2 or length > 500:
+        if not text or length > 500:
             return False
-            
+
+        # A lone letter is usually a real word ("I", "A") or part of one that
+        # the merge step is about to rejoin; a lone symbol never is.
+        if length == 1 and not text.isalpha():
+            return False
+
+
         # UI/URL Filtering
         # Exclude technical strings, URLs, and browser UI elements
         for pattern in ValidationService.UI_PATTERNS:
@@ -70,43 +92,25 @@ class ValidationService:
             
         # 2. Source-Specific Logic
         if source_lang == 'en':
-            # English should NOT contain Asiatic characters (Thai, CJK)
-            if ValidationService._has_asiatic_chars(text):
-                return False
-            
-            # Check for non-ASCII characters (Stricter)
-            # Allow widely used latin supplements but reject others
-            non_standard = sum(1 for c in text if ord(c) > 383 and c not in "“”‘’\"…")
-            if non_standard > 0:
+            # Mostly CJK or Thai in an English capture is noise, but a single
+            # stray glyph inside a real sentence is an OCR slip worth keeping.
+            if ValidationService._asiatic_ratio(text) > ValidationService.FOREIGN_CHAR_LIMIT:
                 return False
 
-            # Existing vowels check
-            if letter_count > 0:
-                # Exception for Honorifics/Abbreviations (Mr., Mrs., Dr., etc.)
-                clean_upper = text.replace('.', '').upper()
-                honorifics = {"MR", "MRS", "MS", "DR", "ST", "JR", "SR", "MT", "SGT", "CAPT"}
-                
-                if clean_upper in honorifics:
-                    pass # Allow valid abbreviations even without vowels
-                else:
-                    vowel_count = sum(1 for c in text if c in ValidationService.VOWELS)
-                    if vowel_count == 0 and length > 2:
-                        return False
-                        
-                # Relaxed density check: allow short phrases with punctuation (e.g. "OH...I")
-                # Only enforce 60% letters if text is longer than 8 chars (was 5)
-                if letter_count < length * 0.6 and length > 8:
-                    return False
-            
-            # Use langdetect for longer text to be sure
-            if length > 20:
-                try:
-                    from langdetect import detect
-                    lang = detect(text)
-                    # If detected as Thai/CJK/etc, reject. 
-                    if lang in ['th', 'ja', 'ko', 'zh-cn', 'zh-tw', 'vi']:
-                        return False
-                except Exception: pass
+            # A comic or game font sends back the odd unusual character - the
+            # currency sign an OCR engine sees in a stylised G, an accent in a
+            # name. Reject only when such characters dominate the string.
+            non_standard = sum(1 for c in text if ord(c) > 383 and c not in "“”‘’\"…")
+            if non_standard > max(1, length * 0.4):
+                return False
+
+            # Letter density: a long string that is mostly punctuation is noise.
+            if letter_count > 0 and letter_count < length * 0.6 and length > 8:
+                return False
+
+            # The vowel test and the langdetect call that used to sit here were
+            # removed: comics are full of vowel-free real text (HMM, TSK, PSST)
+            # and language detection on shouted, stylised lines is unreliable.
 
         elif source_lang == 'th':
             # Thai MUST contain some Thai characters

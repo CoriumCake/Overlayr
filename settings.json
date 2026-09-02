@@ -2,6 +2,9 @@
     "appearance_mode": "Dark",
     "source_lang": "English",
     "target_lang": "Thai",
+    "scene_type": "Auto",
+    "overlay_style": "Replace",
+    "glossary": {},
     "grouping_mode": "Group (Manga)",
     "capture_mode": "Applications"
 }

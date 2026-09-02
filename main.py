@@ -4,6 +4,11 @@ import os
 # Ensure src is in path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
+from overlayr.utils.console import make_output_safe
+
+# Before anything can log a line of the user's language into a cp1252 console.
+make_output_safe()
+
 from overlayr.ui.main_window import MainWindow
 from overlayr.services.auth_service import AuthService
 from overlayr.services.config_service import ConfigService

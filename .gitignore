@@ -7,6 +7,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 venv/
+.venv/
 *.env
 
 # PyInstaller
@@ -14,6 +15,11 @@ venv/
 *.spec
 build/
 dist/
+
+# Rust build output (the experiment is gone; its artifacts must not come back)
+target/
+target_cli/
+rust_ocr_src/target/
 
 # IDE
 .vscode/
@@ -29,3 +35,23 @@ Desktop.ini
 
 # Debug Images
 debug_images/
+
+# The harness input and output. Its code lives in src/overlayr/eval/ and stays
+# in the repository; these three are the data it reads and the files it writes,
+# and none of them belong to anyone but this machine:
+#
+#   TestingImage/   24 captures plus _Answer.txt ground truth, ~20MB of other
+#                   people's comics and documents
+#   eval_data/      the dataset layout the harness also accepts (still empty)
+#   eval_results/   run output - JSON scores plus ~13MB of rendered frames
+#
+# Losing the JSON means a fresh clone cannot diff against an earlier run. The
+# numbers that decisions were actually made on are written into CLAUDE.md
+# instead, which is where they need to survive.
+TestingImage/
+eval_data/
+eval_results/
+
+# Claude Code local files
+.claude/
+CLAUDE.md

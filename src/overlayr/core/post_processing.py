@@ -119,6 +119,19 @@ class TextPostProcessor:
         
         # 5. € -> G
         text = text.replace('€', 'G')
+
+        # 5.1 Characters the engine substitutes inside comic lettering, anchored
+        # between two letters so ordinary punctuation is left alone. These are
+        # the cases the dictionary-guarded repair cannot reach, because the word
+        # they belong to is often a name the dictionary has never heard of.
+        # Counted across the sample pages: "/" for "I" 13 times, "7" for "T" 3.
+        text = re.sub(r'(?<=[A-Za-z])[/|](?=[A-Za-z])', 'I', text)
+        text = re.sub(r'(?<=[A-Za-z])7(?=[A-Za-z])', 'T', text)
+        text = re.sub(r'(?<=[A-Za-z])\$(?=[A-Za-z])', 'S', text)
+        text = text.replace('Ø', 'O').replace('ø', 'o')
+
+        # A slash or pipe standing alone is the letter I, not punctuation.
+        text = re.sub(r'(?<!\S)[/|](?!\S)', 'I', text)
         
         # 6. Specific corrections
         text = re.sub(r'\bBUT 1\b', 'BUT I', text, flags=re.IGNORECASE)
@@ -166,9 +179,12 @@ class TextPostProcessor:
         Apply SymSpell correction then Fuzzy fallback.
         """
         if not text: return text
-        
+
         # 0. OCR-specific corrections (regex rules)
         text = self._apply_ocr_corrections(text)
+
+        # 0b. Undo the letter shapes this OCR engine confuses in comic fonts.
+        text = fix_confusions(text)
         
         # 1. Custom Rules (character-level substitutions)
         text = self._apply_custom_rules(text)
@@ -181,19 +197,35 @@ class TextPostProcessor:
         # For mixed content, SymSpell's lookup_compound is powerful.
         
         suggestions = self.sym_spell.lookup_compound(text, max_edit_distance=2)
-        
+
         if suggestions:
-            # Take the best suggestion
             corrected = suggestions[0].term
-            
-            # Use Fuzzy Matching as a sanity check or for custom terms?
-            # User request: "If not found (in Dictionary), use Fuzzy Matching"
-            
-            # If the correction is drastically different or low confidence, maybe check custom list
-            # But lookup_compound usually forces dictionary words.
-            return corrected
-            
+            return self._accept_correction(text, corrected)
+
         return text
+
+    @staticmethod
+    def _accept_correction(original: str, corrected: str) -> str:
+        """Return the correction, or the original when the change went too far.
+
+        ``lookup_compound`` does not only fix spelling: it splits and joins
+        words to make the sentence fit the dictionary. That is the wrong trade
+        here. It turned an item count of "100" into "a of", and the name
+        "TAKAKURA" into "taka kura" - both of which read as a loss to anyone
+        following the story, while the misspelling they replaced did not.
+
+        So two things have to survive a correction: the numbers, and the number
+        of words. Fixing the letters inside a word is welcome; restructuring the
+        sentence around it is not.
+        """
+        digits_before = re.findall(r"\d+", original)
+        if digits_before and re.findall(r"\d+", corrected) != digits_before:
+            return original
+
+        if len(original.split()) != len(corrected.split()):
+            return original
+
+        return corrected
 
     def fuzzy_match_custom(self, text: str) -> str:
         """
@@ -212,3 +244,100 @@ class TextPostProcessor:
             return best_match
             
         return text
+
+
+
+
+# Characters this OCR engine confuses on comic lettering, together with what
+# they should have been. Every entry was mined from the sample pages by lining
+# OCR output up against the ground truth and counting substitutions, so the
+# table describes what actually goes wrong rather than what might:
+#
+#   / -> I  (13)   M/SS/ON, ACC/PEN?ALLY, RECONC/L/-
+#   P -> D  (20)   NEEP, HANPS, ANP, LOAPEP
+#   C -> G   (8)
+#   7 -> T   (3)   ME77CUZOUS
+#   5 -> S         REFU5E
+#   U -> LI        UTTLE, UKE
+#
+# Nothing here fires on its own: a swap is only kept when it turns a word the
+# dictionary rejects into one it accepts, so a correctly-read "P" is never
+# touched.
+OCR_CONFUSIONS = {
+    "/": "I", "|": "I", "!": "I",
+    "p": "d", "P": "D",
+    "c": "g", "C": "G",
+    "7": "T", "5": "S", "0": "O", "1": "I", "8": "B", "6": "G",
+    "€": "G", "£": "E", "ø": "o", "Ø": "O", "§": "S", "$": "S",
+    "u": "li", "U": "LI",
+    "rn": "m", "RN": "M", "cl": "d", "CL": "D",
+    "vv": "w", "VV": "W",
+}
+
+# Characters that may sit inside a word without ending it. Without these, a
+# misread like "M/SS/ON" is split into fragments and never repaired.
+_TOKEN_CHARS = re.compile(r"[^\W_]|[/|!€£$§ø Ø]", re.UNICODE)
+
+_TRIM = " \t\n\r.,:;!?\"'()[]{}-–—…"
+
+
+def _confusion_candidates(token: str):
+    """Words reachable by replacing every occurrence of some confused characters.
+
+    Replacing all occurrences at once rather than one position at a time is what
+    makes a word like "M/SS/ON" reachable: both slashes are the same mistake,
+    made twice. It also keeps the search small - two choices per distinct
+    character present, instead of one per position.
+    """
+    present = [(wrong, right) for wrong, right in OCR_CONFUSIONS.items()
+               if wrong in token]
+    if not present or len(present) > 6:
+        return
+
+    for mask in range(1, 1 << len(present)):
+        candidate = token
+        for bit, (wrong, right) in enumerate(present):
+            if mask & (1 << bit):
+                candidate = candidate.replace(wrong, right)
+        if candidate != token:
+            yield candidate
+
+
+def fix_confusions(text: str) -> str:
+    """Repair words the OCR engine misread as similar-looking characters.
+
+    Only a token the dictionary rejects is touched, and only if a swap turns it
+    into one the dictionary accepts. That is what keeps a real "P" from being
+    rewritten to "D" - the correction has to earn its place by producing a word.
+
+    This runs before the speller because it fixes the kind of damage the speller
+    cannot: "HANPS" is one edit from both "HANDS" and "HANGS", and a frequency
+    dictionary has no way to prefer the right one, while the shape of the glyph
+    does.
+    """
+    if not text:
+        return text
+
+    from ..services.lexicon import is_word
+
+    repaired = []
+    for token in text.split(" "):
+        core = token.strip(_TRIM)
+        if len(core) < 3 or not any(c.isalpha() or c in "/|!" for c in core):
+            repaired.append(token)
+            continue
+        if is_word(core):
+            repaired.append(token)
+            continue
+
+        replacement = None
+        for candidate in _confusion_candidates(core):
+            if is_word(candidate.strip(_TRIM)):
+                # Comic text is set in capitals; returning a lower-case word
+                # would read as a different one.
+                replacement = candidate.upper() if core.isupper() else candidate
+                break
+
+        repaired.append(token.replace(core, replacement) if replacement else token)
+
+    return " ".join(repaired)
