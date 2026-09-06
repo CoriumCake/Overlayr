@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use eframe::egui;
 
-use crate::capture::GrimCapture;
+use crate::capture::PlatformCapture;
 use crate::config::AppConfig;
 use crate::ocr::TesseractOcr;
 use crate::runtime::PipelineWorker;
@@ -46,8 +46,9 @@ impl OverlayrApp {
     }
 
     fn refresh_sources(&mut self) {
-        match <GrimCapture as crate::services::CaptureBackend>::sources(&mut GrimCapture::default())
-        {
+        match <PlatformCapture as crate::services::CaptureBackend>::sources(
+            &mut PlatformCapture::default(),
+        ) {
             Ok(sources) => {
                 self.sources = sources;
                 self.selected_source = self
@@ -74,7 +75,7 @@ impl OverlayrApp {
         }
         let Some(source) = self.sources.get(self.selected_source).cloned() else {
             self.error = Some(
-                "No capture source is available. Check your Wayland session and grim installation."
+                "No capture source is available. Check your desktop session and capture utility."
                     .into(),
             );
             return;
@@ -93,7 +94,7 @@ impl OverlayrApp {
         self.worker = Some(PipelineWorker::start(
             self.config.clone(),
             source.clone(),
-            GrimCapture::default(),
+            PlatformCapture::default(),
             TesseractOcr::new(
                 std::env::var("OVERLAYR_TESSERACT_BIN").unwrap_or_else(|_| "tesseract".into()),
                 self.config.grouping_mode.clone(),
@@ -109,7 +110,7 @@ impl OverlayrApp {
     }
 
     fn select_region(&mut self) {
-        match GrimCapture::default().select_region() {
+        match PlatformCapture::default().select_region() {
             Ok(source) => {
                 self.sources = vec![source];
                 self.selected_source = 0;

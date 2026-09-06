@@ -184,3 +184,79 @@ fn frame_signature(rgba: &[u8]) -> u64 {
             (hash ^ u64::from(*byte)).wrapping_mul(1099511628211)
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::{CaptureBackend, OcrBackend, TranslationBackend};
+    use crate::types::{Frame, Rect, SourceKind};
+
+    struct FakeCapture;
+
+    impl CaptureBackend for FakeCapture {
+        fn sources(&mut self) -> ServiceResult<Vec<Source>> {
+            Ok(Vec::new())
+        }
+
+        fn capture(&mut self, _source: &Source) -> ServiceResult<Frame> {
+            Ok(Frame::new(
+                1,
+                Rect::new(0, 0, 10, 10),
+                1,
+                1,
+                vec![255, 255, 255, 255],
+            ))
+        }
+    }
+
+    struct FakeOcr;
+
+    impl OcrBackend for FakeOcr {
+        fn recognize(&mut self, _frame: &Frame, _language: &str) -> ServiceResult<Vec<TextBlock>> {
+            Ok(vec![TextBlock::new(Rect::new(1, 1, 8, 8), "猫です", 0.95)])
+        }
+    }
+
+    struct FakeTranslation;
+
+    impl TranslationBackend for FakeTranslation {
+        fn translate(&mut self, _pair: &LanguagePair, _text: &str) -> ServiceResult<String> {
+            Ok("แมว".into())
+        }
+    }
+
+    #[test]
+    fn worker_publishes_translated_blocks_and_stops() {
+        let config = AppConfig {
+            capture_interval_ms: 16,
+            ..AppConfig::default()
+        };
+        let source = Source {
+            id: "test".into(),
+            name: "Test source".into(),
+            kind: SourceKind::Screen,
+            bounds: Rect::new(0, 0, 10, 10),
+        };
+        let worker = PipelineWorker::start(config, source, FakeCapture, FakeOcr, FakeTranslation);
+
+        let mut found_translation = false;
+        for _ in 0..50 {
+            if worker
+                .snapshot()
+                .blocks
+                .first()
+                .and_then(|block| block.translated_text.as_deref())
+                == Some("แมว")
+            {
+                found_translation = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            found_translation,
+            "worker did not publish translated OCR output"
+        );
+        drop(worker);
+    }
+}

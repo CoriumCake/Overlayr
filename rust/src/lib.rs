@@ -15,7 +15,7 @@ pub mod translation;
 pub mod types;
 pub mod ui;
 
-pub use capture::GrimCapture;
+pub use capture::{GrimCapture, ImageMagickCapture, PlatformCapture};
 pub use config::AppConfig;
 pub use ocr::TesseractOcr;
 pub use pipeline::{LatestFrame, TranslationCache};
