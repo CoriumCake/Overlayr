@@ -80,6 +80,14 @@ impl OverlayrApp {
             );
             return;
         };
+        let ocr = TesseractOcr::new(
+            std::env::var("OVERLAYR_TESSERACT_BIN").unwrap_or_else(|_| "tesseract".into()),
+            self.config.grouping_mode.clone(),
+        );
+        if let Err(error) = ocr.validate_language(&self.config.source_lang) {
+            self.error = Some(format!("OCR is not ready: {error}"));
+            return;
+        }
         let translator = match LibreTranslate::new(
             self.config.translation_endpoint.clone(),
             std::env::var("OVERLAYR_TRANSLATION_API_KEY").ok(),
@@ -95,10 +103,7 @@ impl OverlayrApp {
             self.config.clone(),
             source.clone(),
             PlatformCapture::default(),
-            TesseractOcr::new(
-                std::env::var("OVERLAYR_TESSERACT_BIN").unwrap_or_else(|_| "tesseract".into()),
-                self.config.grouping_mode.clone(),
-            ),
+            ocr,
             translator,
         ));
         self.active_source = Some(source);

@@ -57,6 +57,32 @@ impl TesseractOcr {
         }
     }
 
+    pub fn validate_language(&self, language: &str) -> ServiceResult<()> {
+        let output = Command::new(&self.executable)
+            .arg("--list-langs")
+            .output()
+            .map_err(|error| format!("failed to start {}: {error}", self.executable))?;
+        if !output.status.success() {
+            return Err(format!(
+                "{} could not list installed languages: {}",
+                self.executable,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        let expected = Self::language(language);
+        if String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .skip(1)
+            .any(|installed| installed.trim() == expected)
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "Tesseract language pack '{expected}' is not installed"
+            ))
+        }
+    }
+
     fn parse_tsv(&self, frame: &Frame, tsv: &str) -> Vec<TextBlock> {
         let mut blocks = Vec::new();
         for line in tsv.lines().skip(1) {
