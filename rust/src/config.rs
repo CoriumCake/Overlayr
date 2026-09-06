@@ -34,6 +34,37 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, value) in [
+            ("source language", &self.source_lang),
+            ("target language", &self.target_lang),
+        ] {
+            if value.is_empty()
+                || value.len() > 16
+                || !value
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+            {
+                return Err(format!("invalid {name}: {value}"));
+            }
+        }
+        if !matches!(self.grouping_mode.as_str(), "line" | "paragraph") {
+            return Err("grouping mode must be line or paragraph".into());
+        }
+        if !(16..=5_000).contains(&self.capture_interval_ms) {
+            return Err("capture interval must be between 16 and 5000 ms".into());
+        }
+        if !self.minimum_confidence.is_finite() || !(0.0..=1.0).contains(&self.minimum_confidence) {
+            return Err("confidence must be between 0 and 1".into());
+        }
+        if !(self.translation_endpoint.starts_with("http://")
+            || self.translation_endpoint.starts_with("https://"))
+        {
+            return Err("translation endpoint must use http:// or https://".into());
+        }
+        Ok(())
+    }
+
     pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref();
         if !path.exists() {
@@ -47,6 +78,8 @@ impl AppConfig {
 
     /// Save atomically so a process interruption cannot leave invalid JSON.
     pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        self.validate()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -113,5 +146,20 @@ mod tests {
             expected
         );
         fs::remove_dir_all(directory).expect("test cleanup failed");
+    }
+
+    #[test]
+    fn rejects_invalid_runtime_values() {
+        let config = AppConfig {
+            capture_interval_ms: 1,
+            ..AppConfig::default()
+        };
+        assert!(config.validate().is_err());
+
+        let config = AppConfig {
+            translation_endpoint: "ftp://example.test".into(),
+            ..AppConfig::default()
+        };
+        assert!(config.validate().is_err());
     }
 }
