@@ -4,11 +4,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::config::AppConfig;
+use crate::pipeline::LatestFrame;
 use crate::services::{
     CaptureBackend, OcrBackend, ServiceResult, TranslationBackend, TranslationCoordinator,
 };
 use crate::text::is_valid_text;
-use crate::types::{LanguagePair, Rect, Source, TextBlock};
+use crate::types::{Frame, LanguagePair, Rect, Source, TextBlock};
 
 #[derive(Clone, Debug, Default)]
 pub struct PipelineSnapshot {
@@ -28,7 +29,9 @@ struct SharedState {
 
 pub struct PipelineWorker {
     state: Arc<SharedState>,
-    handle: Option<JoinHandle<()>>,
+    frames: Arc<LatestFrame<Frame>>,
+    capture_handle: Option<JoinHandle<()>>,
+    pipeline_handle: Option<JoinHandle<()>>,
 }
 
 impl PipelineWorker {
@@ -52,20 +55,35 @@ impl PipelineWorker {
             }),
             stop: AtomicBool::new(false),
         });
-        let thread_state = Arc::clone(&state);
-        let handle = thread::spawn(move || {
-            run_pipeline(
-                config,
+        let frames = Arc::new(LatestFrame::new());
+        let capture_frames = Arc::clone(&frames);
+        let capture_state = Arc::clone(&state);
+        let capture_config = config.clone();
+        let capture_handle = thread::spawn(move || {
+            run_capture(
+                capture_config,
                 source,
                 &mut capture,
+                capture_frames,
+                capture_state,
+            );
+        });
+        let pipeline_frames = Arc::clone(&frames);
+        let pipeline_state = Arc::clone(&state);
+        let pipeline_handle = thread::spawn(move || {
+            run_pipeline(
+                config,
                 &mut ocr,
                 translator,
-                thread_state,
+                pipeline_frames,
+                pipeline_state,
             );
         });
         Self {
             state,
-            handle: Some(handle),
+            frames,
+            capture_handle: Some(capture_handle),
+            pipeline_handle: Some(pipeline_handle),
         }
     }
 
@@ -79,7 +97,11 @@ impl PipelineWorker {
 
     pub fn stop(&mut self) {
         self.state.stop.store(true, Ordering::Release);
-        if let Some(handle) = self.handle.take() {
+        self.frames.close();
+        if let Some(handle) = self.capture_handle.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.pipeline_handle.take() {
             let _ = handle.join();
         }
     }
@@ -91,19 +113,47 @@ impl Drop for PipelineWorker {
     }
 }
 
-fn run_pipeline<C, O, T>(
+fn run_capture<C>(
     config: AppConfig,
     source: Source,
     capture: &mut C,
-    ocr: &mut O,
-    translator: T,
+    frames: Arc<LatestFrame<Frame>>,
     state: Arc<SharedState>,
 ) where
     C: CaptureBackend,
+{
+    let interval = Duration::from_millis(config.capture_interval_ms.max(16));
+    while !state.stop.load(Ordering::Acquire) {
+        let started = Instant::now();
+        match capture.capture(&source) {
+            Ok(frame) => {
+                frames.submit(frame);
+            }
+            Err(error) => {
+                if let Ok(mut snapshot) = state.snapshot.lock() {
+                    snapshot.status = "Capture error".into();
+                    snapshot.last_error = Some(error);
+                }
+                thread::sleep(Duration::from_millis(250));
+            }
+        }
+        let elapsed = started.elapsed();
+        if elapsed < interval {
+            thread::sleep(interval - elapsed);
+        }
+    }
+}
+
+fn run_pipeline<O, T>(
+    config: AppConfig,
+    ocr: &mut O,
+    translator: T,
+    frames: Arc<LatestFrame<Frame>>,
+    state: Arc<SharedState>,
+) where
     O: OcrBackend,
     T: TranslationBackend,
 {
-    let interval = Duration::from_millis(config.capture_interval_ms.max(16));
     let pair = LanguagePair::new(config.source_lang.clone(), config.target_lang.clone());
     let mut coordinator = TranslationCoordinator::new(translator, 512);
     let mut previous_signature = None;
@@ -111,29 +161,27 @@ fn run_pipeline<C, O, T>(
     let mut window_start = Instant::now();
 
     while !state.stop.load(Ordering::Acquire) {
-        let started = Instant::now();
-        let result: ServiceResult<Option<(Rect, Vec<TextBlock>)>> = (|| {
-            let frame = capture.capture(&source)?;
-            let capture_bounds = frame.bounds;
-            let signature = frame_signature(&frame.rgba);
-            if config.translate_only_when_changed && previous_signature == Some(signature) {
-                return Ok(None);
-            }
-            previous_signature = Some(signature);
+        let Some(frame) = frames.recv() else {
+            break;
+        };
+        let capture_bounds = frame.bounds;
+        let signature = frame_signature(&frame.rgba);
+        if config.translate_only_when_changed && previous_signature == Some(signature) {
+            continue;
+        }
+        previous_signature = Some(signature);
+        let result: ServiceResult<Vec<TextBlock>> = (|| {
             let blocks = ocr
                 .recognize(&frame, &config.source_lang)?
                 .into_iter()
                 .filter(|block| block.confidence >= config.minimum_confidence)
                 .filter(|block| is_valid_text(&block.source_text, &config.source_lang))
                 .collect::<Vec<_>>();
-            Ok(Some((
-                capture_bounds,
-                coordinator.translate_blocks(&pair, blocks)?,
-            )))
+            coordinator.translate_blocks(&pair, blocks)
         })();
 
         match result {
-            Ok(Some((capture_bounds, blocks))) => {
+            Ok(blocks) => {
                 frames_processed += 1;
                 if let Ok(mut snapshot) = state.snapshot.lock() {
                     snapshot.blocks = blocks;
@@ -152,7 +200,6 @@ fn run_pipeline<C, O, T>(
                     };
                 }
             }
-            Ok(None) => {}
             Err(error) => {
                 if let Ok(mut snapshot) = state.snapshot.lock() {
                     snapshot.status = "Pipeline error".into();
@@ -160,11 +207,6 @@ fn run_pipeline<C, O, T>(
                 }
                 thread::sleep(Duration::from_millis(250));
             }
-        }
-
-        let elapsed = started.elapsed();
-        if elapsed < interval {
-            thread::sleep(interval - elapsed);
         }
     }
 
