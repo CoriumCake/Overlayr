@@ -169,7 +169,6 @@ fn run_pipeline<O, T>(
         if config.translate_only_when_changed && previous_signature == Some(signature) {
             continue;
         }
-        previous_signature = Some(signature);
         let result: ServiceResult<Vec<TextBlock>> = (|| {
             let blocks = ocr
                 .recognize(&frame, &config.source_lang)?
@@ -182,6 +181,10 @@ fn run_pipeline<O, T>(
 
         match result {
             Ok(blocks) => {
+                // Only mark a frame as handled after OCR and translation both
+                // succeed. This preserves retries after transient provider or
+                // OCR failures on an otherwise unchanged screen.
+                previous_signature = Some(signature);
                 frames_processed += 1;
                 if let Ok(mut snapshot) = state.snapshot.lock() {
                     snapshot.blocks = blocks;
@@ -267,6 +270,23 @@ mod tests {
         }
     }
 
+    struct RetryTranslation {
+        attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl TranslationBackend for RetryTranslation {
+        fn translate(&mut self, _pair: &LanguagePair, _text: &str) -> ServiceResult<String> {
+            let attempt = self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if attempt == 0 {
+                Err("temporary provider failure".into())
+            } else {
+                Ok("retry-ok".into())
+            }
+        }
+    }
+
     #[test]
     fn worker_publishes_translated_blocks_and_stops() {
         let config = AppConfig {
@@ -299,6 +319,48 @@ mod tests {
             found_translation,
             "worker did not publish translated OCR output"
         );
+        drop(worker);
+    }
+
+    #[test]
+    fn worker_retries_an_unchanged_frame_after_provider_failure() {
+        let config = AppConfig {
+            capture_interval_ms: 16,
+            ..AppConfig::default()
+        };
+        let source = Source {
+            id: "test".into(),
+            name: "Test source".into(),
+            kind: SourceKind::Screen,
+            bounds: Rect::new(0, 0, 10, 10),
+        };
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker = PipelineWorker::start(
+            config,
+            source,
+            FakeCapture,
+            FakeOcr,
+            RetryTranslation {
+                attempts: std::sync::Arc::clone(&attempts),
+            },
+        );
+
+        let mut found_translation = false;
+        for _ in 0..100 {
+            if worker
+                .snapshot()
+                .blocks
+                .first()
+                .and_then(|block| block.translated_text.as_deref())
+                == Some("retry-ok")
+            {
+                found_translation = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(found_translation, "worker did not retry the failed frame");
+        assert!(attempts.load(std::sync::atomic::Ordering::Relaxed) >= 2);
         drop(worker);
     }
 }
