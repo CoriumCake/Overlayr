@@ -46,6 +46,9 @@ platform capture -> frame scheduler -> image preprocessing -> OCR adapter
 
 The website remains under `web/` and is independent from the desktop core.
 
+Every Rust change is checked in CI with rustfmt, strict Clippy, tests, and a
+release build.
+
 ## Legacy prototype
 
 The Python implementation is under `src/overlayr/`. It is retained as a

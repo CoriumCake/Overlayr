@@ -20,3 +20,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "overlayr"
 path = "src/main.rs"
+
+[profile.release]
+codegen-units = 1
+debug = false
+lto = "thin"
+opt-level = 3
+panic = "abort"
+strip = "symbols"
