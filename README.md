@@ -29,9 +29,12 @@ cargo test --release
 cargo run --release
 ```
 
-On Linux/Wayland, install `grim`, `slurp`, `tesseract`, and the language packs
-you need. Set `OVERLAYR_TRANSLATION_API_KEY` when the configured translation
-endpoint requires one. The desktop launcher is `packaging/overlayr.desktop`;
+For the native production capture path, build with `--features native-capture`
+and install the XCap/desktop build prerequisites. The default build uses
+`grim`/ImageMagick fallbacks. On Linux/Wayland, install `grim`, `slurp`,
+`tesseract`, and the language packs you need. Set
+`OVERLAYR_TRANSLATION_API_KEY` when the configured translation endpoint
+requires one. The desktop launcher is `packaging/overlayr.desktop`;
 install the release binary as `overlayr` on `PATH`, then copy that file to
 `~/.local/share/applications/`. The repository also provides
 `packaging/install-linux.sh` to build and install the binary, desktop entry,

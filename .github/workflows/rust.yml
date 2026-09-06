@@ -25,15 +25,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev \
-            libxkbcommon-dev libxrandr-dev libxi-dev libxinerama-dev
+            libxkbcommon-dev libxrandr-dev libxi-dev libxinerama-dev libclang-dev
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --features native-capture -- -D warnings
       - name: Run tests
-        run: cargo test --all-targets
+        run: cargo test --all-targets --features native-capture
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --features native-capture

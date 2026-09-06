@@ -15,6 +15,8 @@ pub mod translation;
 pub mod types;
 pub mod ui;
 
+#[cfg(feature = "native-capture")]
+pub use capture::XCapCapture;
 pub use capture::{GrimCapture, ImageMagickCapture, PlatformCapture};
 pub use config::AppConfig;
 pub use ocr::TesseractOcr;
