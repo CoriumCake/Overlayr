@@ -285,12 +285,21 @@ impl eframe::App for OverlayrApp {
                             .fixed_pos([x, y])
                             .order(egui::Order::Foreground)
                             .show(ui.ctx(), |ui| {
+                                let font_size =
+                                    (block.bounds.height as f32 * 0.9).clamp(10.0, 80.0);
                                 egui::Frame::NONE
                                     .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 190))
                                     .corner_radius(egui::CornerRadius::same(4))
                                     .inner_margin(egui::Margin::same(5))
                                     .show(ui, |ui| {
-                                        ui.colored_label(egui::Color32::WHITE, text);
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(text)
+                                                    .color(egui::Color32::WHITE)
+                                                    .size(font_size),
+                                            )
+                                            .wrap(),
+                                        );
                                     });
                             });
                         }

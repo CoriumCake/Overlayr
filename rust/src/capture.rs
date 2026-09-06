@@ -305,7 +305,8 @@ impl CaptureBackend for XCapCapture {
         if let Ok(windows) = xcap::Window::all() {
             sources.extend(windows.iter().filter_map(|window| {
                 let source = Self::window_source(window).ok()?;
-                if source.name.trim().is_empty() || source.bounds.is_empty() {
+                let is_overlayr = source.name.to_ascii_lowercase().contains("overlayr");
+                if is_overlayr || source.name.trim().is_empty() || source.bounds.is_empty() {
                     None
                 } else {
                     Some(source)
