@@ -1,5 +1,20 @@
 use std::fmt;
 
+/// A screen or window that can be selected as a capture source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Source {
+    pub id: String,
+    pub name: String,
+    pub kind: SourceKind,
+    pub bounds: Rect,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceKind {
+    Screen,
+    Window,
+}
+
 /// A rectangle in physical screen pixels.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Rect {
@@ -29,6 +44,28 @@ impl Rect {
 
     pub const fn is_empty(self) -> bool {
         self.width == 0 || self.height == 0
+    }
+}
+
+/// Captured pixels and the screen-space bounds they came from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Frame {
+    pub sequence: u64,
+    pub bounds: Rect,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl Frame {
+    pub fn new(sequence: u64, bounds: Rect, width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        Self {
+            sequence,
+            bounds,
+            width,
+            height,
+            rgba,
+        }
     }
 }
 

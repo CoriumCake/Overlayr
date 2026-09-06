@@ -3,8 +3,23 @@
 //! Capture, OCR, translation, and UI integrations should depend on these
 //! contracts rather than on a specific operating system implementation.
 
+pub mod capture;
+pub mod config;
+pub mod ocr;
 pub mod pipeline;
+pub mod runtime;
+pub mod services;
+pub mod single_instance;
+pub mod text;
+pub mod translation;
 pub mod types;
+pub mod ui;
 
+pub use capture::GrimCapture;
+pub use config::AppConfig;
+pub use ocr::TesseractOcr;
 pub use pipeline::{LatestFrame, TranslationCache};
-pub use types::{LanguagePair, Rect, TextBlock};
+pub use runtime::{PipelineSnapshot, PipelineWorker};
+pub use services::{CaptureBackend, OcrBackend, TranslationBackend, TranslationCoordinator};
+pub use translation::LibreTranslate;
+pub use types::{Frame, LanguagePair, Rect, Source, SourceKind, TextBlock};

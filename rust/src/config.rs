@@ -1,0 +1,117 @@
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+/// User-configurable settings shared by the desktop UI and processing core.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+pub struct AppConfig {
+    pub appearance_mode: String,
+    pub source_lang: String,
+    pub target_lang: String,
+    pub grouping_mode: String,
+    pub capture_interval_ms: u64,
+    pub minimum_confidence: f32,
+    pub translate_only_when_changed: bool,
+    pub translation_endpoint: String,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            appearance_mode: "Dark".into(),
+            source_lang: "ja".into(),
+            target_lang: "th".into(),
+            grouping_mode: "paragraph".into(),
+            capture_interval_ms: 100,
+            minimum_confidence: 0.35,
+            translate_only_when_changed: true,
+            translation_endpoint: "http://localhost:5000/translate".into(),
+        }
+    }
+}
+
+impl AppConfig {
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+
+        let raw = fs::read_to_string(path)?;
+        serde_json::from_str(&raw)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    /// Save atomically so a process interruption cannot leave invalid JSON.
+    pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let temp_path = path.with_extension("json.tmp");
+        let serialized = serde_json::to_vec_pretty(self)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        fs::write(&temp_path, serialized)?;
+        fs::rename(temp_path, path)
+    }
+
+    pub fn default_path() -> PathBuf {
+        if cfg!(target_os = "windows") {
+            std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("Overlayr")
+                .join("settings.json")
+        } else if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+            PathBuf::from(config_home)
+                .join("overlayr")
+                .join("settings.json")
+        } else {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".config")
+                .join("overlayr")
+                .join("settings.json")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_match_product_baseline() {
+        let config = AppConfig::default();
+        assert_eq!(config.source_lang, "ja");
+        assert_eq!(config.target_lang, "th");
+        assert!(config.translate_only_when_changed);
+        assert_eq!(
+            config.translation_endpoint,
+            "http://localhost:5000/translate"
+        );
+    }
+
+    #[test]
+    fn config_round_trips_atomically() {
+        let directory =
+            std::env::temp_dir().join(format!("overlayr-config-{}", std::process::id()));
+        let path = directory.join("settings.json");
+        let expected = AppConfig {
+            grouping_mode: "line".into(),
+            ..AppConfig::default()
+        };
+
+        expected.save(&path).expect("config save failed");
+        assert_eq!(
+            AppConfig::load(&path).expect("config load failed"),
+            expected
+        );
+        fs::remove_dir_all(directory).expect("test cleanup failed");
+    }
+}
