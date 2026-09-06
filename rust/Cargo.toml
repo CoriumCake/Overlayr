@@ -1,0 +1,14 @@
+[package]
+name = "overlayr-core"
+version = "0.1.0"
+edition = "2024"
+description = "Performance-oriented core for the Overlayr translation overlay"
+license = "MIT"
+
+[lib]
+name = "overlayr_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "overlayr"
+path = "src/main.rs"
