@@ -34,6 +34,14 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    fn migrate_legacy_values(&mut self) {
+        self.source_lang = normalize_language(&self.source_lang);
+        self.target_lang = normalize_language(&self.target_lang);
+        if self.grouping_mode.eq_ignore_ascii_case("group (manga)") {
+            self.grouping_mode = "paragraph".into();
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         for (name, value) in [
             ("source language", &self.source_lang),
@@ -72,8 +80,10 @@ impl AppConfig {
         }
 
         let raw = fs::read_to_string(path)?;
-        serde_json::from_str(&raw)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        let mut config: Self = serde_json::from_str(&raw)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        config.migrate_legacy_values();
+        Ok(config)
     }
 
     /// Save atomically so a process interruption cannot leave invalid JSON.
@@ -111,6 +121,18 @@ impl AppConfig {
                 .join("overlayr")
                 .join("settings.json")
         }
+    }
+}
+
+fn normalize_language(language: &str) -> String {
+    match language.trim().to_ascii_lowercase().as_str() {
+        "japanese" => "ja".into(),
+        "english" => "en".into(),
+        "thai" => "th".into(),
+        "korean" => "ko".into(),
+        "chinese" | "simplified chinese" => "zh-CN".into(),
+        "traditional chinese" => "zh-TW".into(),
+        _ => language.trim().into(),
     }
 }
 
@@ -161,5 +183,23 @@ mod tests {
             ..AppConfig::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn migrates_legacy_human_readable_settings() {
+        let directory =
+            std::env::temp_dir().join(format!("overlayr-legacy-config-{}", std::process::id()));
+        let path = directory.join("settings.json");
+        fs::create_dir_all(&directory).expect("test directory creation failed");
+        fs::write(
+            &path,
+            r#"{"source_lang":"Japanese","target_lang":"Thai","grouping_mode":"Group (Manga)"}"#,
+        )
+        .expect("legacy config write failed");
+        let migrated = AppConfig::load(&path).expect("legacy config load failed");
+        assert_eq!(migrated.source_lang, "ja");
+        assert_eq!(migrated.target_lang, "th");
+        assert_eq!(migrated.grouping_mode, "paragraph");
+        fs::remove_dir_all(directory).expect("test cleanup failed");
     }
 }

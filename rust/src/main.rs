@@ -1,10 +1,16 @@
 fn main() -> eframe::Result {
-    let Some(_instance) = overlayr_core::single_instance::SingleInstance::acquire()
-        .expect("could not acquire Overlayr single-instance lock")
-    else {
-        eprintln!("Overlayr is already running");
-        return Ok(());
+    let instance = match overlayr_core::single_instance::SingleInstance::acquire() {
+        Ok(Some(instance)) => instance,
+        Ok(None) => {
+            eprintln!("Overlayr is already running");
+            return Ok(());
+        }
+        Err(error) => {
+            eprintln!("Could not acquire Overlayr single-instance lock: {error}");
+            return Err(eframe::Error::AppCreation(Box::new(error)));
+        }
     };
+    let _instance = instance;
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Overlayr")
