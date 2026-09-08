@@ -32,11 +32,17 @@ jobs:
           workspaces: rust
       - name: Check formatting
         run: cargo fmt --all -- --check
-      - name: Run Clippy
+      - name: Run fallback Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Run fallback tests
+        run: cargo test --all-targets
+      - name: Build fallback release binary
+        run: cargo build --release
+      - name: Run native-production Clippy
         run: cargo clippy --all-targets --features native-production -- -D warnings
-      - name: Run tests
+      - name: Run native-production tests
         run: cargo test --all-targets --features native-production
-      - name: Build release binary
+      - name: Build native-production release binary
         run: cargo build --release --features native-production
 
   platform-check:
