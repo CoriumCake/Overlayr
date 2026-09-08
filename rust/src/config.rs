@@ -86,7 +86,9 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Save atomically so a process interruption cannot leave invalid JSON.
+    /// Save through a temporary file so a process interruption cannot leave
+    /// invalid JSON. Unix uses an atomic replacement; Windows removes the
+    /// previous destination first because `rename` cannot replace it there.
     pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
         self.validate()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -99,6 +101,10 @@ impl AppConfig {
         let serialized = serde_json::to_vec_pretty(self)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         fs::write(&temp_path, serialized)?;
+        #[cfg(windows)]
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
         fs::rename(temp_path, path)
     }
 
