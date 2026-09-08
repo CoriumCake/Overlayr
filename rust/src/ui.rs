@@ -121,7 +121,9 @@ impl OverlayrApp {
     }
 
     fn stop(&mut self) {
-        self.worker.take();
+        if let Some(mut worker) = self.worker.take() {
+            worker.stop_async();
+        }
         self.active_source = None;
     }
 

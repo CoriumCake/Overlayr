@@ -98,6 +98,28 @@ impl PipelineWorker {
     pub fn stop(&mut self) {
         self.state.stop.store(true, Ordering::Release);
         self.frames.close();
+        self.join_handles();
+    }
+
+    /// Signal shutdown without blocking the caller on an in-flight capture or
+    /// HTTP request. The handles are reaped by a short-lived background thread
+    /// so the desktop UI remains responsive during provider timeouts.
+    pub fn stop_async(&mut self) {
+        self.state.stop.store(true, Ordering::Release);
+        self.frames.close();
+        let capture_handle = self.capture_handle.take();
+        let pipeline_handle = self.pipeline_handle.take();
+        thread::spawn(move || {
+            if let Some(handle) = capture_handle {
+                let _ = handle.join();
+            }
+            if let Some(handle) = pipeline_handle {
+                let _ = handle.join();
+            }
+        });
+    }
+
+    fn join_handles(&mut self) {
         if let Some(handle) = self.capture_handle.take() {
             let _ = handle.join();
         }
