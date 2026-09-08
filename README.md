@@ -27,6 +27,9 @@ implementation while capture, OCR, translation, and UI adapters are migrated.
 cd rust
 cargo test --release
 cargo run --release
+
+# Verify the installed desktop dependencies without opening the GUI
+cargo run --release -- --diagnose
 ```
 
 For the native production path, build with `--features native-production` and
@@ -55,6 +58,11 @@ The website remains under `web/` and is independent from the desktop core.
 
 Every Rust change is checked in CI with rustfmt, strict Clippy, tests, and a
 release build.
+
+The installed launcher also supports `overlayr --help` and
+`overlayr --version`. `overlayr --diagnose` exits successfully only when the
+configured desktop capture source, OCR language pack, and translation endpoint
+configuration are ready.
 
 ## Legacy prototype
 

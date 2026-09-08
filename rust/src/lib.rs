@@ -5,6 +5,7 @@
 
 pub mod capture;
 pub mod config;
+pub mod diagnostics;
 pub mod ocr;
 pub mod pipeline;
 pub mod runtime;

@@ -119,6 +119,14 @@ impl AppConfig {
             PathBuf::from(config_home)
                 .join("overlayr")
                 .join("settings.json")
+        } else if cfg!(target_os = "macos") {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("Library")
+                .join("Application Support")
+                .join("Overlayr")
+                .join("settings.json")
         } else {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
