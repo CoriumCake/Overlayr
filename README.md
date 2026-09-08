@@ -29,16 +29,20 @@ cargo test --release
 cargo run --release
 ```
 
-For the native production capture path, build with `--features native-capture`
-and install the XCap/desktop build prerequisites. The default build uses
-`grim`/ImageMagick fallbacks. On Linux/Wayland, install `grim`, `slurp`,
-`tesseract`, and the language packs you need. Set
+For the native production path, build with `--features native-production` and
+install the XCap/Tesseract desktop build prerequisites. This uses in-process
+capture and OCR. The default build uses `grim`/ImageMagick and CLI Tesseract
+fallbacks. On Linux/Wayland, install `grim`, `slurp`, `tesseract`, and the
+language packs you need. Set
 `OVERLAYR_TRANSLATION_API_KEY` when the configured translation endpoint
 requires one. The desktop launcher is `packaging/overlayr.desktop`;
 install the release binary as `overlayr` on `PATH`, then copy that file to
 `~/.local/share/applications/`. The repository also provides
 `packaging/install-linux.sh` to build and install the binary, desktop entry,
 and icon for the current user.
+
+Native Linux builds additionally need `libclang-dev`, `libtesseract-dev`, and
+`libleptonica-dev` at build time.
 
 ## Planned architecture
 

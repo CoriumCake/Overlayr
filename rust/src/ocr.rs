@@ -18,6 +18,18 @@ pub struct TesseractOcr {
     grouping_mode: String,
 }
 
+#[cfg(feature = "native-ocr")]
+pub struct NativeTesseractOcr {
+    engine: Option<leptess::LepTess>,
+    language: String,
+    grouping_mode: String,
+}
+
+#[cfg(feature = "native-ocr")]
+// LepTess is owned and used exclusively by the pipeline thread. The native
+// backend never shares the Tesseract handle concurrently.
+unsafe impl Send for NativeTesseractOcr {}
+
 impl Default for TesseractOcr {
     fn default() -> Self {
         Self {
@@ -114,6 +126,38 @@ impl TesseractOcr {
     }
 }
 
+#[cfg(feature = "native-ocr")]
+impl NativeTesseractOcr {
+    pub fn new(grouping_mode: impl Into<String>) -> Self {
+        Self {
+            engine: None,
+            language: String::new(),
+            grouping_mode: grouping_mode.into(),
+        }
+    }
+
+    pub fn validate_language(&self, language: &str) -> ServiceResult<()> {
+        let code = TesseractOcr::language(language);
+        leptess::LepTess::new(None, code)
+            .map(|_| ())
+            .map_err(|error| format!("Tesseract language '{code}' is unavailable: {error}"))
+    }
+
+    fn engine_for(&mut self, language: &str) -> ServiceResult<&mut leptess::LepTess> {
+        let code = TesseractOcr::language(language).to_string();
+        if self.language != code || self.engine.is_none() {
+            self.engine =
+                Some(leptess::LepTess::new(None, &code).map_err(|error| {
+                    format!("could not initialize Tesseract '{code}': {error}")
+                })?);
+            self.language = code;
+        }
+        self.engine
+            .as_mut()
+            .ok_or_else(|| "Tesseract engine was not initialized".into())
+    }
+}
+
 impl OcrBackend for TesseractOcr {
     fn recognize(&mut self, frame: &Frame, language: &str) -> ServiceResult<Vec<TextBlock>> {
         let bytes = Self::image_bytes(frame)?;
@@ -149,5 +193,23 @@ impl OcrBackend for TesseractOcr {
             ));
         }
         Ok(self.parse_tsv(frame, &String::from_utf8_lossy(&output.stdout)))
+    }
+}
+
+#[cfg(feature = "native-ocr")]
+impl OcrBackend for NativeTesseractOcr {
+    fn recognize(&mut self, frame: &Frame, language: &str) -> ServiceResult<Vec<TextBlock>> {
+        let bytes = TesseractOcr::image_bytes(frame)?;
+        let grouping_mode = self.grouping_mode.clone();
+        let engine = self.engine_for(language)?;
+        engine
+            .set_image_from_mem(&bytes)
+            .map_err(|error| format!("could not load frame into Tesseract: {error}"))?;
+        engine.set_fallback_source_resolution(300);
+        let tsv = engine
+            .get_tsv_text(0)
+            .map_err(|error| format!("Tesseract returned invalid UTF-8: {error}"))?;
+        let parser = TesseractOcr::new("", grouping_mode);
+        Ok(parser.parse_tsv(frame, &tsv))
     }
 }

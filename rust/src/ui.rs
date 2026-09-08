@@ -5,6 +5,8 @@ use eframe::egui;
 
 use crate::capture::PlatformCapture;
 use crate::config::AppConfig;
+#[cfg(feature = "native-ocr")]
+use crate::ocr::NativeTesseractOcr;
 use crate::ocr::TesseractOcr;
 use crate::runtime::PipelineWorker;
 use crate::translation::LibreTranslate;
@@ -59,13 +61,17 @@ impl OverlayrApp {
         }
     }
 
-    fn save(&mut self) {
+    fn save(&mut self) -> bool {
         match self.config.save(&self.config_path) {
             Ok(()) => {
                 self.error = None;
                 self.saved = true;
+                true
             }
-            Err(error) => self.error = Some(format!("Could not save settings: {error}")),
+            Err(error) => {
+                self.error = Some(format!("Could not save settings: {error}"));
+                false
+            }
         }
     }
 
@@ -80,6 +86,9 @@ impl OverlayrApp {
             );
             return;
         };
+        #[cfg(feature = "native-ocr")]
+        let ocr = NativeTesseractOcr::new(self.config.grouping_mode.clone());
+        #[cfg(not(feature = "native-ocr"))]
         let ocr = TesseractOcr::new(
             std::env::var("OVERLAYR_TESSERACT_BIN").unwrap_or_else(|_| "tesseract".into()),
             self.config.grouping_mode.clone(),
@@ -98,7 +107,9 @@ impl OverlayrApp {
                 return;
             }
         };
-        self.save();
+        if !self.save() {
+            return;
+        }
         self.worker = Some(PipelineWorker::start(
             self.config.clone(),
             source.clone(),
@@ -136,6 +147,11 @@ impl eframe::App for OverlayrApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(100));
         let snapshot = self.worker.as_ref().map(PipelineWorker::snapshot);
+        let capture_hint = if cfg!(feature = "native-capture") {
+            "Native XCap capture is active. OCR uses the in-process production backend when built with native-production."
+        } else {
+            "Linux/Wayland capture uses grim. OCR uses local CLI Tesseract."
+        };
 
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -250,7 +266,9 @@ impl eframe::App for OverlayrApp {
                 ui.heading("Ready");
                 ui.label("Select a source, configure OCR and translation, then start the pipeline.");
                 ui.add_space(12.0);
-                ui.label("Linux/Wayland capture uses grim. OCR uses local Tesseract. Translation uses a configurable LibreTranslate-compatible endpoint.");
+                ui.label(format!(
+                    "{capture_hint} Translation uses a configurable LibreTranslate-compatible endpoint."
+                ));
             }
         });
 
