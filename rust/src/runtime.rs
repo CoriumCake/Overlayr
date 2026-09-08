@@ -104,7 +104,7 @@ impl PipelineWorker {
     /// Signal shutdown without blocking the caller on an in-flight capture or
     /// HTTP request. The handles are reaped by a short-lived background thread
     /// so the desktop UI remains responsive during provider timeouts.
-    pub fn stop_async(&mut self) {
+    pub fn stop_async(&mut self) -> JoinHandle<()> {
         self.state.stop.store(true, Ordering::Release);
         self.frames.close();
         let capture_handle = self.capture_handle.take();
@@ -116,7 +116,7 @@ impl PipelineWorker {
             if let Some(handle) = pipeline_handle {
                 let _ = handle.join();
             }
-        });
+        })
     }
 
     fn join_handles(&mut self) {
@@ -383,6 +383,25 @@ mod tests {
         }
         assert!(found_translation, "worker did not retry the failed frame");
         assert!(attempts.load(std::sync::atomic::Ordering::Relaxed) >= 2);
+        drop(worker);
+    }
+
+    #[test]
+    fn async_stop_returns_a_reaper_handle() {
+        let config = AppConfig {
+            capture_interval_ms: 16,
+            ..AppConfig::default()
+        };
+        let source = Source {
+            id: "test".into(),
+            name: "Test source".into(),
+            kind: SourceKind::Screen,
+            bounds: Rect::new(0, 0, 10, 10),
+        };
+        let mut worker =
+            PipelineWorker::start(config, source, FakeCapture, FakeOcr, FakeTranslation);
+        let reaper = worker.stop_async();
+        reaper.join().expect("worker reaper panicked");
         drop(worker);
     }
 }

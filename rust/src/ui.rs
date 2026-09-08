@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use eframe::egui;
@@ -18,6 +19,7 @@ pub struct OverlayrApp {
     sources: Vec<Source>,
     selected_source: usize,
     worker: Option<PipelineWorker>,
+    stopping: Option<JoinHandle<()>>,
     active_source: Option<Source>,
     error: Option<String>,
     saved: bool,
@@ -39,6 +41,7 @@ impl OverlayrApp {
             sources: Vec::new(),
             selected_source: 0,
             worker: None,
+            stopping: None,
             active_source: None,
             error,
             saved: false,
@@ -76,7 +79,7 @@ impl OverlayrApp {
     }
 
     fn start(&mut self) {
-        if self.worker.is_some() {
+        if self.worker.is_some() || self.stopping.is_some() {
             return;
         }
         let Some(source) = self.sources.get(self.selected_source).cloned() else {
@@ -122,9 +125,19 @@ impl OverlayrApp {
 
     fn stop(&mut self) {
         if let Some(mut worker) = self.worker.take() {
-            worker.stop_async();
+            self.stopping = Some(worker.stop_async());
         }
         self.active_source = None;
+    }
+
+    fn reap_stopping_worker(&mut self) {
+        let finished = self
+            .stopping
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished);
+        if finished && let Some(handle) = self.stopping.take() {
+            let _ = handle.join();
+        }
     }
 
     fn select_region(&mut self) {
@@ -145,8 +158,20 @@ impl Default for OverlayrApp {
     }
 }
 
+impl Drop for OverlayrApp {
+    fn drop(&mut self) {
+        if let Some(mut worker) = self.worker.take() {
+            worker.stop();
+        }
+        if let Some(handle) = self.stopping.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 impl eframe::App for OverlayrApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.reap_stopping_worker();
         ctx.request_repaint_after(Duration::from_millis(100));
         let snapshot = self.worker.as_ref().map(PipelineWorker::snapshot);
         let capture_hint = if cfg!(feature = "native-capture") {
@@ -172,6 +197,8 @@ impl eframe::App for OverlayrApp {
                         if ui.button("Stop").clicked() {
                             self.stop();
                         }
+                    } else if self.stopping.is_some() {
+                        ui.label("Stopping…");
                     } else if ui.button("Start overlay").clicked() {
                         self.start();
                     }
