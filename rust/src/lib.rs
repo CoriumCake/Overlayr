@@ -19,6 +19,8 @@ pub mod ui;
 pub use capture::XCapCapture;
 pub use capture::{GrimCapture, ImageMagickCapture, PlatformCapture};
 pub use config::AppConfig;
+#[cfg(feature = "native-ocr")]
+pub use ocr::NativeTesseractOcr;
 pub use ocr::TesseractOcr;
 pub use pipeline::{LatestFrame, TranslationCache};
 pub use runtime::{PipelineSnapshot, PipelineWorker};
