@@ -187,7 +187,7 @@ fn run_pipeline<O, T>(
             break;
         };
         let capture_bounds = frame.bounds;
-        let signature = frame_signature(&frame.rgba);
+        let signature = frame_signature(&frame);
         if config.translate_only_when_changed && previous_signature == Some(signature) {
             continue;
         }
@@ -241,15 +241,28 @@ fn run_pipeline<O, T>(
     }
 }
 
-fn frame_signature(rgba: &[u8]) -> u64 {
+fn frame_signature(frame: &Frame) -> u64 {
     // A fast, deterministic sampling hash avoids OCR work when a frame is
-    // unchanged while keeping the full frame out of the worker's state.
-    let step = (rgba.len() / 4096).max(4);
-    rgba.iter()
-        .step_by(step)
-        .fold(1469598103934665603_u64, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(1099511628211)
-        })
+    // unchanged while keeping the full frame out of the worker's state. The
+    // geometry is included so a resized or moved source cannot be mistaken
+    // for an unchanged screen with the same pixel sample.
+    let mut hash = 1469598103934665603_u64;
+    for value in [
+        frame.bounds.left as u64,
+        frame.bounds.top as u64,
+        frame.bounds.width as u64,
+        frame.bounds.height as u64,
+        frame.width as u64,
+        frame.height as u64,
+    ] {
+        for byte in value.to_le_bytes() {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(1099511628211);
+        }
+    }
+    let step = (frame.rgba.len() / 4096).max(4);
+    frame.rgba.iter().step_by(step).fold(hash, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(1099511628211)
+    })
 }
 
 #[cfg(test)]
@@ -403,5 +416,14 @@ mod tests {
         let reaper = worker.stop_async();
         reaper.join().expect("worker reaper panicked");
         drop(worker);
+    }
+
+    #[test]
+    fn frame_signature_includes_source_geometry() {
+        let first = Frame::new(1, Rect::new(0, 0, 10, 10), 10, 10, vec![1; 400]);
+        let moved = Frame::new(2, Rect::new(20, 0, 10, 10), 10, 10, vec![1; 400]);
+        let resized = Frame::new(3, Rect::new(0, 0, 20, 20), 20, 20, vec![1; 1_600]);
+        assert_ne!(frame_signature(&first), frame_signature(&moved));
+        assert_ne!(frame_signature(&first), frame_signature(&resized));
     }
 }
