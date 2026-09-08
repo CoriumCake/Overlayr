@@ -26,7 +26,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev \
             libxkbcommon-dev libxrandr-dev libxi-dev libxinerama-dev \
-            libclang-dev libtesseract-dev libleptonica-dev
+            libclang-dev libpipewire-0.3-dev libtesseract-dev libleptonica-dev
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
@@ -38,3 +38,30 @@ jobs:
         run: cargo test --all-targets --features native-production
       - name: Build release binary
         run: cargo build --release --features native-production
+
+  platform-check:
+    name: Native capture (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux capture dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxkbcommon-dev libxrandr-dev libxi-dev libxinerama-dev \
+            libclang-dev libpipewire-0.3-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Check native capture on ${{ matrix.os }}
+        run: cargo check --all-targets --features native-capture
