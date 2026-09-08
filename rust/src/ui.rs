@@ -330,6 +330,11 @@ impl eframe::App for OverlayrApp {
                         }
                     });
             });
+        } else {
+            ctx.send_viewport_cmd_to(
+                egui::ViewportId::from_hash_of("overlayr-translation-overlay"),
+                egui::ViewportCommand::Close,
+            );
         }
     }
 }
