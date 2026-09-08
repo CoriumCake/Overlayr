@@ -30,6 +30,41 @@ fn frame_from_raw(sequence: u64, bounds: Rect, width: u32, height: u32, rgba: Ve
     )
 }
 
+fn source_from_region_selection(selection: &[u8]) -> ServiceResult<Source> {
+    let text = String::from_utf8_lossy(selection);
+    let mut fields = text.split_whitespace();
+    let position = fields
+        .next()
+        .ok_or_else(|| "slurp returned an empty region".to_string())?;
+    let size = fields
+        .next()
+        .ok_or_else(|| "slurp returned an invalid region size".to_string())?;
+    let (left, top) = position
+        .split_once(',')
+        .ok_or_else(|| "slurp returned an invalid position".to_string())?;
+    let (width, height) = size
+        .split_once('x')
+        .ok_or_else(|| "slurp returned an invalid size".to_string())?;
+    let bounds = Rect::new(
+        left.parse().map_err(|_| "invalid region x coordinate")?,
+        top.parse().map_err(|_| "invalid region y coordinate")?,
+        width.parse().map_err(|_| "invalid region width")?,
+        height.parse().map_err(|_| "invalid region height")?,
+    );
+    if bounds.is_empty() {
+        return Err("slurp returned an empty region".into());
+    }
+    Ok(Source {
+        id: format!(
+            "region-{}-{}-{}-{}",
+            bounds.left, bounds.top, bounds.width, bounds.height
+        ),
+        name: format!("Selected region ({}×{})", bounds.width, bounds.height),
+        kind: SourceKind::Screen,
+        bounds,
+    })
+}
+
 /// Capture backend for Wayland compositors that expose the `grim` utility.
 ///
 /// `grim` is intentionally kept behind this small adapter. That means the
@@ -69,32 +104,7 @@ impl GrimCapture {
         if !output.status.success() {
             return Err("region selection was cancelled".into());
         }
-        let selection = String::from_utf8_lossy(&output.stdout);
-        let (position, size) = selection
-            .trim()
-            .split_once(' ')
-            .ok_or_else(|| "slurp returned an invalid region".to_string())?;
-        let (left, top) = position
-            .split_once(',')
-            .ok_or_else(|| "slurp returned an invalid position".to_string())?;
-        let (width, height) = size
-            .split_once('x')
-            .ok_or_else(|| "slurp returned an invalid size".to_string())?;
-        let bounds = Rect::new(
-            left.parse().map_err(|_| "invalid region x coordinate")?,
-            top.parse().map_err(|_| "invalid region y coordinate")?,
-            width.parse().map_err(|_| "invalid region width")?,
-            height.parse().map_err(|_| "invalid region height")?,
-        );
-        Ok(Source {
-            id: format!(
-                "region-{}-{}-{}-{}",
-                bounds.left, bounds.top, bounds.width, bounds.height
-            ),
-            name: format!("Selected region ({}×{})", bounds.width, bounds.height),
-            kind: SourceKind::Screen,
-            bounds,
-        })
+        source_from_region_selection(&output.stdout)
     }
 }
 
@@ -220,32 +230,7 @@ impl XCapCapture {
         if !output.status.success() {
             return Err("region selection was cancelled".into());
         }
-        let selection = String::from_utf8_lossy(&output.stdout);
-        let (position, size) = selection
-            .trim()
-            .split_once(' ')
-            .ok_or_else(|| "slurp returned an invalid region".to_string())?;
-        let (left, top) = position
-            .split_once(',')
-            .ok_or_else(|| "slurp returned an invalid position".to_string())?;
-        let (width, height) = size
-            .split_once('x')
-            .ok_or_else(|| "slurp returned an invalid size".to_string())?;
-        let bounds = Rect::new(
-            left.parse().map_err(|_| "invalid region x coordinate")?,
-            top.parse().map_err(|_| "invalid region y coordinate")?,
-            width.parse().map_err(|_| "invalid region width")?,
-            height.parse().map_err(|_| "invalid region height")?,
-        );
-        Ok(Source {
-            id: format!(
-                "region-{}-{}-{}-{}",
-                bounds.left, bounds.top, bounds.width, bounds.height
-            ),
-            name: format!("Selected region ({}×{})", bounds.width, bounds.height),
-            kind: SourceKind::Screen,
-            bounds,
-        })
+        source_from_region_selection(&output.stdout)
     }
 
     fn monitor_source(monitor: &xcap::Monitor) -> ServiceResult<Source> {
@@ -427,5 +412,25 @@ impl CaptureBackend for PlatformCapture {
             Self::Wayland(capture) => capture.capture(source),
             Self::X11(capture) => capture.capture(source),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_slurp_output_with_whitespace_and_negative_coordinates() {
+        let source = source_from_region_selection(b"\n -120,45   800x600\n")
+            .expect("region output should parse");
+        assert_eq!(source.bounds, Rect::new(-120, 45, 800, 600));
+        assert_eq!(source.id, "region--120-45-800-600");
+    }
+
+    #[test]
+    fn rejects_malformed_slurp_output() {
+        assert!(source_from_region_selection(b"100,200").is_err());
+        assert!(source_from_region_selection(b"100x200 400x300").is_err());
+        assert!(source_from_region_selection(b"100,200 0x300").is_err());
     }
 }
