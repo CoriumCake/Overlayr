@@ -101,3 +101,23 @@ unsafe extern "C" {
         operation: std::os::raw::c_int,
     ) -> std::os::raw::c_int;
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_lock_fallback_allows_one_holder() {
+        let path = std::env::temp_dir().join(format!(
+            "overlayr-lock-test-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let first = open_file_lock(&path).expect("first lock attempt failed");
+        assert!(first.is_some());
+        let second = open_file_lock(&path).expect("second lock attempt failed");
+        assert!(second.is_none());
+        drop(first);
+        std::fs::remove_file(path).expect("lock test cleanup failed");
+    }
+}

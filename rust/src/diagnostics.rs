@@ -1,6 +1,5 @@
 use std::fmt;
 use std::path::Path;
-use std::process::Command;
 
 use crate::capture::PlatformCapture;
 use crate::config::AppConfig;
@@ -71,11 +70,7 @@ pub fn collect(config_path: &Path, config_result: Result<AppConfig, String>) -> 
         }
     };
 
-    report.checks.push(DiagnosticCheck {
-        name: "capture backend".into(),
-        passed: true,
-        detail: backend_name().into(),
-    });
+    report.checks.push(capture_dependency_check());
 
     let mut capture = PlatformCapture::default();
     match capture.sources() {
@@ -131,7 +126,36 @@ fn ocr_check(language: &str) -> DiagnosticCheck {
     }
 }
 
-fn backend_name() -> &'static str {
+fn capture_dependency_check() -> DiagnosticCheck {
+    let (backend, executable) = if cfg!(feature = "native-capture") {
+        ("native XCap", None)
+    } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        ("Wayland grim fallback", Some("grim"))
+    } else if std::env::var_os("DISPLAY").is_some() {
+        ("X11 ImageMagick fallback", Some("import"))
+    } else {
+        return DiagnosticCheck {
+            name: "capture backend".into(),
+            passed: false,
+            detail: "no active desktop session".into(),
+        };
+    };
+
+    match executable {
+        Some(executable) if !command_available(executable) => DiagnosticCheck {
+            name: "capture backend".into(),
+            passed: false,
+            detail: format!("{backend} requires '{executable}' on PATH"),
+        },
+        _ => DiagnosticCheck {
+            name: "capture backend".into(),
+            passed: true,
+            detail: backend.into(),
+        },
+    }
+}
+
+pub fn backend_name() -> &'static str {
     if cfg!(feature = "native-capture") {
         "native XCap"
     } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
@@ -148,11 +172,30 @@ pub fn version() -> &'static str {
 }
 
 pub fn command_available(command: &str) -> bool {
-    Command::new(command)
-        .arg("--version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    let command_path = Path::new(command);
+    if command_path.components().count() > 1 {
+        return command_path.is_file();
+    }
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|directory| directory.join(command))
+        .any(|path| {
+            if !path.is_file() {
+                return false;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                path.metadata()
+                    .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        })
 }
 
 #[cfg(test)]
@@ -183,5 +226,11 @@ mod tests {
     #[test]
     fn version_matches_package_metadata() {
         assert_eq!(version(), "0.1.0");
+    }
+
+    #[test]
+    fn command_lookup_does_not_require_spawning_processes() {
+        assert!(command_available("sh"));
+        assert!(!command_available("overlayr-command-that-does-not-exist"));
     }
 }
