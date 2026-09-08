@@ -1,8 +1,7 @@
 # Overlayr
 
-Overlayr is a real-time screen translation overlay. The project is currently
-migrating from a Windows-only Python prototype to a performance-oriented Rust
-core.
+Overlayr is a real-time screen translation overlay implemented as a
+performance-oriented Rust desktop application.
 
 ## Migration status
 
@@ -18,8 +17,9 @@ The Rust application lives in `rust/` and currently contains:
 - background processing with unchanged-frame skipping, confidence filtering,
   and single-instance locking.
 
-The existing Python desktop app remains temporarily available as a reference
-implementation while capture, OCR, translation, and UI adapters are migrated.
+The Rust application is the canonical product build. Older Python files may be
+present in the repository as migration references, but they are not part of the
+launcher or release build.
 
 ## Build the Rust core
 
@@ -46,6 +46,12 @@ and icon for the current user.
 
 Native Linux builds additionally need `libclang-dev`, `libtesseract-dev`, and
 `libleptonica-dev` at build time.
+
+`packaging/install-linux.sh` builds the native production backend by default.
+Use `OVERLAYR_NATIVE_BUILD=0 packaging/install-linux.sh` when installing the
+portable fallback build on a machine without those development packages.
+Windows builds use `build.ps1`; pass `-Native` when the native XCap/Tesseract
+backend dependencies are available.
 
 ## Planned architecture
 
