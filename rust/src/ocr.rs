@@ -59,12 +59,12 @@ impl TesseractOcr {
 
     fn language(language: &str) -> &str {
         match language {
-            "ja" | "ja-JP" => "jpn",
-            "th" | "th-TH" => "tha",
-            "ko" | "ko-KR" => "kor",
-            "zh" | "zh-CN" => "chi_sim",
+            "ja" | "ja-JP" | "Japanese" => "jpn",
+            "th" | "th-TH" | "Thai" => "tha",
+            "ko" | "ko-KR" | "Korean" => "kor",
+            "zh" | "zh-CN" | "Chinese" => "chi_sim",
             "zh-TW" => "chi_tra",
-            "en" | "en-US" => "eng",
+            "en" | "en-US" | "English" => "eng",
             other => other,
         }
     }
@@ -193,6 +193,38 @@ impl OcrBackend for TesseractOcr {
             ));
         }
         Ok(self.parse_tsv(frame, &String::from_utf8_lossy(&output.stdout)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_tsv_words_into_screen_space_blocks() {
+        let parser = TesseractOcr::new("tesseract", "line");
+        let frame = Frame::new(
+            1,
+            Rect::new(100, 200, 320, 180),
+            320,
+            180,
+            vec![0; 320 * 180 * 4],
+        );
+        let tsv = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t10\t20\t80\t30\t94.5\t猫です\n";
+        let blocks = parser.parse_tsv(&frame, tsv);
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].source_text, "猫です");
+        assert_eq!(blocks[0].bounds, Rect::new(110, 220, 80, 30));
+        assert!((blocks[0].confidence - 0.945).abs() < 0.001);
+    }
+
+    #[test]
+    fn maps_ui_languages_to_tesseract_codes() {
+        assert_eq!(TesseractOcr::language("Japanese"), "jpn");
+        assert_eq!(TesseractOcr::language("ja"), "jpn");
+        assert_eq!(TesseractOcr::language("zh-TW"), "chi_tra");
+        assert_eq!(TesseractOcr::language("th-TH"), "tha");
     }
 }
 
