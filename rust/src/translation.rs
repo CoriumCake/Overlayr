@@ -26,6 +26,24 @@ struct Request<'a> {
 }
 
 #[derive(Deserialize)]
+struct LanguageEntry {
+    code: String,
+}
+
+/// Maps Overlayr's language codes to LibreTranslate's, which drop the region
+/// except for Traditional Chinese.
+pub fn libretranslate_code(language: &str) -> String {
+    match language {
+        "zh-TW" | "zh-Hant" => "zt".into(),
+        other => other
+            .split('-')
+            .next()
+            .unwrap_or(other)
+            .to_ascii_lowercase(),
+    }
+}
+
+#[derive(Deserialize)]
 struct Response {
     #[serde(rename = "translatedText")]
     translated_text: String,
@@ -43,17 +61,130 @@ impl LibreTranslate {
             api_key,
         })
     }
+
+    /// Check that the configured translation service is reachable without
+    /// sending user text. A LibreTranslate `/translate` endpoint commonly
+    /// answers GET with 404/405; any HTTP response still proves the service is
+    /// reachable, so only transport failures are rejected.
+    pub fn check_reachable(&self) -> ServiceResult<()> {
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .map_err(|error| format!("could not create translation health client: {error}"))?;
+        client
+            .get(&self.endpoint)
+            .send()
+            .map(|_| ())
+            .map_err(|error| format!("translation endpoint is unreachable: {error}"))
+    }
+
+    /// Language codes the server has models for, from LibreTranslate's
+    /// `/languages` endpoint next to `/translate`.
+    pub fn languages(&self) -> ServiceResult<Vec<String>> {
+        let base = self
+            .endpoint
+            .trim_end_matches('/')
+            .strip_suffix("/translate")
+            .ok_or_else(|| "endpoint is not a LibreTranslate /translate URL".to_string())?;
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .map_err(|error| format!("could not create translation health client: {error}"))?;
+        client
+            .get(format!("{base}/languages"))
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(|error| format!("could not list languages: {error}"))?
+            .json::<Vec<LanguageEntry>>()
+            .map(|entries| entries.into_iter().map(|entry| entry.code).collect())
+            .map_err(|error| format!("invalid language list: {error}"))
+    }
 }
+
+/// Requests sent to the translation service at the same time.
+const CONCURRENT_REQUESTS: usize = 4;
 
 impl TranslationBackend for LibreTranslate {
     fn translate(&mut self, pair: &LanguagePair, text: &str) -> ServiceResult<String> {
+        self.request(pair, text)
+    }
+
+    fn translate_many(
+        &mut self,
+        pair: &LanguagePair,
+        texts: &[String],
+    ) -> ServiceResult<Vec<String>> {
+        // LibreTranslate serves several requests at once; sending them in
+        // parallel cuts the wait for a screen full of new text.
+        let this = &*self;
+        let mut results = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(CONCURRENT_REQUESTS) {
+            let translated = std::thread::scope(|scope| {
+                let requests = chunk
+                    .iter()
+                    .map(|text| scope.spawn(move || this.request(pair, text)))
+                    .collect::<Vec<_>>();
+                requests
+                    .into_iter()
+                    .map(|request| {
+                        request
+                            .join()
+                            .unwrap_or_else(|_| Err("translation request crashed".into()))
+                    })
+                    .collect::<Vec<_>>()
+            });
+            for result in translated {
+                results.push(result?);
+            }
+        }
+        Ok(results)
+    }
+
+    fn translate_each(
+        &mut self,
+        pair: &LanguagePair,
+        texts: &[String],
+        done: &mut dyn FnMut(usize, ServiceResult<String>),
+    ) {
+        // A few requests run at once; each result is reported the moment
+        // it arrives, and the next text starts in its place.
+        let this = &*self;
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let (sender, results) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            for _ in 0..CONCURRENT_REQUESTS.min(texts.len()) {
+                let (sender, next) = (sender.clone(), &next);
+                scope.spawn(move || {
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(text) = texts.get(index) else {
+                            return;
+                        };
+                        if sender.send((index, this.request(pair, text))).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+            drop(sender);
+            for (index, result) in results {
+                done(index, result);
+            }
+        });
+    }
+}
+
+impl LibreTranslate {
+    fn request(&self, pair: &LanguagePair, text: &str) -> ServiceResult<String> {
         if text.trim().is_empty() || pair.source == pair.target {
             return Ok(text.to_string());
         }
+        let source = libretranslate_code(&pair.source);
+        let target = libretranslate_code(&pair.target);
         let request = Request {
             q: text,
-            source: &pair.source,
-            target: &pair.target,
+            source: &source,
+            target: &target,
             format: "text",
             api_key: self.api_key.as_deref(),
         };
@@ -125,5 +256,12 @@ mod tests {
                 .unwrap(),
             " "
         );
+    }
+
+    #[test]
+    fn reports_unreachable_translation_endpoint() {
+        let provider = LibreTranslate::new("http://127.0.0.1:1/translate", None)
+            .expect("provider creation failed");
+        assert!(provider.check_reachable().is_err());
     }
 }

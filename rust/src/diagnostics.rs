@@ -1,12 +1,10 @@
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::capture::PlatformCapture;
 use crate::config::AppConfig;
-#[cfg(feature = "native-ocr")]
-use crate::ocr::NativeTesseractOcr;
-use crate::ocr::TesseractOcr;
 use crate::services::CaptureBackend;
+use crate::translation::LibreTranslate;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiagnosticCheck {
@@ -92,32 +90,79 @@ pub fn collect(config_path: &Path, config_result: Result<AppConfig, String>) -> 
     }
 
     report.checks.push(ocr_check(&config.source_lang));
-    report.checks.push(DiagnosticCheck {
-        name: "translation configuration".into(),
-        passed: config.translation_endpoint.starts_with("http://")
-            || config.translation_endpoint.starts_with("https://"),
-        detail: config.translation_endpoint.clone(),
-    });
+    report.checks.push(translation_check(
+        &config.translation_endpoint,
+        &config.source_lang,
+        &config.target_lang,
+    ));
 
     report
 }
 
-fn ocr_check(language: &str) -> DiagnosticCheck {
-    #[cfg(feature = "native-ocr")]
-    let result = NativeTesseractOcr::new("paragraph").validate_language(language);
-    #[cfg(not(feature = "native-ocr"))]
-    let result = TesseractOcr::new(
-        std::env::var("OVERLAYR_TESSERACT_BIN").unwrap_or_else(|_| "tesseract".into()),
-        "paragraph",
-    )
-    .validate_language(language);
-
+fn translation_check(endpoint: &str, source: &str, target: &str) -> DiagnosticCheck {
+    let result = LibreTranslate::new(endpoint, None).and_then(|provider| {
+        provider.check_reachable()?;
+        Ok(provider)
+    });
     match result {
-        Ok(()) => DiagnosticCheck {
-            name: "OCR".into(),
-            passed: true,
-            detail: format!("language '{language}' is ready"),
+        // Endpoints that don't expose LibreTranslate's language list can still
+        // be valid, so the language check only applies when the list loads.
+        Ok(provider) => match provider.languages() {
+            Ok(languages) => {
+                let missing = [source, target]
+                    .into_iter()
+                    .map(crate::translation::libretranslate_code)
+                    .filter(|code| !languages.contains(code))
+                    .collect::<Vec<_>>();
+                if missing.is_empty() {
+                    DiagnosticCheck {
+                        name: "translation service".into(),
+                        passed: true,
+                        detail: format!("{endpoint} supports {source} → {target}"),
+                    }
+                } else {
+                    DiagnosticCheck {
+                        name: "translation service".into(),
+                        passed: false,
+                        detail: format!(
+                            "{endpoint} does not have the {} language model loaded (available: {})",
+                            missing.join(", "),
+                            languages.join(", ")
+                        ),
+                    }
+                }
+            }
+            Err(_) => DiagnosticCheck {
+                name: "translation service".into(),
+                passed: true,
+                detail: format!("{endpoint} is reachable"),
+            },
         },
+        Err(error) => DiagnosticCheck {
+            name: "translation service".into(),
+            passed: false,
+            detail: error,
+        },
+    }
+}
+
+fn ocr_check(language: &str) -> DiagnosticCheck {
+    let ocr = crate::ocr::engine(language, "paragraph");
+    match ocr.validate_language(language) {
+        Ok(()) => {
+            let engine = match ocr.name() {
+                "Tesseract" if crate::ocr::has_accurate_model(language) => {
+                    "Tesseract, high-accuracy model"
+                }
+                "Tesseract" => "Tesseract, standard model",
+                name => name,
+            };
+            DiagnosticCheck {
+                name: "OCR".into(),
+                passed: true,
+                detail: format!("language '{language}' is ready ({engine})"),
+            }
+        }
         Err(error) => DiagnosticCheck {
             name: "OCR".into(),
             passed: false,
@@ -172,15 +217,20 @@ pub fn version() -> &'static str {
 }
 
 pub fn command_available(command: &str) -> bool {
+    find_command(command).is_some()
+}
+
+/// Resolves a command the way a shell would, returning its full path.
+pub fn find_command(command: &str) -> Option<PathBuf> {
     let command_path = Path::new(command);
     if command_path.components().count() > 1 {
-        return command_path.is_file();
+        return command_path.is_file().then(|| command_path.to_path_buf());
     }
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
         .map(|directory| directory.join(command))
-        .any(|path| {
+        .find(|path| {
             if !path.is_file() {
                 return false;
             }

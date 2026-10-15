@@ -11,7 +11,18 @@ fn decode_frame(sequence: u64, bounds: Rect, bytes: &[u8]) -> ServiceResult<Fram
         .map_err(|error| format!("could not decode screenshot: {error}"))?
         .to_rgba8();
     let (width, height) = image.dimensions();
-    Ok(frame_from_raw(
+    if bounds.is_empty() {
+        return Ok(frame_from_raw(
+            sequence,
+            bounds,
+            width,
+            height,
+            image.into_raw(),
+        ));
+    }
+    // Keep the requested screen-space bounds: grim captures at the highest
+    // output scale, so the image may be larger than the area it covers.
+    Ok(Frame::new(
         sequence,
         bounds,
         width,
@@ -62,7 +73,92 @@ fn source_from_region_selection(selection: &[u8]) -> ServiceResult<Source> {
         name: format!("Selected region ({}×{})", bounds.width, bounds.height),
         kind: SourceKind::Screen,
         bounds,
+        detail: "Screen region".into(),
     })
+}
+
+const HYPR_WINDOW_PREFIX: &str = "hypr-window:";
+
+/// The Hyprland window address of a window source.
+pub fn hyprland_address(source: &Source) -> Option<&str> {
+    source.id.strip_prefix(HYPR_WINDOW_PREFIX)
+}
+const HYPR_MONITOR_PREFIX: &str = "hypr-monitor:";
+
+/// Lists Hyprland windows (most recently focused first) followed by monitors.
+#[cfg(unix)]
+fn hyprland_sources() -> ServiceResult<Vec<Source>> {
+    let monitors = crate::hyprland::monitors()?;
+    let mut clients = crate::hyprland::clients()?;
+    clients.sort_by_key(|client| (client.focus_history_id < 0, client.focus_history_id));
+    let own_pid = i64::from(std::process::id());
+    let mut sources = clients
+        .iter()
+        .filter(|client| {
+            client.mapped
+                && client.pid != own_pid
+                && !client.title.trim().is_empty()
+                && !client.bounds().is_empty()
+        })
+        .map(|client| Source {
+            id: format!("{HYPR_WINDOW_PREFIX}{}", client.address),
+            name: client.title.clone(),
+            kind: SourceKind::Window,
+            bounds: client.bounds(),
+            detail: if client.class.is_empty() {
+                format!("Workspace {}", client.workspace.name)
+            } else {
+                client.class.clone()
+            },
+        })
+        .collect::<Vec<_>>();
+    sources.extend(monitors.iter().map(|monitor| Source {
+        id: format!("{HYPR_MONITOR_PREFIX}{}", monitor.name),
+        name: monitor.name.clone(),
+        kind: SourceKind::Screen,
+        bounds: monitor.logical_bounds(),
+        detail: monitor.description.clone(),
+    }));
+    Ok(sources)
+}
+
+struct WindowState {
+    bounds: Rect,
+    visible: bool,
+    /// The window, or Overlayr itself, has focus.
+    focused: bool,
+    full_size: bool,
+    /// Identifier for capturing the window's own contents with `grim -T`.
+    toplevel: String,
+}
+
+/// Current state of a Hyprland window source, or `None` for sources that are
+/// not Hyprland windows. Looked up on every call so capture follows the
+/// window when it moves or resizes.
+fn hyprland_window_state(source: &Source) -> Option<ServiceResult<WindowState>> {
+    let address = source.id.strip_prefix(HYPR_WINDOW_PREFIX)?;
+    #[cfg(unix)]
+    {
+        Some((|| {
+            let client = crate::hyprland::clients()?
+                .into_iter()
+                .find(|client| client.address == address)
+                .ok_or_else(|| "the selected window was closed".to_string())?;
+            let monitors = crate::hyprland::monitors()?;
+            Ok(WindowState {
+                bounds: client.bounds(),
+                visible: client.is_visible(&monitors),
+                focused: crate::hyprland::is_focused(address).unwrap_or(true),
+                full_size: client.is_full_size(&monitors),
+                toplevel: client.stable_id,
+            })
+        })())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = address;
+        Some(Err("Hyprland windows are only available on Linux".into()))
+    }
 }
 
 /// Capture backend for Wayland compositors that expose the `grim` utility.
@@ -74,6 +170,7 @@ fn source_from_region_selection(selection: &[u8]) -> ServiceResult<Source> {
 pub struct GrimCapture {
     command: String,
     sequence: u64,
+    supports_toplevel: Option<bool>,
 }
 
 impl Default for GrimCapture {
@@ -81,6 +178,7 @@ impl Default for GrimCapture {
         Self {
             command: "grim".to_string(),
             sequence: 0,
+            supports_toplevel: None,
         }
     }
 }
@@ -108,32 +206,46 @@ impl GrimCapture {
     }
 }
 
-impl CaptureBackend for GrimCapture {
-    fn sources(&mut self) -> ServiceResult<Vec<Source>> {
-        if std::env::var_os("WAYLAND_DISPLAY").is_none() {
-            return Err("Wayland is not active; Grim capture is unavailable".into());
-        }
-
-        Ok(vec![Source {
-            id: "wayland-desktop".into(),
-            name: "Wayland desktop".into(),
-            kind: SourceKind::Screen,
-            // Grim returns the compositor's full logical output. The exact
-            // dimensions are filled in by the first capture.
-            bounds: Rect::default(),
-        }])
+impl GrimCapture {
+    /// grim 1.5 added `-T`, which captures a window's own buffer. Unlike a
+    /// screen region, that excludes Overlayr's overlay on top of the window
+    /// and works while the window is covered or on another workspace.
+    fn supports_toplevel(&mut self) -> bool {
+        *self.supports_toplevel.get_or_insert_with(|| {
+            Command::new(&self.command)
+                .arg("-h")
+                .output()
+                .is_ok_and(|output| {
+                    String::from_utf8_lossy(&output.stdout).contains("-T ")
+                        || String::from_utf8_lossy(&output.stderr).contains("-T ")
+                })
+        })
     }
 
-    fn capture(&mut self, source: &Source) -> ServiceResult<Frame> {
-        if source.kind != SourceKind::Screen {
-            return Err("Grim currently supports screen sources only".into());
-        }
-
+    fn grab(&mut self, source: &Source, scale: Option<f32>) -> ServiceResult<Frame> {
+        let window = hyprland_window_state(source).transpose()?;
+        let bounds = window
+            .as_ref()
+            .map_or(source.bounds, |window| window.bounds);
         let mut command = Command::new(&self.command);
-        if !source.bounds.is_empty() {
+        // Raw PPM: PNG takes grim ~400 ms to compress on a 1440p frame, and
+        // even uncompressed PNG costs time to write and decode again.
+        command.args(["-t", "ppm"]);
+        if let Some(scale) = scale {
+            // Thumbnails also downscale in the compositor.
+            command.args(["-s", &format!("{scale:.3}")]);
+        }
+        if let Some(window) = &window
+            && !window.toplevel.is_empty()
+            && self.supports_toplevel()
+        {
+            command.args(["-T", &window.toplevel]);
+        } else if let Some(output) = source.id.strip_prefix(HYPR_MONITOR_PREFIX) {
+            command.args(["-o", output]);
+        } else if !bounds.is_empty() {
             command.arg("-g").arg(format!(
                 "{},{} {}x{}",
-                source.bounds.left, source.bounds.top, source.bounds.width, source.bounds.height
+                bounds.left, bounds.top, bounds.width, bounds.height
             ));
         }
         let output = command
@@ -149,7 +261,79 @@ impl CaptureBackend for GrimCapture {
         }
 
         self.sequence = self.sequence.saturating_add(1);
-        decode_frame(self.sequence, source.bounds, &output.stdout)
+        decode_frame(self.sequence, bounds, &output.stdout)
+    }
+}
+
+impl CaptureBackend for GrimCapture {
+    fn sources(&mut self) -> ServiceResult<Vec<Source>> {
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            return Err("Wayland is not active; Grim capture is unavailable".into());
+        }
+
+        #[cfg(unix)]
+        if crate::hyprland::is_available()
+            && let Ok(sources) = hyprland_sources()
+            && !sources.is_empty()
+        {
+            return Ok(sources);
+        }
+
+        Ok(vec![Source {
+            id: "wayland-desktop".into(),
+            name: "Wayland desktop".into(),
+            kind: SourceKind::Screen,
+            // Grim returns the compositor's full logical output. The exact
+            // dimensions are filled in by the first capture.
+            bounds: Rect::default(),
+            detail: "Entire desktop".into(),
+        }])
+    }
+
+    fn capture(&mut self, source: &Source) -> ServiceResult<Frame> {
+        self.grab(source, None)
+    }
+
+    fn source_is_active(&mut self, source: &Source) -> ServiceResult<bool> {
+        match hyprland_window_state(source) {
+            // Translations hide while another app has focus, even one in
+            // front of the game on the same workspace.
+            Some(state) => state.map(|window| window.visible && window.focused),
+            None => Ok(true),
+        }
+    }
+
+    fn source_is_full_size(&mut self, source: &Source) -> ServiceResult<bool> {
+        match hyprland_window_state(source) {
+            Some(state) => state.map(|window| window.full_size),
+            None => Ok(true),
+        }
+    }
+
+    fn can_capture_hidden(&mut self, source: &Source) -> bool {
+        // `grim -T` reads the window's own buffer, wherever it is.
+        source.id.starts_with(HYPR_WINDOW_PREFIX) && self.supports_toplevel()
+    }
+
+    fn thumbnail(&mut self, source: &Source, max_width: u32) -> ServiceResult<Frame> {
+        let width = match hyprland_window_state(source) {
+            Some(state) => {
+                let window = state?;
+                // Without toplevel capture, the pixels at a hidden window's
+                // position belong to whatever is on screen now.
+                if !window.visible && !(self.supports_toplevel() && !window.toplevel.is_empty()) {
+                    return Err("window is not visible on screen".into());
+                }
+                window.bounds.width
+            }
+            None => source.bounds.width,
+        };
+        let scale = if width == 0 {
+            0.15
+        } else {
+            (max_width as f32 / width as f32).min(1.0)
+        };
+        self.grab(source, Some(scale))
     }
 }
 
@@ -180,6 +364,7 @@ impl CaptureBackend for ImageMagickCapture {
             name: "X11 desktop".into(),
             kind: SourceKind::Screen,
             bounds: Rect::default(),
+            detail: "Entire desktop".into(),
         }])
     }
 
@@ -250,6 +435,7 @@ impl XCapCapture {
             name,
             kind: SourceKind::Screen,
             bounds,
+            detail: "Screen".into(),
         })
     }
 
@@ -257,14 +443,10 @@ impl XCapCapture {
         let id = window.id().map_err(|error| error.to_string())?;
         let title = window.title().map_err(|error| error.to_string())?;
         let app_name = window.app_name().unwrap_or_default();
-        let name = if app_name.is_empty() {
-            title.clone()
-        } else {
-            format!("{app_name}: {title}")
-        };
         Ok(Source {
             id: format!("window:{id}"),
-            name,
+            name: title,
+            detail: app_name,
             kind: SourceKind::Window,
             bounds: Rect::new(
                 window.x().map_err(|error| error.to_string())?,
@@ -290,7 +472,8 @@ impl CaptureBackend for XCapCapture {
         if let Ok(windows) = xcap::Window::all() {
             sources.extend(windows.iter().filter_map(|window| {
                 let source = Self::window_source(window).ok()?;
-                let is_overlayr = source.name.to_ascii_lowercase().contains("overlayr");
+                let is_overlayr = source.name.to_ascii_lowercase().contains("overlayr")
+                    || source.detail.to_ascii_lowercase().contains("overlayr");
                 if is_overlayr || source.name.trim().is_empty() || source.bounds.is_empty() {
                     None
                 } else {
@@ -354,6 +537,24 @@ impl CaptureBackend for XCapCapture {
             image.into_raw(),
         ))
     }
+
+    fn source_is_active(&mut self, source: &Source) -> ServiceResult<bool> {
+        let Some(id) = source.id.strip_prefix("window:") else {
+            return Ok(true);
+        };
+        let id = id.parse::<u32>().map_err(|_| "invalid window id")?;
+        let window = xcap::Window::all()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|window| window.id().ok() == Some(id))
+            .ok_or_else(|| "selected window is no longer available".to_string())?;
+        // Shown unless minimised: switching to another application must not
+        // stop translation.
+        window
+            .is_minimized()
+            .map(|minimized| !minimized)
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// Selects the capture implementation from the active desktop session.
@@ -369,7 +570,7 @@ impl Default for PlatformCapture {
     fn default() -> Self {
         #[cfg(feature = "native-capture")]
         {
-            return Self::Native(XCapCapture::default());
+            Self::Native(XCapCapture::default())
         }
         #[cfg(not(feature = "native-capture"))]
         {
@@ -411,6 +612,42 @@ impl CaptureBackend for PlatformCapture {
             Self::Native(capture) => capture.capture(source),
             Self::Wayland(capture) => capture.capture(source),
             Self::X11(capture) => capture.capture(source),
+        }
+    }
+
+    fn source_is_active(&mut self, source: &Source) -> ServiceResult<bool> {
+        match self {
+            #[cfg(feature = "native-capture")]
+            Self::Native(capture) => capture.source_is_active(source),
+            Self::Wayland(capture) => capture.source_is_active(source),
+            Self::X11(capture) => capture.source_is_active(source),
+        }
+    }
+
+    fn source_is_full_size(&mut self, source: &Source) -> ServiceResult<bool> {
+        match self {
+            #[cfg(feature = "native-capture")]
+            Self::Native(capture) => capture.source_is_full_size(source),
+            Self::Wayland(capture) => capture.source_is_full_size(source),
+            Self::X11(capture) => capture.source_is_full_size(source),
+        }
+    }
+
+    fn can_capture_hidden(&mut self, source: &Source) -> bool {
+        match self {
+            #[cfg(feature = "native-capture")]
+            Self::Native(capture) => capture.can_capture_hidden(source),
+            Self::Wayland(capture) => capture.can_capture_hidden(source),
+            Self::X11(capture) => capture.can_capture_hidden(source),
+        }
+    }
+
+    fn thumbnail(&mut self, source: &Source, max_width: u32) -> ServiceResult<Frame> {
+        match self {
+            #[cfg(feature = "native-capture")]
+            Self::Native(capture) => capture.thumbnail(source, max_width),
+            Self::Wayland(capture) => capture.thumbnail(source, max_width),
+            Self::X11(capture) => capture.thumbnail(source, max_width),
         }
     }
 }

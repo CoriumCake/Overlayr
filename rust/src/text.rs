@@ -1,5 +1,3 @@
-use crate::types::TextBlock;
-
 /// Remove common OCR artifacts without changing meaningful punctuation.
 pub fn clean_text(input: &str) -> String {
     input
@@ -73,6 +71,23 @@ pub fn is_valid_text(text: &str, source_lang: &str) -> bool {
     true
 }
 
+/// Drops East Asian characters at the ends of text in a language written
+/// without them: OCR reads a menu icon next to a word as one ("中Storage").
+pub fn trim_icon_misreads(text: &str, source_lang: &str) -> String {
+    if !matches!(source_lang, "en") {
+        return text.to_string();
+    }
+    let trimmed = text
+        .trim()
+        .trim_matches(|character: char| is_east_asian(character) || character.is_whitespace());
+    // Only when a real word is left: all-Thai text (the overlay's own) stays
+    // as it is, and invalid.
+    if trimmed.chars().any(is_east_asian) || !trimmed.chars().any(char::is_alphabetic) {
+        return text.to_string();
+    }
+    trimmed.to_string()
+}
+
 fn is_east_asian(character: char) -> bool {
     matches!(character,
         '\u{3040}'..='\u{30ff}' |
@@ -81,48 +96,107 @@ fn is_east_asian(character: char) -> bool {
         '\u{0e00}'..='\u{0e7f}')
 }
 
-/// Merge OCR blocks according to the selected display mode.
-pub fn merge_blocks(mut blocks: Vec<TextBlock>, mode: &str) -> Vec<TextBlock> {
-    if blocks.is_empty() {
-        return blocks;
+/// Whether text contains something word-like: East Asian script, or a run
+/// of at least three letters. This drops icon fragments that OCR reads as
+/// short letter pairs such as "QO" or "Vv".
+pub fn has_word(text: &str) -> bool {
+    if text.chars().any(is_east_asian) {
+        return true;
     }
-    blocks.sort_by_key(|block| (block.bounds.top, block.bounds.left));
-
-    let mut merged: Vec<TextBlock> = Vec::new();
-    for block in blocks {
-        let can_merge = merged.last().is_some_and(|previous| {
-            let vertical_gap = block.bounds.top - previous.bounds.bottom();
-            let horizontal_overlap = block.bounds.left < previous.bounds.right()
-                && previous.bounds.left < block.bounds.right();
-            if mode == "line" {
-                horizontal_overlap || vertical_gap.abs() < 15
-            } else {
-                horizontal_overlap && vertical_gap <= block.bounds.height as i32 * 2
+    let mut run = 0;
+    for character in text.chars() {
+        if character.is_alphabetic() {
+            run += 1;
+            if run >= 3 {
+                return true;
             }
-        });
-
-        if can_merge {
-            let previous = merged.last_mut().expect("merge candidate exists");
-            previous.source_text.push(' ');
-            previous.source_text.push_str(&block.source_text);
-            let left = previous.bounds.left.min(block.bounds.left);
-            let top = previous.bounds.top.min(block.bounds.top);
-            let right = previous.bounds.right().max(block.bounds.right());
-            let bottom = previous.bounds.bottom().max(block.bounds.bottom());
-            previous.bounds =
-                crate::types::Rect::new(left, top, (right - left) as u32, (bottom - top) as u32);
-            previous.confidence = previous.confidence.min(block.confidence);
         } else {
-            merged.push(block);
+            run = 0;
         }
     }
-    merged
+    false
+}
+
+/// Whether a word written in a Latin-script language reads as a real word,
+/// abbreviation or number. OCR of icons, health bars and pixel art produces
+/// tokens like "rrr'/", "VOJ'/E@Q'" or "L3" that fail this.
+pub fn is_word_like(token: &str) -> bool {
+    let mut parts = token.split_whitespace().peekable();
+    parts.peek().is_some() && parts.all(is_single_word_like)
+}
+
+fn is_single_word_like(token: &str) -> bool {
+    let core = token.trim_matches(|character: char| !character.is_alphanumeric());
+    if core.is_empty() {
+        return false;
+    }
+    if core.chars().all(|character| {
+        character.is_ascii_digit() || matches!(character, ',' | '.' | '%' | ':' | '/')
+    }) {
+        return core.chars().any(|character| character.is_ascii_digit());
+    }
+    if !core
+        .chars()
+        .all(|character| character.is_alphabetic() || matches!(character, '\'' | '-'))
+    {
+        return false;
+    }
+    let letters = core
+        .chars()
+        .filter(|character| character.is_alphabetic())
+        .collect::<Vec<_>>();
+    // Real words rarely repeat a letter three times ("rrr" is a health bar).
+    if letters.windows(3).any(|window| {
+        window[0].eq_ignore_ascii_case(&window[1]) && window[1].eq_ignore_ascii_case(&window[2])
+    }) {
+        return false;
+    }
+    match letters.len() {
+        1 => matches!(letters[0], 'a' | 'A' | 'I'),
+        // Short all-caps abbreviations common in games: HP, XP, NPC.
+        2..=3 if letters.iter().all(|letter| letter.is_uppercase()) => true,
+        _ => letters
+            .iter()
+            .any(|letter| !letter.is_ascii() || "aeiouyAEIOUY".contains(*letter)),
+    }
+}
+
+/// Whether `text` is in a Latin-script language, where [`is_word_like`]
+/// applies. Chinese, Japanese, Korean and Thai are judged differently.
+pub fn is_latin_text(text: &str) -> bool {
+    !text.chars().any(is_east_asian)
+        && text
+            .chars()
+            .any(|character| character.is_ascii_alphabetic())
+}
+
+/// Joins OCR words, omitting spaces between scripts written without them
+/// (Chinese, Japanese and Thai).
+pub fn join_words<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
+    let mut text = String::new();
+    for word in words {
+        let needs_space = text.chars().last().is_some_and(|previous| {
+            !(is_east_asian(previous) && word.chars().next().is_some_and(is_east_asian))
+        });
+        if needs_space {
+            text.push(' ');
+        }
+        text.push_str(word);
+    }
+    text
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Rect, TextBlock};
+
+    #[test]
+    fn icons_misread_as_characters_are_trimmed() {
+        assert_eq!(trim_icon_misreads("中Storage", "en"), "Storage");
+        assert_eq!(trim_icon_misreads("食 Mekanism", "en"), "Mekanism");
+        assert_eq!(trim_icon_misreads("การผลิต", "en"), "การผลิต");
+        assert_eq!(trim_icon_misreads("中Storage", "ja"), "中Storage");
+    }
 
     #[test]
     fn validates_language_specific_text() {
@@ -137,13 +211,39 @@ mod tests {
     }
 
     #[test]
-    fn merges_nearby_paragraph_blocks() {
-        let blocks = vec![
-            TextBlock::new(Rect::new(0, 0, 100, 20), "First", 0.9),
-            TextBlock::new(Rect::new(0, 25, 100, 20), "Second", 0.8),
-        ];
-        let merged = merge_blocks(blocks, "paragraph");
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].source_text, "First Second");
+    fn joins_words_with_script_aware_spacing() {
+        assert_eq!(join_words(["This", "chapter"]), "This chapter");
+        assert_eq!(join_words(["猫", "です"]), "猫です");
+        assert_eq!(join_words(["Minecraft", "の", "世界"]), "Minecraft の世界");
+    }
+
+    #[test]
+    fn recognises_word_like_tokens() {
+        for word in [
+            "Crafting", "Water", "a", "I", "HP", "XP", "1466", "+100%", "(1)", "don't", "Game,",
+        ] {
+            assert!(is_word_like(word), "{word} should be word-like");
+        }
+        for junk in [
+            "rrr'/",
+            "rrrrrrrrr",
+            "ttr'/",
+            "VOJ'/E@Q'",
+            "L3",
+            "h:',",
+            "'f",
+            "x",
+            "+",
+        ] {
+            assert!(!is_word_like(junk), "{junk} should be junk");
+        }
+    }
+
+    #[test]
+    fn requires_a_word_like_run() {
+        assert!(has_word("Gearing Up"));
+        assert!(has_word("猫"));
+        assert!(!has_word("QO"));
+        assert!(!has_word("Vv \" o"));
     }
 }

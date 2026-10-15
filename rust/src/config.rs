@@ -15,7 +15,150 @@ pub struct AppConfig {
     pub capture_interval_ms: u64,
     pub minimum_confidence: f32,
     pub translate_only_when_changed: bool,
+    /// Text similarity (0–1) at which recognised text reuses an existing
+    /// translation instead of being translated again.
+    pub match_threshold: f32,
+    /// Pixel similarity (0–1) at which moved text is followed without being
+    /// read again.
+    pub follow_threshold: f32,
+    /// Fraction of the window (0–1) that must change, unexplained by known
+    /// text, before text is read again.
+    pub detect_threshold: f32,
+    /// Path of the translation pack to play; empty for machine translation.
+    pub active_pack: String,
+    /// Collects and shows what the pipeline is doing.
+    pub debug: bool,
     pub translation_endpoint: String,
+    pub keybinds: Keybinds,
+    /// Drafts translations in the studio: "libretranslate", or an AI
+    /// provider ("claude", "chatgpt", "gemini", "deepseek").
+    pub draft_translator: String,
+    /// Model per AI provider, when not its default.
+    pub ai_models: std::collections::BTreeMap<String, String>,
+    /// How much CPU the overlay may use, traded against how fast it reacts.
+    pub performance: Performance,
+}
+
+/// Speed versus CPU use, so the overlay suits slow and fast computers.
+/// `capture_interval_ms` (how often the screen is checked) belongs here too
+/// but stays top-level for older settings files.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+pub struct Performance {
+    /// Checks the screen more often while translations are shown, so they
+    /// clear quickly when their text goes away.
+    pub fast_clear: bool,
+    /// Capture interval while translations are shown, with `fast_clear`.
+    pub fast_clear_interval_ms: u64,
+    /// Redraws a translation whenever the picture under it changes (e.g. a
+    /// hover highlight), so its background keeps matching.
+    pub follow_highlights: bool,
+    /// Waits until new text stops changing (fading in) before reading it.
+    pub wait_for_settle: bool,
+    /// Pauses after each OCR read about as long as the read took.
+    pub rest_between_reads: bool,
+    /// CPU threads per OCR model.
+    pub ocr_threads: usize,
+    /// Runs capture and OCR at low priority, so the game comes first.
+    pub low_priority: bool,
+}
+
+impl Default for Performance {
+    fn default() -> Self {
+        Self::BALANCED
+    }
+}
+
+impl Performance {
+    pub const LIGHT: Self = Self {
+        fast_clear: false,
+        fast_clear_interval_ms: 40,
+        follow_highlights: false,
+        wait_for_settle: true,
+        rest_between_reads: true,
+        ocr_threads: 1,
+        low_priority: true,
+    };
+    pub const BALANCED: Self = Self {
+        fast_clear: true,
+        fast_clear_interval_ms: 40,
+        follow_highlights: true,
+        wait_for_settle: true,
+        rest_between_reads: true,
+        ocr_threads: 2,
+        low_priority: true,
+    };
+    pub const FAST: Self = Self {
+        fast_clear: true,
+        fast_clear_interval_ms: 25,
+        follow_highlights: true,
+        wait_for_settle: true,
+        rest_between_reads: false,
+        ocr_threads: 4,
+        low_priority: true,
+    };
+
+    /// Settings that apply process-wide: OCR threads and thread priority.
+    /// Takes effect for OCR engines and threads started afterwards.
+    pub fn apply(&self) {
+        crate::neural::set_threads(self.ocr_threads);
+        crate::services::set_low_priority(self.low_priority);
+    }
+}
+
+/// Ready-made performance settings: (name, description, capture interval
+/// in ms, settings).
+pub const PERFORMANCE_PRESETS: [(&str, &str, u64, Performance); 3] = [
+    (
+        "Light",
+        "For slower computers: least CPU, translations react more slowly.",
+        250,
+        Performance::LIGHT,
+    ),
+    (
+        "Balanced",
+        "Quick to react without taking much from the game.",
+        100,
+        Performance::BALANCED,
+    ),
+    (
+        "Fast",
+        "For powerful computers: reacts fastest, uses the most CPU.",
+        33,
+        Performance::FAST,
+    ),
+];
+
+impl AppConfig {
+    /// The model to draft with on `provider`.
+    pub fn ai_model(&self, provider: crate::ai::Provider) -> String {
+        self.ai_models
+            .get(provider.id())
+            .map(|model| model.trim())
+            .filter(|model| !model.is_empty())
+            .unwrap_or(provider.default_model())
+            .to_string()
+    }
+}
+
+/// Desktop shortcuts, as Hyprland key combinations ("SUPER + SHIFT + O");
+/// empty turns one off.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+pub struct Keybinds {
+    /// Starts or stops the overlay.
+    pub toggle_overlay: String,
+    /// Hides or shows the translations.
+    pub toggle_translations: String,
+}
+
+impl Default for Keybinds {
+    fn default() -> Self {
+        Self {
+            toggle_overlay: "SUPER + SHIFT + O".into(),
+            toggle_translations: "SUPER + SHIFT + H".into(),
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -28,7 +171,16 @@ impl Default for AppConfig {
             capture_interval_ms: 100,
             minimum_confidence: 0.35,
             translate_only_when_changed: true,
+            match_threshold: 0.85,
+            follow_threshold: 0.8,
+            detect_threshold: 0.001,
+            active_pack: String::new(),
+            debug: false,
             translation_endpoint: "http://localhost:5000/translate".into(),
+            keybinds: Keybinds::default(),
+            draft_translator: "libretranslate".into(),
+            ai_models: std::collections::BTreeMap::new(),
+            performance: Performance::default(),
         }
     }
 }
@@ -62,6 +214,21 @@ impl AppConfig {
         if !(16..=5_000).contains(&self.capture_interval_ms) {
             return Err("capture interval must be between 16 and 5000 ms".into());
         }
+        if !(16..=1_000).contains(&self.performance.fast_clear_interval_ms) {
+            return Err("fast clear interval must be between 16 and 1000 ms".into());
+        }
+        if !(1..=16).contains(&self.performance.ocr_threads) {
+            return Err("OCR threads must be between 1 and 16".into());
+        }
+        for (name, value) in [
+            ("match threshold", self.match_threshold),
+            ("follow threshold", self.follow_threshold),
+            ("detection threshold", self.detect_threshold),
+        ] {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err(format!("{name} must be between 0 and 1"));
+            }
+        }
         if !self.minimum_confidence.is_finite() || !(0.0..=1.0).contains(&self.minimum_confidence) {
             return Err("confidence must be between 0 and 1".into());
         }
@@ -75,11 +242,15 @@ impl AppConfig {
 
     pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref();
-        if !path.exists() {
+        let source_path = if path.exists() {
+            path.to_path_buf()
+        } else if let Some(legacy_path) = legacy_settings_path(path) {
+            legacy_path
+        } else {
             return Ok(Self::default());
-        }
+        };
 
-        let raw = fs::read_to_string(path)?;
+        let raw = fs::read_to_string(source_path)?;
         let mut config: Self = serde_json::from_str(&raw)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         config.migrate_legacy_values();
@@ -138,6 +309,21 @@ impl AppConfig {
     }
 }
 
+fn legacy_settings_path(current_path: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.push(current_dir.join("settings.json"));
+    }
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(parent) = executable.parent()
+    {
+        candidates.push(parent.join("settings.json"));
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| candidate != current_path && candidate.is_file())
+}
+
 fn normalize_language(language: &str) -> String {
     match language.trim().to_ascii_lowercase().as_str() {
         "japanese" => "ja".into(),
@@ -153,6 +339,22 @@ fn normalize_language(language: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_models_fall_back_to_each_providers_default() {
+        let mut config = AppConfig::default();
+        assert_eq!(
+            config.ai_model(crate::ai::Provider::DeepSeek),
+            "deepseek-chat"
+        );
+        config.ai_models.insert("chatgpt".into(), " gpt-5 ".into());
+        assert_eq!(config.ai_model(crate::ai::Provider::ChatGpt), "gpt-5");
+        config.ai_models.insert("gemini".into(), "  ".into());
+        assert_eq!(
+            config.ai_model(crate::ai::Provider::Gemini),
+            crate::ai::Provider::Gemini.default_model()
+        );
+    }
 
     #[test]
     fn defaults_match_product_baseline() {
@@ -215,5 +417,19 @@ mod tests {
         assert_eq!(migrated.target_lang, "th");
         assert_eq!(migrated.grouping_mode, "paragraph");
         fs::remove_dir_all(directory).expect("test cleanup failed");
+    }
+
+    #[test]
+    fn performance_presets_are_valid_and_old_settings_get_balanced() {
+        for (name, _, interval, performance) in PERFORMANCE_PRESETS {
+            let config = AppConfig {
+                capture_interval_ms: interval,
+                performance,
+                ..AppConfig::default()
+            };
+            assert_eq!(config.validate(), Ok(()), "{name}");
+        }
+        let old: AppConfig = serde_json::from_str(r#"{"source_lang": "en"}"#).unwrap();
+        assert_eq!(old.performance, Performance::BALANCED);
     }
 }
