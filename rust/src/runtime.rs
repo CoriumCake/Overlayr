@@ -371,10 +371,6 @@ fn run_pipeline<O, T>(
         std::collections::HashMap::new();
     let started = Instant::now();
     let mut debug = config.debug.then(DebugInfo::default);
-    // TEMP: trace for diagnosing dropped translations.
-    let mut trace =
-        std::env::var_os("OVERLAYR_TRACE").and_then(|path| std::fs::File::create(path).ok());
-    let mut traced = String::new();
     let log = |debug: &mut Option<DebugInfo>, message: String| {
         if let Some(debug) = debug {
             debug.log.push(format!(
@@ -473,34 +469,6 @@ fn run_pipeline<O, T>(
             let finished = job.as_ref().and_then(|_| results.try_recv().ok());
             let track_started = Instant::now();
             let update = tracker.update(&frame);
-            if let Some(file) = &mut trace {
-                let now = tracker
-                    .blocks(&frame)
-                    .iter()
-                    .map(|block| {
-                        format!(
-                            "{}@{}{}",
-                            block.source_text,
-                            block.bounds.top,
-                            if block.translated_text.is_some() {
-                                "+"
-                            } else {
-                                "-"
-                            }
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-                if now != traced {
-                    use std::io::Write;
-                    let _ = writeln!(
-                        file,
-                        "{:8.3} update {update:?}: {now}",
-                        started.elapsed().as_secs_f32()
-                    );
-                    traced = now;
-                }
-            }
             let track_ms = track_started.elapsed().as_secs_f32() * 1000.0;
             // Tracking runs on every frame, also while text is being read, so
             // text that vanished (a closed menu) is cleared at once.
@@ -558,26 +526,6 @@ fn run_pipeline<O, T>(
                         }
                     }
                     let found = blocks.len() + dropped.len();
-                    if let Some(file) = &mut trace {
-                        use std::io::Write;
-                        let _ = writeln!(
-                            file,
-                            "{:8.3} read {:?}: kept {:?} dropped {:?}",
-                            started.elapsed().as_secs_f32(),
-                            region,
-                            blocks
-                                .iter()
-                                .map(|block| format!("{}@{}", block.source_text, block.bounds.top))
-                                .collect::<Vec<_>>(),
-                            dropped
-                                .iter()
-                                .map(|(block, verdict)| format!(
-                                    "{}:{verdict:?}",
-                                    block.source_text
-                                ))
-                                .collect::<Vec<_>>()
-                        );
-                    }
                     let translate_started = Instant::now();
                     let mut requests = 0;
                     tracker.reconcile_detection(&job.frame, blocks, job.detection, |texts| {
