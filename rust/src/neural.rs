@@ -27,7 +27,9 @@ pub const DETECTION_MODEL: &str = "PP-OCRv6_det_small.onnx";
 pub const RECOGNITION_MODEL: &str = "PP-OCRv6_rec_small.onnx";
 #[cfg(target_os = "macos")]
 pub const RUNTIME_LIBRARY: &str = "libonnxruntime.dylib";
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+pub const RUNTIME_LIBRARY: &str = "onnxruntime.dll";
+#[cfg(not(any(target_os = "macos", windows)))]
 pub const RUNTIME_LIBRARY: &str = "libonnxruntime.so";
 /// Where the system's package manager puts ONNX Runtime.
 #[cfg(target_os = "macos")]
@@ -35,7 +37,9 @@ const SYSTEM_RUNTIME_LIBRARIES: &[&str] = &[
     "/opt/homebrew/lib/libonnxruntime.dylib",
     "/usr/local/lib/libonnxruntime.dylib",
 ];
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+const SYSTEM_RUNTIME_LIBRARIES: &[&str] = &[];
+#[cfg(not(any(target_os = "macos", windows)))]
 const SYSTEM_RUNTIME_LIBRARIES: &[&str] = &[
     "/usr/lib/libonnxruntime.so",
     "/usr/lib64/libonnxruntime.so",

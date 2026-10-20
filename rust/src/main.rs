@@ -1,3 +1,7 @@
+// Release builds on Windows are a windowed app, so launching Overlayr
+// doesn't open a console window next to it.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 fn main() -> eframe::Result {
     limit_malloc_arenas();
     let arguments = std::env::args().collect::<Vec<_>>();

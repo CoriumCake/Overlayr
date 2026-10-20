@@ -139,6 +139,32 @@ notarization.
 dependencies are available. The `overlayr://` handler is registered on first
 launch.
 
+## Releasing
+
+Downloads are served from overlayr.app: `/download` picks the visitor's
+system, and `/downloads` lists every platform with the release notes. To
+publish a version, set it in `rust/Cargo.toml`, commit, then tag it with the
+notes, one change per line:
+
+```bash
+git tag -a v0.2.0 -m "Marketplace with paid packs
+macOS app"
+git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` then builds:
+
+| Platform | Download | Built with |
+| --- | --- | --- |
+| Windows | `Overlayr-<version>-windows-x64-setup.exe` | Inno Setup (`packaging/windows/overlayr.iss`): per-user install, Start menu, `overlayr://`, uninstaller |
+| macOS | `Overlayr-<version>-macos.dmg` | `packaging/macos/build-app.sh` |
+| Linux | `Overlayr-<version>-linux-x86_64.tar.gz` | the portable build, with `install.sh` |
+
+It uploads them to the `overlayr-releases` R2 bucket, then updates
+`latest.json` there, which the site reads. It needs the
+`CLOUDFLARE_API_TOKEN` (with R2 edit access) and `CLOUDFLARE_ACCOUNT_ID`
+repository secrets.
+
 ## Command line
 
 ```text

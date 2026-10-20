@@ -33,7 +33,12 @@
   ],
   // Encrypted pack contents and cover pictures. Reads from a Worker cost no
   // bandwidth.
-  "r2_buckets": [{ "binding": "PACKS", "bucket_name": "overlayr-packs" }],
+  "r2_buckets": [
+    { "binding": "PACKS", "bucket_name": "overlayr-packs" },
+    // The desktop app's installers, uploaded by the release workflow and
+    // served from /download.
+    { "binding": "RELEASES", "bucket_name": "overlayr-releases" }
+  ],
   "ratelimits": [
     {
       // Every API request, per IP address.

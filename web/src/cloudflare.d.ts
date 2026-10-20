@@ -4,8 +4,10 @@
 declare module 'cloudflare:workers' {
     interface R2Object {
         arrayBuffer(): Promise<ArrayBuffer>;
+        json<T>(): Promise<T>;
         body: ReadableStream;
         httpEtag: string;
+        size: number;
     }
     interface R2Bucket {
         get(key: string): Promise<R2Object | null>;
@@ -36,6 +38,7 @@ declare module 'cloudflare:workers' {
     export const env: {
         DB: D1Database;
         PACKS: R2Bucket;
+        RELEASES: R2Bucket;
         API_LIMIT?: RateLimit;
         HEAVY_LIMIT?: RateLimit;
         [name: string]: unknown;

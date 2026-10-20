@@ -1,39 +1,20 @@
 ---
 import Layout from "../../layouts/Layout.astro";
-import DownloadButton from "../../components/DownloadButton.astro";
 import { SITE } from "../../siteConfig";
 import { useTranslations } from "../../i18n/ui";
 
 interface Props {
-    lang: "en" | "ja" | "es";
+    lang: "en" | "ja" | "es" | "th";
 }
 const { lang } = Astro.props;
 const t = useTranslations(lang);
 
-// This data could be fetched from GitHub API at build time
-// For now, we manually list releases or mock it
-const releases = [
-    {
-        version: "2.0.0",
-        date: "2025-10-24",
-        checksum: "a1b2c3d4e5f6...",
-        isLatest: true,
-        changes: [
-            "Introduced DirectX 12 overlay support",
-            "Added real-time OCR engine V2",
-            "Reduced memory footprint by 40%",
-        ],
-    },
-    {
-        version: "1.5.2",
-        date: "2025-09-15",
-        checksum: "f6e5d4c3b2a1...",
-        isLatest: false,
-        changes: [
-            "Fixed Vulcan crash on AMD drivers",
-            "Improved subtitle font rendering",
-        ],
-    },
+// Each platform's installer is served from /download/<platform>. The
+// version, notes and file sizes come from /api/releases/latest.
+const platforms = [
+    { id: "windows", name: "Windows", detail: t("downloads.windows") },
+    { id: "macos", name: "macOS", detail: t("downloads.macos") },
+    { id: "linux", name: "Linux", detail: t("downloads.linux") },
 ];
 ---
 
@@ -44,51 +25,80 @@ const releases = [
             <p class="subtitle">{t("downloads.subtitle")}</p>
 
             <div class="releases-list">
-                {
-                    releases.map((release) => (
-                        <article
-                            class={`glass-panel release-card ${release.isLatest ? "latest" : ""}`}
-                        >
-                            <div class="release-header">
-                                <div class="version-info">
-                                    <h2>v{release.version}</h2>
-                                    <span class="release-date">
-                                        {t("downloads.released")} {release.date}
-                                    </span>
-                                    {release.isLatest && (
-                                        <span class="badge">
-                                            {t("downloads.latest")}
-                                        </span>
-                                    )}
-                                </div>
-                                <div class="release-action">
-                                    <DownloadButton
-                                        href={
-                                            release.isLatest
-                                                ? undefined
-                                                : `https://github.com/CoriumCake/Overlayr/releases/download/v${release.version}/Overlayr.exe`
-                                        }
-                                        version={release.version}
-                                        checksum={release.checksum}
-                                    />
-                                </div>
-                            </div>
+                <article class="glass-panel release-card latest">
+                    <div class="release-header">
+                        <div class="version-info">
+                            <h2 id="release-version">…</h2>
+                            <span id="release-date" class="release-date"></span>
+                            <span id="release-badge" class="badge hidden">{t("downloads.latest")}</span>
+                        </div>
+                    </div>
+                    <p id="release-status" class="status">{t("downloads.loading")}</p>
 
-                            <div class="changes">
-                                <h3>{t("downloads.changes")}</h3>
-                                <ul>
-                                    {release.changes.map((change) => (
-                                        <li>{change}</li>
-                                    ))}
-                                </ul>
-                            </div>
-                        </article>
-                    ))
-                }
+                    <div class="platforms">
+                        {
+                            platforms.map((platform) => (
+                                <div class="platform" data-platform={platform.id}>
+                                    <div class="platform-text">
+                                        <h3>{platform.name}</h3>
+                                        <p>{platform.detail}</p>
+                                        <p class="platform-file" />
+                                    </div>
+                                    <a class="platform-button disabled" href={`/download/${platform.id}`}>
+                                        {t("downloads.download")}
+                                    </a>
+                                </div>
+                            ))
+                        }
+                    </div>
+
+                    <div id="release-changes" class="changes hidden">
+                        <h3>{t("downloads.changes")}</h3>
+                        <ul id="release-notes"></ul>
+                    </div>
+                </article>
             </div>
         </div>
     </section>
 </Layout>
+
+<script define:vars={{ released: t("downloads.released"), none: t("downloads.none"), unavailable: t("downloads.unavailable") }}>
+    const megabytes = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    const status = document.getElementById("release-status");
+
+    fetch("/api/releases/latest")
+        .then((response) => (response.ok ? response.json() : { release: null }))
+        .catch(() => ({ release: null }))
+        .then(({ release }) => {
+            if (!release) {
+                status.textContent = none;
+                return;
+            }
+            status.remove();
+            document.getElementById("release-version").textContent = `v${release.version}`;
+            document.getElementById("release-date").textContent = `${released} ${release.date}`;
+            document.getElementById("release-badge").classList.remove("hidden");
+            for (const row of document.querySelectorAll(".platform")) {
+                const file = release.files[row.dataset.platform];
+                const button = row.querySelector(".platform-button");
+                const label = row.querySelector(".platform-file");
+                if (file) {
+                    button.classList.remove("disabled");
+                    label.textContent = `${file.name} · ${megabytes(file.size)} · SHA-256 ${file.sha256.slice(0, 16)}…`;
+                    label.title = file.sha256;
+                } else {
+                    label.textContent = unavailable;
+                }
+            }
+            const notes = document.getElementById("release-notes");
+            for (const note of release.notes ?? []) {
+                const item = document.createElement("li");
+                item.textContent = note;
+                notes.append(item);
+            }
+            if (notes.children.length) document.getElementById("release-changes").classList.remove("hidden");
+        });
+</script>
 
 <style>
     .downloads-page {
@@ -191,5 +201,70 @@ const releases = [
 
     .changes li {
         margin-bottom: 0.5rem;
+    }
+
+    .status {
+        color: var(--color-text-muted);
+        margin-bottom: var(--space-md);
+    }
+
+    .platforms {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-md);
+        margin-bottom: var(--space-lg);
+    }
+
+    .platform {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-md);
+        flex-wrap: wrap;
+        padding: var(--space-md);
+        border: 1px solid var(--glass-border);
+        border-radius: 12px;
+    }
+
+    .platform-text {
+        flex: 1 1 260px;
+        min-width: 0;
+    }
+
+    .platform-text h3 {
+        margin: 0 0 0.25rem;
+        font-size: 1.15rem;
+    }
+
+    .platform-text p {
+        margin: 0;
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+        overflow-wrap: anywhere;
+    }
+
+    .platform-file {
+        margin-top: 0.25rem !important;
+        font-size: 0.8rem !important;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .platform-button {
+        padding: 0.6rem 1.4rem;
+        border-radius: 999px;
+        background: linear-gradient(45deg, var(--color-primary), var(--color-accent));
+        color: white;
+        font-weight: 700;
+        text-decoration: none;
+        white-space: nowrap;
+    }
+
+    .platform-button.disabled {
+        opacity: 0.4;
+        pointer-events: none;
+    }
+
+    .hidden {
+        display: none !important;
     }
 </style>

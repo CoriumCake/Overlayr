@@ -8,5 +8,6 @@ export const SITE = {
     discord: "https://discord.gg/overlayr",
 };
 
-export const GITHUB_LATEST_RELEASE = "https://github.com/CoriumCake/Overlayr-release/releases/latest";
+/** Sends each visitor to the installer for their system. */
+export const GITHUB_LATEST_RELEASE = "/download";
 

@@ -38,6 +38,13 @@ export const ui = {
         'downloads.latest': 'Latest',
         'downloads.released': 'Released on',
         'downloads.changes': 'Changes',
+        'downloads.loading': 'Checking for the latest version…',
+        'downloads.none': 'No release is available yet. Check back soon.',
+        'downloads.windows': 'Windows 10 or 11, 64-bit. Installer, no administrator rights needed.',
+        'downloads.macos': 'macOS 11 or newer. Apple Silicon and Intel; neural OCR needs Apple Silicon.',
+        'downloads.linux': 'x86-64. Hyprland works best; needs grim, slurp and Tesseract.',
+        'downloads.download': 'Download',
+        'downloads.unavailable': 'Not available in this release',
         // Support
         'support.title': 'Support Center',
         'support.subtitle': 'Frequently asked questions and troubleshooting.',
@@ -94,6 +101,13 @@ export const ui = {
         'downloads.latest': 'ล่าสุด',
         'downloads.released': 'อัปเดตเมื่อ',
         'downloads.changes': 'รายการเปลี่ยนแปลง',
+        'downloads.loading': 'กำลังตรวจหาเวอร์ชันล่าสุด…',
+        'downloads.none': 'ยังไม่มีเวอร์ชันให้ดาวน์โหลด โปรดกลับมาใหม่เร็วๆ นี้',
+        'downloads.windows': 'Windows 10 หรือ 11 แบบ 64 บิต ติดตั้งได้โดยไม่ต้องใช้สิทธิ์ผู้ดูแลระบบ',
+        'downloads.macos': 'macOS 11 ขึ้นไป รองรับ Apple Silicon และ Intel (OCR แบบนิวรัลต้องใช้ Apple Silicon)',
+        'downloads.linux': 'x86-64 ใช้งานกับ Hyprland ได้ดีที่สุด ต้องมี grim, slurp และ Tesseract',
+        'downloads.download': 'ดาวน์โหลด',
+        'downloads.unavailable': 'เวอร์ชันนี้ยังไม่มีสำหรับระบบนี้',
         // Support
         'support.title': 'ศูนย์ช่วยเหลือ',
         'support.subtitle': 'คำถามที่พบบ่อยและวิธีแก้ไขปัญหาเบื้องต้น',
@@ -241,6 +255,7 @@ export function getLangFromUrl(url: URL) {
 
 export function useTranslations(lang: keyof typeof ui) {
     return function t(key: keyof typeof ui[typeof defaultLang]) {
-        return ui[lang][key] || ui[defaultLang][key];
+        // Languages may lack newer strings; English fills in.
+        return (ui[lang] as Record<string, string>)[key] || ui[defaultLang][key];
     }
 }

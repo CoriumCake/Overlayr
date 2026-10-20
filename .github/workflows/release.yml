@@ -1,0 +1,192 @@
+name: Release
+
+# Builds the desktop app for every platform and publishes it on overlayr.app.
+# Push a tag matching the version in rust/Cargo.toml to release it:
+#
+#   git tag -a v0.2.0 -m "Release notes, one change per line"
+#   git push origin v0.2.0
+#
+# The installers go to the overlayr-releases R2 bucket under v<version>/, and
+# latest.json there makes overlayr.app/download serve them. Needs the
+# CLOUDFLARE_API_TOKEN (with R2 edit access) and CLOUDFLARE_ACCOUNT_ID secrets.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches Cargo.toml
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -n 1)
+          if [ "$version" != "$cargo_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match version $cargo_version in rust/Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+  linux:
+    needs: version
+    # The oldest supported runner, so the binary runs on older distributions.
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux windowing dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxkbcommon-dev libxrandr-dev libxi-dev libxinerama-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # The portable build: grim/slurp capture and the Tesseract command, so
+      # it doesn't depend on the build machine's Tesseract libraries.
+      - name: Build
+        working-directory: rust
+        run: cargo build --release
+      - name: Package
+        run: |
+          name="Overlayr-$VERSION-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp rust/target/release/overlayr packaging/overlayr.desktop packaging/overlayr.svg \
+            packaging/linux/install.sh "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build
+        working-directory: rust
+        run: cargo build --release --features native-capture
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          & $iscc "/DVersion=$env:VERSION" "/DSource=$PWD\rust\target\release" packaging\windows\overlayr.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: rust/target/windows/*.exe
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install the icon renderer
+        run: brew install librsvg
+      - name: Build Overlayr.app and the disk image
+        run: |
+          packaging/macos/build-app.sh
+          mv rust/target/macos/Overlayr.dmg "rust/target/macos/Overlayr-$VERSION-macos.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: rust/target/macos/*.dmg
+          if-no-files-found: error
+
+  publish:
+    needs: [version, linux, windows, macos]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The tag's message holds the release notes.
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Write latest.json
+        run: |
+          git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents)' >notes.txt
+          python3 - <<'EOF'
+          import datetime, hashlib, json, os, pathlib
+          version = os.environ["VERSION"]
+          files = {}
+          for path in sorted(pathlib.Path("dist").iterdir()):
+              platform = ("windows" if path.name.endswith(".exe")
+                          else "macos" if path.name.endswith(".dmg") else "linux")
+              files[platform] = {
+                  "name": path.name,
+                  "size": path.stat().st_size,
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+              }
+          # One change per line; a signature block, if any, isn't notes.
+          notes = []
+          for line in pathlib.Path("notes.txt").read_text().splitlines():
+              if line.startswith("-----BEGIN"):
+                  break
+              line = line.strip().lstrip("-* ").strip()
+              if line:
+                  notes.append(line)
+          release = {
+              "version": version,
+              "date": datetime.date.today().isoformat(),
+              "notes": notes,
+              "files": files,
+          }
+          pathlib.Path("latest.json").write_text(json.dumps(release, indent=2))
+          print(json.dumps(release, indent=2))
+          EOF
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The installers first, then latest.json, so the site never points at
+      # files that aren't there yet.
+      - name: Upload to overlayr.app
+        run: |
+          for file in dist/*; do
+            npx --yes wrangler@4 r2 object put "overlayr-releases/v$VERSION/$(basename "$file")" \
+              --file "$file" --content-type application/octet-stream --remote
+          done
+          npx --yes wrangler@4 r2 object put overlayr-releases/latest.json \
+            --file latest.json --content-type application/json --remote

@@ -276,6 +276,8 @@ pub fn download_neural_ocr() -> ServiceResult<()> {
 /// Microsoft's prebuilt ONNX Runtime for this platform.
 struct RuntimeRelease {
     name: String,
+    /// The archive's file extension: "tgz" or "zip".
+    extension: &'static str,
     /// The library's path inside the archive.
     member: String,
     library: String,
@@ -292,6 +294,7 @@ fn onnx_runtime_release() -> ServiceResult<RuntimeRelease> {
     let name = format!("onnxruntime-osx-arm64-{ONNX_RUNTIME_VERSION}");
     let library = format!("libonnxruntime.{ONNX_RUNTIME_VERSION}.dylib");
     Ok(RuntimeRelease {
+        extension: "tgz",
         // This archive's paths start with "./".
         member: format!("./{name}/lib/{library}"),
         name,
@@ -309,13 +312,30 @@ fn onnx_runtime_release() -> ServiceResult<RuntimeRelease> {
     let name = format!("onnxruntime-linux-{architecture}-{ONNX_RUNTIME_VERSION}");
     let library = format!("libonnxruntime.so.{ONNX_RUNTIME_VERSION}");
     Ok(RuntimeRelease {
+        extension: "tgz",
         member: format!("{name}/lib/{library}"),
         name,
         library,
     })
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+fn onnx_runtime_release() -> ServiceResult<RuntimeRelease> {
+    if std::env::consts::ARCH != "x86_64" {
+        return Err("The neural OCR engine needs a 64-bit Intel or AMD processor".into());
+    }
+    let name = format!("onnxruntime-win-x64-{ONNX_RUNTIME_VERSION}");
+    let library = "onnxruntime.dll".to_string();
+    Ok(RuntimeRelease {
+        // Windows' own tar (10 and later) unpacks zip archives too.
+        extension: "zip",
+        member: format!("{name}/lib/{library}"),
+        name,
+        library,
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn onnx_runtime_release() -> ServiceResult<RuntimeRelease> {
     Err(
         "Automatic ONNX Runtime setup isn't available on this system yet; \
@@ -329,12 +349,12 @@ fn install_onnx_runtime(client: &reqwest::blocking::Client) -> ServiceResult<()>
     let directory = crate::neural::runtime_dir()
         .ok_or_else(|| "could not determine your user data directory".to_string())?;
     let release = onnx_runtime_release()?;
-    let archive = directory.join(format!("{}.tgz", release.name));
+    let archive = directory.join(format!("{}.{}", release.name, release.extension));
     download(
         client,
         &format!(
-            "https://github.com/microsoft/onnxruntime/releases/download/v{ONNX_RUNTIME_VERSION}/{}.tgz",
-            release.name
+            "https://github.com/microsoft/onnxruntime/releases/download/v{ONNX_RUNTIME_VERSION}/{}.{}",
+            release.name, release.extension
         ),
         &archive,
         1024 * 1024,
@@ -342,7 +362,7 @@ fn install_onnx_runtime(client: &reqwest::blocking::Client) -> ServiceResult<()>
     // Unpack only the library, straight into the directory.
     let depth = release.member.matches('/').count();
     let output = Command::new("tar")
-        .arg("-xzf")
+        .arg("-xf")
         .arg(&archive)
         .arg("-C")
         .arg(&directory)
