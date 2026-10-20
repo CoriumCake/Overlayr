@@ -1,0 +1,51 @@
+// Cloudflare Workers configuration for the Overlayr website and API.
+// Secrets (set with `npx wrangler secret put <NAME>`, never in this file):
+// AUTH_SECRET, GOOGLE_CLIENT_SECRET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "overlayr-web",
+  "main": "./dist/_worker.js/index.js",
+  // 2025-04-01 or later fills process.env from vars and secrets.
+  "compatibility_date": "2025-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./dist"
+  },
+  "observability": { "enabled": true },
+  // Deploying creates the DNS record and certificate for the domain.
+  "routes": [{ "pattern": "overlayr.app", "custom_domain": true }],
+  "vars": {
+    // Public: Google shows it on the consent screen anyway.
+    "GOOGLE_CLIENT_ID": "213653456686-n4rfh2qvp6oeer5u1cm6u7q5h6t9hskh.apps.googleusercontent.com",
+    // Public: loads Stripe's embedded payout setup on the profile page.
+    "STRIPE_PUBLISHABLE_KEY": "pk_test_51USCIsKHaUL5JU2KmASAIOVjKUrGP1BatSqwNAeQKIon9lzVlyjmKN0l6SZr1e8hKZlg7h9m3y2Wjj35WVxkFJXC00WxsFakjg"
+  },
+  // Accounts, sessions, creators' payout accounts, and marketplace listings,
+  // keys, licences and purchases. Schema in ./migrations, applied by CI.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "overlayr",
+      "database_id": "97d01a6c-9362-4ac6-8d01-405f2b50c098",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Encrypted pack contents and cover pictures. Reads from a Worker cost no
+  // bandwidth.
+  "r2_buckets": [{ "binding": "PACKS", "bucket_name": "overlayr-packs" }],
+  "ratelimits": [
+    {
+      // Every API request, per IP address.
+      "name": "API_LIMIT",
+      "namespace_id": "1001",
+      "simple": { "limit": 120, "period": 60 }
+    },
+    {
+      // Installs and publishes, per account.
+      "name": "HEAVY_LIMIT",
+      "namespace_id": "1002",
+      "simple": { "limit": 15, "period": 60 }
+    }
+  ]
+}

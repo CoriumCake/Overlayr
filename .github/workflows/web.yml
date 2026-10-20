@@ -1,0 +1,130 @@
+name: Web
+
+# The website and API (web/) on Cloudflare Workers, with its D1 schema.
+# - Pull requests: type check and build, then a preview version with its own URL.
+# - Pushes to prod: apply D1 migrations, then deploy.
+#
+# Repository secrets: CLOUDFLARE_API_TOKEN (Workers Scripts, D1 and R2 edit),
+# CLOUDFLARE_ACCOUNT_ID. Runtime secrets (AUTH_SECRET, Google and Stripe keys)
+# live in the Worker itself.
+
+on:
+  pull_request:
+    branches: [prod]
+    paths: ['web/**', '.github/workflows/web.yml']
+  push:
+    branches: [prod]
+    paths: ['web/**', '.github/workflows/web.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-${{ github.ref }}
+  # Never cancel a production deploy halfway through.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: web
+
+jobs:
+  check:
+    name: Check and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Type check
+        run: npx astro check
+      - name: Build
+        run: npx astro build
+      - name: Check the Worker bundles
+        run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          include-hidden-files: true
+          retention-days: 3
+
+  preview:
+    name: Preview
+    needs: check
+    # Forks don't get the deploy secrets.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - name: Upload a preview version
+        id: upload
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: web
+          command: versions upload --preview-alias pr-${{ github.event.pull_request.number }}
+      - name: Summary
+        working-directory: .
+        run: |
+          {
+            echo "### Preview"
+            echo
+            echo "Preview alias: \`pr-${{ github.event.pull_request.number }}\`. Wrangler's output:"
+            echo '```'
+            echo "${{ steps.upload.outputs.command-output }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Migrate and deploy
+    needs: check
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/prod'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      # Schema first, so new code never runs against an old database.
+      - name: Apply D1 migrations
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: web
+          command: d1 migrations apply DB --remote
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: web
+          command: deploy

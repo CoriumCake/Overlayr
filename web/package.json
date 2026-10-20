@@ -10,12 +10,15 @@
   },
   "dependencies": {
     "@astrojs/check": "^0.9.6",
+    "@astrojs/cloudflare": "^12.6.13",
     "@astrojs/sitemap": "^3.7.0",
-    "@astrojs/vercel": "^9.0.4",
+    "@stripe/connect-js": "^3.4.6",
     "astro": "^5.17.1",
-    "firebase": "^12.9.0",
-    "firebase-admin": "^13.6.1",
+    "jose": "^6.2.12",
     "stripe": "^20.3.1",
     "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "wrangler": "^4.151.0"
   }
 }

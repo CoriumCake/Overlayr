@@ -53,3 +53,11 @@ debug_images/
 
 # Test output
 test_output.txt
+
+# Cloudflare / Wrangler local files
+.dev.vars
+.wrangler/
+web/dist/
+
+# Research (private until publication)
+research/

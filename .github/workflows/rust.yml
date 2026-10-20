@@ -2,9 +2,9 @@ name: Rust
 
 on:
   push:
-    branches: [main, rust-migration]
+    branches: [prod, rust-migration]
   pull_request:
-    branches: [main, rust-migration]
+    branches: [prod, rust-migration]
 
 permissions:
   contents: read

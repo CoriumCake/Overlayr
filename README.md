@@ -169,6 +169,54 @@ CI runs rustfmt, strict Clippy, and the tests for the default, `native-ocr`
 and `native-production` builds, then Linux release builds. Native capture is
 also compile-checked on Windows and macOS.
 
+## Website, API and marketplace backend
+
+`web/` is an Astro site with API routes, all on Cloudflare:
+
+- **Workers** runs the site and API: Google login and the pack marketplace,
+  including paid packs.
+- **D1** stores accounts, sessions, creators' payout accounts and marketplace
+  data, including purchases.
+- **R2** stores encrypted packs and covers.
+
+Browsers log in with an HttpOnly session cookie. The desktop app gets a
+one-hour signed access token and a refresh token that is replaced on every
+use.
+
+| Path | What it is |
+| --- | --- |
+| `web/src/pages/api/marketplace/` | List, publish, download, key and unpublish routes, plus covers |
+| `web/src/lib/marketplace.ts` | Pack encryption (AES-256-GCM) and per-user licences |
+| `web/src/lib/sales.ts` | Paid packs: Stripe Connect accounts, Checkout and purchases |
+| `web/src/lib/auth.ts` | Google login, sessions and access tokens |
+| `web/migrations/` | D1 schema, applied by CI |
+| `web/wrangler.jsonc` | Worker config: D1, R2, rate limits, public vars |
+
+Marketplace packs are encrypted at rest. Each install is re-encrypted under
+a licence key for that account, which the app fetches when the pack starts
+and uses in memory only.
+
+Creators can sell packs. A buyer pays on Stripe Checkout (cards or PromptPay)
+as a direct charge on the creator's Stripe Connect account: the creator is the
+seller and gets 65%, and Overlayr takes 35% as an application fee, out of
+which it pays Stripe's fees. Creators set up and manage payouts with Stripe's
+embedded components on their website profile; for now this works only for
+creators in Thailand. Refunds and disputes take
+the pack back, and a removed pack stays usable for the people who bought it.
+
+```bash
+cd web
+npm ci
+npx astro check && npx astro build
+cp .dev.vars.example .dev.vars          # then fill in the secrets
+npx wrangler d1 migrations apply DB --local
+npx wrangler dev                        # the built site in the Workers runtime
+```
+
+CI (`.github/workflows/web.yml`) type-checks and builds every pull request
+into `prod` and uploads a preview version. Merges to `prod` apply the D1
+migrations, then deploy the Worker.
+
 ## Legacy prototype
 
 The original Python implementation in `src/overlayr/` is kept only as a
