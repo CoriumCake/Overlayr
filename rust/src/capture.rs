@@ -396,6 +396,38 @@ impl CaptureBackend for ImageMagickCapture {
 /// Native cross-platform capture using XCap. Unlike the command adapters
 /// above, this keeps capture in-process and exposes both monitors and windows
 /// on Linux, Windows, and macOS.
+/// How many of xcap's coordinate units make one screen point, the unit the
+/// overlay window is placed in. macOS already reports points; Windows reports
+/// pixels, so 150% display scaling has 1.5 units per point. Captured images
+/// are always in pixels.
+#[cfg(feature = "native-capture")]
+fn units_per_point(monitor: Option<&xcap::Monitor>) -> f32 {
+    #[cfg(windows)]
+    {
+        monitor
+            .and_then(|monitor| monitor.scale_factor().ok())
+            .filter(|scale| *scale > 0.0)
+            .unwrap_or(1.0)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = monitor;
+        1.0
+    }
+}
+
+/// An area xcap reports, in screen points.
+#[cfg(feature = "native-capture")]
+fn to_points(x: i32, y: i32, width: u32, height: u32, units_per_point: f32) -> Rect {
+    let point = |value: f32| (value / units_per_point).round();
+    Rect::new(
+        point(x as f32) as i32,
+        point(y as f32) as i32,
+        point(width as f32) as u32,
+        point(height as f32) as u32,
+    )
+}
+
 #[cfg(feature = "native-capture")]
 #[derive(Debug, Default)]
 pub struct XCapCapture {
@@ -405,6 +437,11 @@ pub struct XCapCapture {
 #[cfg(feature = "native-capture")]
 impl XCapCapture {
     pub fn select_region(&self) -> ServiceResult<Source> {
+        if cfg!(any(target_os = "macos", windows)) {
+            return Err(
+                "Selecting a region isn't available here yet; choose a window or screen".into(),
+            );
+        }
         if std::env::var_os("WAYLAND_DISPLAY").is_none() {
             return Err("interactive region selection currently requires Wayland and slurp".into());
         }
@@ -420,12 +457,7 @@ impl XCapCapture {
 
     fn monitor_source(monitor: &xcap::Monitor) -> ServiceResult<Source> {
         let id = monitor.id().map_err(|error| error.to_string())?;
-        let bounds = Rect::new(
-            monitor.x().map_err(|error| error.to_string())?,
-            monitor.y().map_err(|error| error.to_string())?,
-            monitor.width().map_err(|error| error.to_string())?,
-            monitor.height().map_err(|error| error.to_string())?,
-        );
+        let bounds = Self::monitor_bounds(monitor)?;
         let name = monitor
             .friendly_name()
             .or_else(|_| monitor.name())
@@ -439,6 +471,28 @@ impl XCapCapture {
         })
     }
 
+    fn monitor_bounds(monitor: &xcap::Monitor) -> ServiceResult<Rect> {
+        Ok(to_points(
+            monitor.x().map_err(|error| error.to_string())?,
+            monitor.y().map_err(|error| error.to_string())?,
+            monitor.width().map_err(|error| error.to_string())?,
+            monitor.height().map_err(|error| error.to_string())?,
+            units_per_point(Some(monitor)),
+        ))
+    }
+
+    /// Where the window is now, in screen points.
+    fn window_bounds(window: &xcap::Window) -> ServiceResult<Rect> {
+        let monitor = window.current_monitor().ok();
+        Ok(to_points(
+            window.x().map_err(|error| error.to_string())?,
+            window.y().map_err(|error| error.to_string())?,
+            window.width().map_err(|error| error.to_string())?,
+            window.height().map_err(|error| error.to_string())?,
+            units_per_point(monitor.as_ref()),
+        ))
+    }
+
     fn window_source(window: &xcap::Window) -> ServiceResult<Source> {
         let id = window.id().map_err(|error| error.to_string())?;
         let title = window.title().map_err(|error| error.to_string())?;
@@ -448,12 +502,7 @@ impl XCapCapture {
             name: title,
             detail: app_name,
             kind: SourceKind::Window,
-            bounds: Rect::new(
-                window.x().map_err(|error| error.to_string())?,
-                window.y().map_err(|error| error.to_string())?,
-                window.width().map_err(|error| error.to_string())?,
-                window.height().map_err(|error| error.to_string())?,
-            ),
+            bounds: Self::window_bounds(window)?,
         })
     }
 }
@@ -488,6 +537,9 @@ impl CaptureBackend for XCapCapture {
     }
 
     fn capture(&mut self, source: &Source) -> ServiceResult<Frame> {
+        // The captured area in screen points; the image is in pixels, which
+        // differ on Retina and scaled displays.
+        let mut bounds = source.bounds;
         let image = if let Some(id) = source.id.strip_prefix("monitor:") {
             let id = id.parse::<u32>().map_err(|_| "invalid monitor id")?;
             let monitor = xcap::Monitor::all()
@@ -495,6 +547,7 @@ impl CaptureBackend for XCapCapture {
                 .into_iter()
                 .find(|monitor| monitor.id().ok() == Some(id))
                 .ok_or_else(|| "selected monitor is no longer available".to_string())?;
+            bounds = Self::monitor_bounds(&monitor)?;
             monitor.capture_image().map_err(|error| error.to_string())?
         } else if let Some(id) = source.id.strip_prefix("window:") {
             let id = id.parse::<u32>().map_err(|_| "invalid window id")?;
@@ -503,6 +556,7 @@ impl CaptureBackend for XCapCapture {
                 .into_iter()
                 .find(|window| window.id().ok() == Some(id))
                 .ok_or_else(|| "selected window is no longer available".to_string())?;
+            bounds = Self::window_bounds(&window)?;
             window.capture_image().map_err(|error| error.to_string())?
         } else if source.id.starts_with("region-") {
             let monitor = xcap::Monitor::from_point(source.bounds.left, source.bounds.top)
@@ -529,11 +583,21 @@ impl CaptureBackend for XCapCapture {
             return Err("unknown capture source".into());
         };
         self.sequence = self.sequence.saturating_add(1);
+        let (width, height) = image.dimensions();
+        if cfg!(any(target_os = "macos", windows)) {
+            return Ok(Frame::new(
+                self.sequence,
+                bounds,
+                width,
+                height,
+                image.into_raw(),
+            ));
+        }
         Ok(frame_from_raw(
             self.sequence,
             source.bounds,
-            image.width(),
-            image.height(),
+            width,
+            height,
             image.into_raw(),
         ))
     }
@@ -655,6 +719,20 @@ impl CaptureBackend for PlatformCapture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "native-capture")]
+    #[test]
+    fn scaled_display_areas_are_converted_to_points() {
+        // A window at (300, 150) sized 1920x1080 pixels on a 150% display.
+        assert_eq!(
+            to_points(300, 150, 1920, 1080, 1.5),
+            Rect::new(200, 100, 1280, 720)
+        );
+        assert_eq!(
+            to_points(-50, 0, 800, 600, 1.0),
+            Rect::new(-50, 0, 800, 600)
+        );
+    }
 
     #[test]
     fn parses_slurp_output_with_whitespace_and_negative_coordinates() {

@@ -25,7 +25,23 @@ use crate::types::{Frame, RejectedText, TextBlock};
 
 pub const DETECTION_MODEL: &str = "PP-OCRv6_det_small.onnx";
 pub const RECOGNITION_MODEL: &str = "PP-OCRv6_rec_small.onnx";
+#[cfg(target_os = "macos")]
+pub const RUNTIME_LIBRARY: &str = "libonnxruntime.dylib";
+#[cfg(not(target_os = "macos"))]
 pub const RUNTIME_LIBRARY: &str = "libonnxruntime.so";
+/// Where the system's package manager puts ONNX Runtime.
+#[cfg(target_os = "macos")]
+const SYSTEM_RUNTIME_LIBRARIES: &[&str] = &[
+    "/opt/homebrew/lib/libonnxruntime.dylib",
+    "/usr/local/lib/libonnxruntime.dylib",
+];
+#[cfg(not(target_os = "macos"))]
+const SYSTEM_RUNTIME_LIBRARIES: &[&str] = &[
+    "/usr/lib/libonnxruntime.so",
+    "/usr/lib64/libonnxruntime.so",
+    "/usr/local/lib/libonnxruntime.so",
+    "/usr/lib/x86_64-linux-gnu/libonnxruntime.so",
+];
 
 /// Detection runs with the image's shorter side scaled to about this many
 /// pixels: large captures (1440p and up) are scaled down, which halves the
@@ -71,13 +87,7 @@ pub fn runtime_dir() -> Option<PathBuf> {
 pub fn runtime_library() -> Option<PathBuf> {
     let explicit = std::env::var_os("ORT_DYLIB_PATH").map(PathBuf::from);
     let downloaded = runtime_dir().map(|directory| directory.join(RUNTIME_LIBRARY));
-    let system = [
-        "/usr/lib/libonnxruntime.so",
-        "/usr/lib64/libonnxruntime.so",
-        "/usr/local/lib/libonnxruntime.so",
-        "/usr/lib/x86_64-linux-gnu/libonnxruntime.so",
-    ]
-    .map(PathBuf::from);
+    let system = SYSTEM_RUNTIME_LIBRARIES.iter().map(PathBuf::from);
     explicit
         .into_iter()
         .chain(downloaded)

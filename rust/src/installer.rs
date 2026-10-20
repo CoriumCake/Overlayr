@@ -82,6 +82,8 @@ enum PackageManager {
     Pacman,
     Apt,
     Dnf,
+    /// macOS. Runs as the user: Homebrew refuses to run as root.
+    Homebrew,
 }
 
 impl PackageManager {
@@ -90,6 +92,7 @@ impl PackageManager {
             (Self::Pacman, "pacman"),
             (Self::Apt, "apt-get"),
             (Self::Dnf, "dnf"),
+            (Self::Homebrew, "brew"),
         ]
         .into_iter()
         .find_map(|(manager, command)| find_command(command).map(|path| (manager, path)))
@@ -100,12 +103,21 @@ impl PackageManager {
             Self::Pacman => &["-S", "--needed", "--noconfirm"],
             Self::Apt => &["install", "-y"],
             Self::Dnf => &["install", "-y"],
+            Self::Homebrew => &["install"],
         }
     }
 
     /// Distribution package names for Tesseract plus English and the given
     /// Tesseract language data (for example `jpn` or `chi_sim`).
     fn tesseract_packages(self, language: &str) -> Vec<String> {
+        if self == Self::Homebrew {
+            // Homebrew packs every language other than English into one.
+            let mut packages = vec!["tesseract".to_string()];
+            if language != "eng" {
+                packages.push("tesseract-lang".into());
+            }
+            return packages;
+        }
         let mut languages = vec!["eng"];
         if language != "eng" {
             languages.push(language);
@@ -114,6 +126,7 @@ impl PackageManager {
             Self::Pacman => ("tesseract", "tesseract-data-"),
             Self::Apt => ("tesseract-ocr", "tesseract-ocr-"),
             Self::Dnf => ("tesseract", "tesseract-langpack-"),
+            Self::Homebrew => unreachable!("handled above"),
         };
         std::iter::once(engine.to_string())
             .chain(languages.into_iter().map(|language| {
@@ -137,7 +150,7 @@ pub fn ocr_plan(language: &str) -> ServiceResult<InstallPlan> {
     }
     let (manager, manager_path) = PackageManager::detect().ok_or_else(|| {
         format!(
-            "No supported package manager (pacman, apt or dnf) was found. \
+            "No supported package manager (pacman, apt, dnf or Homebrew) was found. \
              Install Tesseract and its '{code}' language data with your system's package manager."
         )
     })?;
@@ -149,6 +162,13 @@ pub fn ocr_plan(language: &str) -> ServiceResult<InstallPlan> {
         .collect::<Vec<_>>();
     args.extend(packages.iter().cloned());
     let summary = format!("Installs {}", packages.join(", "));
+    if manager == PackageManager::Homebrew {
+        return Ok(InstallPlan {
+            summary,
+            program: manager_path,
+            args,
+        });
+    }
     elevated(manager_path, args, summary)
 }
 
@@ -253,28 +273,81 @@ pub fn download_neural_ocr() -> ServiceResult<()> {
     Ok(())
 }
 
+/// Microsoft's prebuilt ONNX Runtime for this platform.
+struct RuntimeRelease {
+    name: String,
+    /// The library's path inside the archive.
+    member: String,
+    library: String,
+}
+
+#[cfg(target_os = "macos")]
+fn onnx_runtime_release() -> ServiceResult<RuntimeRelease> {
+    // Microsoft only builds it for Apple Silicon; Intel Macs use Tesseract.
+    if std::env::consts::ARCH != "aarch64" {
+        return Err(
+            "The neural OCR engine needs an Apple Silicon Mac; Tesseract works on this Mac".into(),
+        );
+    }
+    let name = format!("onnxruntime-osx-arm64-{ONNX_RUNTIME_VERSION}");
+    let library = format!("libonnxruntime.{ONNX_RUNTIME_VERSION}.dylib");
+    Ok(RuntimeRelease {
+        // This archive's paths start with "./".
+        member: format!("./{name}/lib/{library}"),
+        name,
+        library,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn onnx_runtime_release() -> ServiceResult<RuntimeRelease> {
+    let architecture = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "aarch64",
+        other => return Err(format!("no ONNX Runtime download for {other} processors")),
+    };
+    let name = format!("onnxruntime-linux-{architecture}-{ONNX_RUNTIME_VERSION}");
+    let library = format!("libonnxruntime.so.{ONNX_RUNTIME_VERSION}");
+    Ok(RuntimeRelease {
+        member: format!("{name}/lib/{library}"),
+        name,
+        library,
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn onnx_runtime_release() -> ServiceResult<RuntimeRelease> {
+    Err(
+        "Automatic ONNX Runtime setup isn't available on this system yet; \
+         set ORT_DYLIB_PATH to an ONNX Runtime library"
+            .into(),
+    )
+}
+
 /// Fetches Microsoft's prebuilt ONNX Runtime and keeps only its library.
 fn install_onnx_runtime(client: &reqwest::blocking::Client) -> ServiceResult<()> {
     let directory = crate::neural::runtime_dir()
         .ok_or_else(|| "could not determine your user data directory".to_string())?;
-    let release = format!("onnxruntime-linux-x64-{ONNX_RUNTIME_VERSION}");
-    let archive = directory.join(format!("{release}.tgz"));
+    let release = onnx_runtime_release()?;
+    let archive = directory.join(format!("{}.tgz", release.name));
     download(
         client,
         &format!(
-            "https://github.com/microsoft/onnxruntime/releases/download/v{ONNX_RUNTIME_VERSION}/{release}.tgz"
+            "https://github.com/microsoft/onnxruntime/releases/download/v{ONNX_RUNTIME_VERSION}/{}.tgz",
+            release.name
         ),
         &archive,
         1024 * 1024,
     )?;
-    let member = format!("{release}/lib/libonnxruntime.so.{ONNX_RUNTIME_VERSION}");
+    // Unpack only the library, straight into the directory.
+    let depth = release.member.matches('/').count();
     let output = Command::new("tar")
         .arg("-xzf")
         .arg(&archive)
         .arg("-C")
         .arg(&directory)
-        .arg("--strip-components=2")
-        .arg(&member)
+        .arg(format!("--strip-components={depth}"))
+        .arg(&release.member)
         .output()
         .map_err(|error| format!("could not unpack ONNX Runtime: {error}"))?;
     let _ = std::fs::remove_file(&archive);
@@ -285,7 +358,7 @@ fn install_onnx_runtime(client: &reqwest::blocking::Client) -> ServiceResult<()>
         ));
     }
     std::fs::rename(
-        directory.join(format!("libonnxruntime.so.{ONNX_RUNTIME_VERSION}")),
+        directory.join(&release.library),
         directory.join(crate::neural::RUNTIME_LIBRARY),
     )
     .map_err(|error| format!("could not install ONNX Runtime: {error}"))
@@ -428,6 +501,18 @@ mod tests {
         assert_eq!(
             PackageManager::Dnf.tesseract_packages("eng"),
             ["tesseract", "tesseract-langpack-eng"]
+        );
+    }
+
+    #[test]
+    fn homebrew_installs_the_language_bundle_only_when_needed() {
+        assert_eq!(
+            PackageManager::Homebrew.tesseract_packages("eng"),
+            ["tesseract"]
+        );
+        assert_eq!(
+            PackageManager::Homebrew.tesseract_packages("tha"),
+            ["tesseract", "tesseract-lang"]
         );
     }
 

@@ -2337,6 +2337,17 @@ impl OverlayrApp {
                             if check.name == "OCR" {
                                 self.model_controls(ui);
                             }
+                            #[cfg(target_os = "macos")]
+                            if check.name == crate::diagnostics::SCREEN_RECORDING_CHECK
+                                && !check.passed
+                            {
+                                if ui.button("Allow screen recording").clicked() {
+                                    crate::macos::request_screen_recording();
+                                }
+                                if ui.button("Open settings").clicked() {
+                                    crate::macos::open_screen_recording_settings();
+                                }
+                            }
                         });
                     }
                 }
@@ -2455,33 +2466,22 @@ fn thumbnail_image(frame: Frame) -> Option<egui::ColorImage> {
 }
 
 /// Adds system fonts that cover CJK and Thai as fallbacks. egui's bundled
-/// fonts are Latin-only, so window titles and OCR text would otherwise render
-/// as empty boxes.
+/// fonts are Latin-only, so window titles, OCR text and translations would
+/// otherwise render as empty boxes.
 fn install_fallback_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let mut loaded = Vec::<(String, u32)>::new();
-    for language in ["ja", "ko", "zh-cn", "zh-tw", "th"] {
-        let Ok(output) = std::process::Command::new("fc-match")
-            .args(["-f", "%{file}\n%{index}", &format!(":lang={language}")])
-            .output()
-        else {
-            return;
-        };
-        let text = String::from_utf8_lossy(&output.stdout);
-        let mut lines = text.lines();
-        let (Some(file), index) = (lines.next(), lines.next().and_then(|i| i.parse().ok())) else {
-            continue;
-        };
-        let key = (file.to_string(), index.unwrap_or(0));
+    for (language, (file, index)) in fallback_font_files() {
+        let key = (file.to_string_lossy().into_owned(), index);
         if loaded.contains(&key) {
             continue;
         }
-        let Ok(bytes) = std::fs::read(file) else {
+        let Ok(bytes) = std::fs::read(&file) else {
             continue;
         };
         let name = format!("fallback-{language}");
         let mut data = egui::FontData::from_owned(bytes);
-        data.index = key.1;
+        data.index = index;
         fonts.font_data.insert(name.clone(), Arc::new(data));
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             fonts.families.entry(family).or_default().push(name.clone());
@@ -2491,6 +2491,87 @@ fn install_fallback_fonts(ctx: &egui::Context) {
     if !loaded.is_empty() {
         ctx.set_fonts(fonts);
     }
+}
+
+const FALLBACK_LANGUAGES: [&str; 5] = ["ja", "ko", "zh-cn", "zh-tw", "th"];
+
+/// A font file (and face index) for each fallback language, from fontconfig.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn fallback_font_files() -> Vec<(&'static str, (PathBuf, u32))> {
+    FALLBACK_LANGUAGES
+        .into_iter()
+        .filter_map(|language| {
+            let output = std::process::Command::new("fc-match")
+                .args(["-f", "%{file}\n%{index}", &format!(":lang={language}")])
+                .output()
+                .ok()?;
+            let text = String::from_utf8_lossy(&output.stdout);
+            let mut lines = text.lines();
+            let file = PathBuf::from(lines.next()?);
+            let index = lines
+                .next()
+                .and_then(|index| index.parse().ok())
+                .unwrap_or(0);
+            Some((language, (file, index)))
+        })
+        .collect()
+}
+
+/// A font file for each fallback language: the first of the system's own
+/// fonts that exists. macOS and Windows have no fontconfig.
+#[cfg(any(target_os = "macos", windows))]
+fn fallback_font_files() -> Vec<(&'static str, (PathBuf, u32))> {
+    #[cfg(target_os = "macos")]
+    let candidates = |language: &str| -> &'static [&'static str] {
+        match language {
+            "ja" => &[
+                "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+                "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            ],
+            "ko" => &["/System/Library/Fonts/AppleSDGothicNeo.ttc"],
+            "zh-cn" => &[
+                "/System/Library/Fonts/Hiragino Sans GB.ttc",
+                "/System/Library/Fonts/STHeiti Light.ttc",
+            ],
+            "zh-tw" => &[
+                "/System/Library/Fonts/STHeiti Light.ttc",
+                "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            ],
+            _ => &[
+                "/System/Library/Fonts/Thonburi.ttc",
+                "/System/Library/Fonts/Supplemental/Ayuthaya.ttf",
+            ],
+        }
+    };
+    #[cfg(windows)]
+    let candidates = |language: &str| -> &'static [&'static str] {
+        match language {
+            "ja" => &[
+                r"C:\Windows\Fonts\YuGothM.ttc",
+                r"C:\Windows\Fonts\meiryo.ttc",
+            ],
+            "ko" => &[r"C:\Windows\Fonts\malgun.ttf"],
+            "zh-cn" => &[r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\simsun.ttc"],
+            "zh-tw" => &[
+                r"C:\Windows\Fonts\msjh.ttc",
+                r"C:\Windows\Fonts\mingliu.ttc",
+            ],
+            _ => &[
+                r"C:\Windows\Fonts\LeelawUI.ttf",
+                r"C:\Windows\Fonts\tahoma.ttf",
+            ],
+        }
+    };
+    FALLBACK_LANGUAGES
+        .into_iter()
+        .filter_map(|language| {
+            let file = candidates(language)
+                .iter()
+                .map(PathBuf::from)
+                .find(|path| path.is_file())?;
+            Some((language, (file, 0)))
+        })
+        .collect()
 }
 
 pub(crate) fn source_detail(source: &Source) -> String {

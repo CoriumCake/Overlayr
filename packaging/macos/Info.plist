@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Overlayr</string>
+	<key>CFBundleDisplayName</key>
+	<string>Overlayr</string>
+	<key>CFBundleIdentifier</key>
+	<string>app.overlayr.Overlayr</string>
+	<key>CFBundleExecutable</key>
+	<string>overlayr</string>
+	<key>CFBundleIconFile</key>
+	<string>overlayr</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<!-- The website's login hands the session back through overlayr:// links. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>app.overlayr.login</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>overlayr</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

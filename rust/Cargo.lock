@@ -2872,6 +2872,7 @@ dependencies = [
  "eframe",
  "image",
  "leptess",
+ "objc2 0.6.4",
  "ort",
  "reqwest",
  "serde",

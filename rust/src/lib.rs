@@ -12,6 +12,8 @@ pub mod diagnostics;
 #[cfg(unix)]
 pub mod hyprland;
 pub mod installer;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod marketplace;
 pub mod marketplace_ui;
 pub mod neural;

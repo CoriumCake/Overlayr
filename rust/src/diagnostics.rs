@@ -69,6 +69,8 @@ pub fn collect(config_path: &Path, config_result: Result<AppConfig, String>) -> 
     };
 
     report.checks.push(capture_dependency_check());
+    #[cfg(target_os = "macos")]
+    report.checks.push(screen_recording_check());
 
     let mut capture = PlatformCapture::default();
     match capture.sources() {
@@ -171,6 +173,26 @@ fn ocr_check(language: &str) -> DiagnosticCheck {
     }
 }
 
+/// Name of the macOS Screen Recording check, which the setup page offers to
+/// fix.
+pub const SCREEN_RECORDING_CHECK: &str = "screen recording";
+
+#[cfg(target_os = "macos")]
+fn screen_recording_check() -> DiagnosticCheck {
+    let passed = crate::macos::can_record_screen();
+    DiagnosticCheck {
+        name: SCREEN_RECORDING_CHECK.into(),
+        passed,
+        detail: if passed {
+            "allowed".into()
+        } else {
+            "Overlayr needs Screen Recording access to read other apps' text. Allow it, \
+             then restart Overlayr"
+                .into()
+        },
+    }
+}
+
 fn capture_dependency_check() -> DiagnosticCheck {
     let (backend, executable) = if cfg!(feature = "native-capture") {
         ("native XCap", None)
@@ -221,6 +243,13 @@ pub fn command_available(command: &str) -> bool {
 }
 
 /// Resolves a command the way a shell would, returning its full path.
+/// Where Homebrew and Docker Desktop install their commands. Apps opened from
+/// the Dock or Finder get a minimal `PATH` without them.
+#[cfg(target_os = "macos")]
+const EXTRA_COMMAND_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
+#[cfg(not(target_os = "macos"))]
+const EXTRA_COMMAND_DIRS: &[&str] = &[];
+
 pub fn find_command(command: &str) -> Option<PathBuf> {
     let command_path = Path::new(command);
     if command_path.components().count() > 1 {
@@ -229,6 +258,7 @@ pub fn find_command(command: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .chain(EXTRA_COMMAND_DIRS.iter().map(PathBuf::from))
         .map(|directory| directory.join(command))
         .find(|path| {
             if !path.is_file() {

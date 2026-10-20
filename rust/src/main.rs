@@ -20,6 +20,11 @@ fn main() -> eframe::Result {
     if !is_command && let Err(error) = overlayr_core::auth::register_protocol() {
         eprintln!("Could not register overlayr login protocol: {error}");
     }
+    // macOS hands login links to the running app as an Apple Event.
+    #[cfg(target_os = "macos")]
+    if !is_command {
+        overlayr_core::macos::handle_login_links();
+    }
     // Shortcut commands go to the running instance and exit.
     if let Some(command) = argument.and_then(overlayr_core::control::Command::from_argument) {
         if let Err(error) = overlayr_core::control::send(command) {

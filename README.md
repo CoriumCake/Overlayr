@@ -68,7 +68,8 @@ The desktop app is written in Rust and lives in `rust/`. The website lives in
 | --- | --- |
 | Linux, Wayland (Hyprland) | Primary target. Capture uses `grim`/`slurp`, and window listing and focus use Hyprland IPC. |
 | Linux, other Wayland / X11 | Screen and region capture. No window picker or focus tracking. |
-| Windows, macOS | Native XCap capture compiles in CI. Not yet tested on real machines. |
+| macOS 11+ | Native XCap capture, built as `Overlayr.app` in CI. Not yet tested on a real Mac. Neural OCR needs Apple Silicon; Intel Macs use Tesseract. |
+| Windows | Native XCap capture compiles in CI. Not yet tested on a real machine. |
 
 Windows and macOS hide the overlay from screen capture. X11 and Wayland have
 no portable way to do this.
@@ -120,6 +121,19 @@ The installer sets up the following for the current user:
 - the `overlayr` binary on `PATH`;
 - the desktop entry and icon;
 - the `overlayr://` URL handler.
+
+**macOS:** on a Mac, run `packaging/macos/build-app.sh` (needs the Rust
+targets `aarch64-apple-darwin` and `x86_64-apple-darwin`, and
+`brew install librsvg` for the icon). It builds `Overlayr.app` and
+`Overlayr.dmg` in `rust/target/macos/`. CI builds the same disk image on every
+push. On first use:
+- allow Screen Recording in System Settings → Privacy & Security, then
+  restart Overlayr (the setup checks link there);
+- install Tesseract with Homebrew from the setup checks if you need it.
+
+The app has an ad-hoc signature only, so macOS asks for confirmation the first
+time it opens (right-click → Open). Public releases need Apple signing and
+notarization.
 
 **Windows:** run `build.ps1`, adding `-Native` when the XCap/Tesseract
 dependencies are available. The `overlayr://` handler is registered on first
