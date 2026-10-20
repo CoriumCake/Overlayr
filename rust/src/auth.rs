@@ -226,7 +226,59 @@ pub fn register_protocol() -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+/// Makes this executable the `overlayr://` handler with a hidden desktop
+/// entry, so the website's login reaches the app however it was installed
+/// (an older install's entry has no handler, and the browser then offers
+/// no app to open it). Only touches the system when the entry changes.
+#[cfg(target_os = "linux")]
+pub fn register_protocol() -> io::Result<()> {
+    let executable = std::env::current_exe()?;
+    let Some(entry) = handler_entry(&executable.to_string_lossy()) else {
+        return Ok(());
+    };
+    let Some(applications) = crate::pack::packs_dir()
+        .and_then(|packs| Some(packs.parent()?.parent()?.join("applications")))
+    else {
+        return Ok(());
+    };
+    let path = applications.join(HANDLER_ENTRY);
+    if fs::read_to_string(&path).is_ok_and(|existing| existing == entry) {
+        return Ok(());
+    }
+    fs::create_dir_all(&applications)?;
+    fs::write(&path, entry)?;
+    let status = std::process::Command::new("xdg-mime")
+        .args(["default", HANDLER_ENTRY, "x-scheme-handler/overlayr"])
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::other(
+            "xdg-mime could not set the overlayr handler",
+        ));
+    }
+    // Optional: refreshes the MIME cache some desktops read.
+    let _ = std::process::Command::new("update-desktop-database")
+        .arg(&applications)
+        .status();
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+const HANDLER_ENTRY: &str = "overlayr-url-handler.desktop";
+
+/// The handler's desktop entry, or `None` for a path an `Exec` line can't
+/// quote safely.
+#[cfg(target_os = "linux")]
+fn handler_entry(executable: &str) -> Option<String> {
+    if executable.is_empty() || executable.contains(['"', '`', '$', '\\', '\n']) {
+        return None;
+    }
+    Some(format!(
+        "[Desktop Entry]\nType=Application\nName=Overlayr login\nExec=\"{executable}\" %u\n\
+         Icon=overlayr\nTerminal=false\nNoDisplay=true\nMimeType=x-scheme-handler/overlayr;\n"
+    ))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn register_protocol() -> io::Result<()> {
     Ok(())
 }
@@ -249,6 +301,15 @@ mod tests {
         let session = parse_deep_link("overlayr://auth?token=t&uid=u&refresh=r%2Fs")
             .expect("deep link should parse");
         assert_eq!(session.refresh_token, "r/s");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn handler_entry_runs_this_executable_with_the_url() {
+        let entry = handler_entry("/home/me/My Apps/overlayr").expect("plain path");
+        assert!(entry.contains("Exec=\"/home/me/My Apps/overlayr\" %u\n"));
+        assert!(entry.contains("MimeType=x-scheme-handler/overlayr;"));
+        assert!(handler_entry("/tmp/$(evil)/overlayr").is_none());
     }
 
     #[test]

@@ -351,11 +351,16 @@ fn run_capture<C>(
                 thread::sleep(Duration::from_millis(250));
             }
         }
-        let elapsed = started.elapsed();
-        if elapsed < interval {
-            thread::sleep(interval - elapsed);
-        }
+        thread::sleep(capture_rest(started.elapsed(), interval));
     }
+}
+
+/// How long to wait before the next capture. Each capture makes the
+/// compositor copy the game's frame, so rest at least as long as the capture
+/// took: back-to-back captures (a short interval with a slow capture, such
+/// as 30 ms for a 1440p window) made games drop frames.
+fn capture_rest(capture_took: Duration, interval: Duration) -> Duration {
+    interval.saturating_sub(capture_took).max(capture_took)
 }
 
 fn run_pipeline<O, T>(
@@ -1227,6 +1232,16 @@ mod tests {
     use super::*;
     use crate::services::{CaptureBackend, OcrBackend, TranslationBackend};
     use crate::types::{Frame, Rect, SourceKind};
+
+    #[test]
+    fn captures_never_run_back_to_back() {
+        let ms = Duration::from_millis;
+        // A fast capture waits out the rest of the interval.
+        assert_eq!(capture_rest(ms(10), ms(100)), ms(90));
+        // A capture slower than the interval still rests as long as it took.
+        assert_eq!(capture_rest(ms(30), ms(16)), ms(30));
+        assert_eq!(capture_rest(ms(60), ms(100)), ms(60));
+    }
 
     struct FakeCapture;
 
