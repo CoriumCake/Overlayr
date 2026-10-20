@@ -10,6 +10,7 @@
 //! ONNX Runtime is loaded at run time, so Overlayr still starts without it
 //! and falls back to Tesseract.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -117,17 +118,32 @@ fn load_runtime() -> ServiceResult<()> {
         .clone()
 }
 
-/// Threads per model session, from the performance settings. Four were
-/// barely faster than two (650 vs 820 ms per screen) but used 60% more CPU,
-/// which games need more.
+/// The OCR thread setting from the performance settings.
 static SESSION_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(2);
 
-/// Sets the threads per model session for models loaded afterwards.
+/// Sets the OCR threads for models loaded afterwards.
 pub fn set_threads(threads: usize) {
     SESSION_THREADS.store(threads.clamp(1, 16), std::sync::atomic::Ordering::Relaxed);
 }
-/// Recognition sessions reading batches in parallel.
-const RECOGNITION_WORKERS: usize = 2;
+
+/// Threads for the detection session. Measured on a 16-thread Ryzen with a
+/// game screen: 4 threads took 210 ms and 600 ms of CPU, 8 took the same
+/// time and 1,050 ms.
+fn detection_threads(threads: usize) -> usize {
+    threads.min(4)
+}
+
+/// Recognition sessions reading batches in parallel, one thread each.
+/// Threads inside a session mostly wait on each other on these small
+/// inputs: 6 single-threaded sessions read 82 lines in 450 ms with 2.3 s of
+/// CPU, where 2 sessions of 8 threads took 435 ms and 3.4 s. Gains stop
+/// after about 6.
+fn recognition_workers(threads: usize) -> usize {
+    (threads * 2).clamp(2, 6)
+}
+
+/// Recognised lines remembered by their pixels.
+const RECOGNITION_CACHE: usize = 4_096;
 
 fn open_session(path: &Path, threads: usize) -> ServiceResult<Session> {
     let mut builder = (|| -> ort::Result<_> {
@@ -158,6 +174,10 @@ struct Models {
     recognition: Vec<Session>,
     /// Index 0 is the CTC blank; the last entry is a space.
     characters: Vec<String>,
+    /// Text and confidence of lines already read, by [`line_key`]. The
+    /// same pixels always read the same, so lines that didn't change (most
+    /// of them, when one row of a menu is hovered) skip recognition.
+    cache: HashMap<u64, (String, f32)>,
 }
 
 impl Models {
@@ -166,9 +186,9 @@ impl Models {
         let directory = model_dir()
             .ok_or_else(|| "could not determine your user data directory".to_string())?;
         let threads = SESSION_THREADS.load(std::sync::atomic::Ordering::Relaxed);
-        let detection = open_session(&directory.join(DETECTION_MODEL), threads)?;
-        let recognition = (0..RECOGNITION_WORKERS)
-            .map(|_| open_session(&directory.join(RECOGNITION_MODEL), threads))
+        let detection = open_session(&directory.join(DETECTION_MODEL), detection_threads(threads))?;
+        let recognition = (0..recognition_workers(threads))
+            .map(|_| open_session(&directory.join(RECOGNITION_MODEL), 1))
             .collect::<ServiceResult<Vec<_>>>()?;
         let dictionary = recognition[0]
             .metadata()
@@ -183,6 +203,7 @@ impl Models {
             detection,
             recognition,
             characters,
+            cache: HashMap::new(),
         })
     }
 }
@@ -245,14 +266,22 @@ impl PixelBox {
 }
 
 /// Scale and padded size of the detection input for a frame.
-fn detection_size(width: u32, height: u32) -> (f32, u32, u32) {
+///
+/// The scale comes from the whole capture, so a crop of it is scaled the
+/// same: text reads the same in both, and a small crop costs little instead
+/// of being enlarged. It is a multiple of 1/32, so a crop starting on a
+/// 32-pixel grid samples exactly the capture's pixels.
+fn detection_size(frame: &Frame) -> (f32, u32, u32) {
+    let (width, height) = frame.source_size;
     let (short, long) = (width.min(height) as f32, width.max(height) as f32);
     let scale = (DETECTION_SIDE / short)
         .min(MAX_DETECTION_SCALE)
         .min(MAX_DETECTION_SIDE / long);
-    // The network needs sides that are multiples of 32.
-    let round = |side: u32| (((side as f32 * scale) / 32.0).round() as u32).max(1) * 32;
-    (scale, round(width), round(height))
+    let scale = ((scale * 32.0).floor() / 32.0).max(1.0 / 32.0);
+    // The network needs sides that are multiples of 32; the image is
+    // padded to them.
+    let pad = |side: u32| ((side as f32 * scale / 32.0).ceil() as u32).max(1) * 32;
+    (scale, pad(frame.width), pad(frame.height))
 }
 
 /// Samples the frame at `(x, y)` with bilinear filtering, as BGR normalised
@@ -311,15 +340,24 @@ fn detect(session: &mut Session, frame: &Frame) -> ServiceResult<Vec<PixelBox>> 
     if frame.width < 4 || frame.height < 4 {
         return Ok(Vec::new());
     }
-    let (_, width, height) = detection_size(frame.width, frame.height);
+    let (scale, width, height) = detection_size(frame);
     let mut input = vec![0.0_f32; (3 * width * height) as usize];
-    let whole = PixelBox {
-        left: 0,
-        top: 0,
-        right: frame.width,
-        bottom: frame.height,
-    };
-    write_planar(frame, whole, width, height, width, height, &mut input);
+    let plane = (width * height) as usize;
+    let content_width = ((frame.width as f32 * scale).ceil() as u32).min(width);
+    let content_height = ((frame.height as f32 * scale).ceil() as u32).min(height);
+    for y in 0..content_height {
+        let source_y = (y as f32 + 0.5) / scale - 0.5;
+        for x in 0..content_width {
+            let source_x = (x as f32 + 0.5) / scale - 0.5;
+            let index = (y * width + x) as usize;
+            for (channel, value) in sample_bgr(frame, source_x, source_y)
+                .into_iter()
+                .enumerate()
+            {
+                input[channel * plane + index] = value;
+            }
+        }
+    }
     let tensor = Tensor::from_array(([1_usize, 3, height as usize, width as usize], input))
         .map_err(|error| error.to_string())?;
     let outputs = session
@@ -335,8 +373,9 @@ fn detect(session: &mut Session, frame: &Frame) -> ServiceResult<Vec<PixelBox>> 
     Ok(boxes_from_map(map, map_width, map_height)
         .into_iter()
         .filter_map(|(left, top, right, bottom)| {
-            let scale_x = frame.width as f32 / map_width as f32;
-            let scale_y = frame.height as f32 / map_height as f32;
+            // Map pixels to frame pixels; the map may be smaller than the input.
+            let scale_x = width as f32 / map_width as f32 / scale;
+            let scale_y = height as f32 / map_height as f32 / scale;
             let area = PixelBox {
                 left: (left * scale_x).round().clamp(0.0, frame.width as f32) as u32,
                 top: (top * scale_y).round().clamp(0.0, frame.height as f32) as u32,
@@ -441,8 +480,78 @@ fn boxes_from_map(map: &[f32], width: u32, height: u32) -> Vec<(f32, f32, f32, f
 
 /// Reads each box with the recognition model, in batches of similar widths.
 fn recognize(models: &mut Models, frame: &Frame, boxes: &[PixelBox]) -> ServiceResult<Vec<Line>> {
+    let keys = boxes
+        .iter()
+        .map(|area| line_key(frame, *area))
+        .collect::<Vec<_>>();
+    let mut lines = Vec::with_capacity(boxes.len());
+    let mut unread = Vec::new();
+    for (index, key) in keys.iter().enumerate() {
+        match models.cache.get(key) {
+            Some((text, confidence)) => lines.push(Line {
+                area: boxes[index],
+                text: text.clone(),
+                confidence: *confidence,
+            }),
+            None => unread.push(index),
+        }
+    }
+    let read = read_boxes(models, frame, boxes, unread)?;
+    if models.cache.len() + read.len() > RECOGNITION_CACHE {
+        models.cache.clear();
+    }
+    for (index, line) in read {
+        models
+            .cache
+            .insert(keys[index], (line.text.clone(), line.confidence));
+        lines.push(line);
+    }
+    Ok(lines)
+}
+
+/// Grid, in capture pixels, that cached lines are snapped to.
+const LINE_KEY_GRID: u32 = 8;
+
+/// Identifies a line by the pixels around it: its box (plus the pixel of
+/// border that resampling reads) grown to an 8-pixel grid of the capture.
+/// Detection boxes shift by a pixel between reads; on the grid an
+/// unchanged line nearly always gets the same key. The same pixels hold the
+/// same text, so its earlier reading can be reused.
+fn line_key(frame: &Frame, area: PixelBox) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let (origin_x, origin_y) = frame.origin;
+    let snap_down = |value: u32, origin: u32| {
+        ((origin + value).saturating_sub(1) / LINE_KEY_GRID * LINE_KEY_GRID).max(origin) - origin
+    };
+    let snap_up = |value: u32, origin: u32, limit: u32| {
+        ((origin + value + 1).div_ceil(LINE_KEY_GRID) * LINE_KEY_GRID - origin).min(limit)
+    };
+    let left = snap_down(area.left, origin_x);
+    let top = snap_down(area.top, origin_y);
+    let right = snap_up(area.right, origin_x, frame.width);
+    let bottom = snap_up(area.bottom, origin_y, frame.height);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (right - left, bottom - top).hash(&mut hasher);
+    for y in top..bottom {
+        let start = ((y * frame.width + left) * 4) as usize;
+        let end = ((y * frame.width + right) * 4) as usize;
+        hasher.write(&frame.rgba[start..end]);
+    }
+    hasher.finish()
+}
+
+/// Reads the boxes at `indices` with the recognition sessions in parallel,
+/// returning each line with its index.
+fn read_boxes(
+    models: &mut Models,
+    frame: &Frame,
+    boxes: &[PixelBox],
+    mut order: Vec<usize>,
+) -> ServiceResult<Vec<(usize, Line)>> {
+    if order.is_empty() {
+        return Ok(Vec::new());
+    }
     let ratio = |area: &PixelBox| area.width() as f32 / area.height().max(1) as f32;
-    let mut order = (0..boxes.len()).collect::<Vec<_>>();
     order.sort_by(|&a, &b| ratio(&boxes[a]).total_cmp(&ratio(&boxes[b])));
     // Widest (slowest) batches first, so the workers finish together.
     let batches = order.chunks(RECOGNITION_BATCH).rev().collect::<Vec<_>>();
@@ -473,9 +582,9 @@ fn recognize(models: &mut Models, frame: &Frame, boxes: &[PixelBox]) -> ServiceR
                     .join()
                     .unwrap_or_else(|_| Err("text recognition crashed".to_string()))
             })
-            .collect::<Vec<ServiceResult<Vec<Line>>>>()
+            .collect::<Vec<ServiceResult<Vec<(usize, Line)>>>>()
     });
-    let mut lines = Vec::with_capacity(boxes.len());
+    let mut lines = Vec::with_capacity(order.len());
     for result in results {
         lines.extend(result?);
     }
@@ -489,7 +598,7 @@ fn recognize_batch(
     frame: &Frame,
     boxes: &[PixelBox],
     batch: &[usize],
-) -> ServiceResult<Vec<Line>> {
+) -> ServiceResult<Vec<(usize, Line)>> {
     let ratio = |area: &PixelBox| area.width() as f32 / area.height().max(1) as f32;
     let widest = batch.iter().map(|&index| ratio(&boxes[index])).fold(
         RECOGNITION_MIN_WIDTH as f32 / RECOGNITION_HEIGHT as f32,
@@ -530,11 +639,14 @@ fn recognize_batch(
             let start = slot * steps * classes;
             let sequence = scores.get(start..start + steps * classes)?;
             let (text, confidence) = decode(sequence, classes, characters);
-            Some(Line {
-                area: boxes[index],
-                text,
-                confidence,
-            })
+            Some((
+                index,
+                Line {
+                    area: boxes[index],
+                    text,
+                    confidence,
+                },
+            ))
         })
         .collect())
 }
@@ -663,6 +775,79 @@ impl OcrBackend for NeuralOcr {
 mod tests {
     use super::*;
 
+    /// Times reading a screenshot: cold, again unchanged, with one row
+    /// "hovered" and as a cropped region. Run with:
+    /// `OVERLAYR_BENCH_IMAGE=shot.png cargo test --release --features native-ocr --lib bench_ocr -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_ocr() {
+        let path = std::env::var("OVERLAYR_BENCH_IMAGE").expect("OVERLAYR_BENCH_IMAGE");
+        let image = image::open(&path).expect("image").to_rgba8();
+        let (width, height) = image.dimensions();
+        let frame = Frame::new(
+            1,
+            crate::types::Rect::new(0, 0, width, height),
+            width,
+            height,
+            image.into_raw(),
+        );
+        let cpu = || {
+            let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
+            let fields: Vec<&str> = stat
+                .rsplit_once(')')
+                .unwrap()
+                .1
+                .split_whitespace()
+                .collect();
+            (fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()) * 10
+        };
+        // A highlighted row: brighten a band across the middle.
+        let mut hovered = frame.clone();
+        let band = hovered.height / 2..hovered.height / 2 + 30;
+        for y in band {
+            for x in 0..hovered.width {
+                let index = ((y * hovered.width + x) * 4) as usize;
+                for channel in 0..3 {
+                    hovered.rgba[index + channel] =
+                        hovered.rgba[index + channel].saturating_add(40);
+                }
+            }
+        }
+        // On the 32-pixel grid, as the pipeline crops.
+        let region = frame.crop(crate::types::Rect::new(
+            width as i32 / 4 / 32 * 32,
+            height as i32 / 4 / 32 * 32,
+            width / 2,
+            height / 2,
+        ));
+        for setting in [8, 2] {
+            set_threads(setting);
+            let mut models = Models::load().expect("models");
+            let mut read = |label: &str, frame: &Frame| {
+                let (start, cpu_start) = (std::time::Instant::now(), cpu());
+                let boxes = detect(&mut models.detection, frame).unwrap();
+                let (middle, cpu_middle) = (std::time::Instant::now(), cpu());
+                let cached = boxes
+                    .iter()
+                    .filter(|area| models.cache.contains_key(&line_key(frame, **area)))
+                    .count();
+                recognize(&mut models, frame, &boxes).unwrap();
+                println!(
+                    "setting {setting} {label:>9}: {:>3} lines ({cached:>3} cached) | detect {:>4.0} ms, {:>5} ms cpu | recognize {:>4.0} ms, {:>5} ms cpu",
+                    boxes.len(),
+                    (middle - start).as_secs_f64() * 1000.0,
+                    cpu_middle - cpu_start,
+                    middle.elapsed().as_secs_f64() * 1000.0,
+                    cpu() - cpu_middle,
+                );
+            };
+            read("warm-up", &frame);
+            read("unchanged", &frame);
+            read("hovered", &hovered);
+            read("region", &region);
+        }
+    }
+
     #[test]
     fn decodes_ctc_steps_without_blanks_or_repeats() {
         let characters = ["", "a", "b", " "].map(String::from).to_vec();
@@ -696,22 +881,67 @@ mod tests {
         assert!(left < 5.0 && top < 8.0 && right > 30.0 && bottom > 12.0);
     }
 
+    fn blank(width: u32, height: u32) -> Frame {
+        Frame::new(
+            1,
+            crate::types::Rect::new(0, 0, width, height),
+            width,
+            height,
+            vec![0; (width * height * 4) as usize],
+        )
+    }
+
     #[test]
     fn detection_input_is_a_multiple_of_32_and_bounded() {
         // A 1440p capture is scaled down to about 900 pixels tall.
-        let (scale, width, height) = detection_size(2560, 1440);
+        let (scale, width, height) = detection_size(&blank(2560, 1440));
         assert_eq!((width % 32, height % 32), (0, 0));
         assert!(
             scale < 1.0 && height.abs_diff(900) <= 32,
             "{width}x{height}"
         );
-        let (scale, _, _) = detection_size(3840, 2160);
+        let (scale, _, _) = detection_size(&blank(3840, 2160));
         assert!(scale < 0.5);
-        // Small crops are scaled up, within limits.
-        let (scale, width, _) = detection_size(300, 40);
+        // Small captures are scaled up, within limits.
+        let (scale, width, _) = detection_size(&blank(300, 40));
         assert!(scale <= MAX_DETECTION_SCALE && width <= 608);
-        let (_, width, _) = detection_size(2560, 120);
+        let (_, width, _) = detection_size(&blank(2560, 120));
         assert!(width <= 2016);
+    }
+
+    #[test]
+    fn crops_are_scaled_like_their_capture() {
+        let capture = blank(2560, 1440);
+        let crop = capture.crop(crate::types::Rect::new(320, 640, 600, 64));
+        let (capture_scale, _, _) = detection_size(&capture);
+        let (crop_scale, width, height) = detection_size(&crop);
+        assert_eq!(crop_scale, capture_scale);
+        assert_eq!((width % 32, height % 32), (0, 0));
+        assert!(width < 600 && height <= 64, "{width}x{height}");
+    }
+
+    #[test]
+    fn line_keys_ignore_small_box_shifts_but_not_new_pixels() {
+        let mut capture = blank(400, 100);
+        for (index, value) in capture.rgba.iter_mut().enumerate() {
+            *value = (index * 7 % 251) as u8;
+        }
+        let crop = capture.crop(crate::types::Rect::new(32, 16, 300, 60));
+        let at = |left, top, right, bottom| PixelBox {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        // The same line, found a pixel off, in the capture and in a crop.
+        let key = line_key(&capture, at(42, 30, 150, 50));
+        assert_eq!(line_key(&capture, at(43, 30, 149, 51)), key);
+        assert_eq!(line_key(&crop, at(10, 14, 118, 34)), key);
+        // A changed pixel inside the line is a new line.
+        let mut changed = capture.clone();
+        let index = ((40 * 400 + 100) * 4) as usize;
+        changed.rgba[index] = changed.rgba[index].wrapping_add(1);
+        assert_ne!(line_key(&changed, at(42, 30, 150, 50)), key);
     }
 
     #[test]

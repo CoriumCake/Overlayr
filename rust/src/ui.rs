@@ -12,7 +12,10 @@ use crate::capture::PlatformCapture;
 use crate::config::AppConfig;
 use crate::diagnostics::DiagnosticReport;
 use crate::installer::InstallPlan;
+use crate::marketplace_ui::{MarketplaceAction, MarketplaceView};
 use crate::pack::{Background, Pack, TextAlign, TextStyle};
+use crate::resources::ResourceMonitor;
+use crate::resources_ui::{Resource, resources_ui};
 use crate::runtime::{DebugInfo, PipelineSnapshot, PipelineWorker, Verdict};
 use crate::services::CaptureBackend;
 use crate::studio_ui::{StudioAction, StudioView};
@@ -118,6 +121,8 @@ struct OverlayWindow {
 enum Mode {
     /// Translate a running application, by machine or with a pack.
     Translate,
+    /// Browse, install and publish translation packs.
+    Marketplace,
     /// Build translation packs.
     Studio,
 }
@@ -185,6 +190,12 @@ enum LiveTab {
     Debug,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DebugTab {
+    Pipeline,
+    Resources,
+}
+
 pub struct OverlayrApp {
     config: AppConfig,
     /// Receives shortcut commands (`overlayr --toggle`).
@@ -240,6 +251,14 @@ pub struct OverlayrApp {
     settings_page: SettingsPage,
     mode: Mode,
     studio: StudioView,
+    marketplace: MarketplaceView,
+    /// Window previews as images, for marketplace cover pictures.
+    thumbnail_images: HashMap<String, egui::ColorImage>,
+    /// A marketplace pack being unlocked before the overlay starts.
+    unlocking: Option<(String, std::sync::mpsc::Receiver<Result<Pack, String>>)>,
+    /// The last unlocked marketplace pack, kept in memory (never on disk) so
+    /// restarting the overlay doesn't ask the server again.
+    unlocked: Option<(String, Pack)>,
     /// When the overlay was started from the studio, the pack last sent to
     /// it, so edits can be pushed to the running overlay.
     studio_overlay: Option<Pack>,
@@ -250,6 +269,10 @@ pub struct OverlayrApp {
     live_tab: LiveTab,
     /// Texture of the frame shown in the debug view, by frame sequence.
     debug_texture: Option<(u64, egui::TextureHandle)>,
+    /// Overlayr's own CPU and memory use, shown in the debug view.
+    resources: ResourceMonitor,
+    debug_tab: DebugTab,
+    selected_resource: Resource,
     /// Display name of `config.active_pack`, cached so the pack file isn't
     /// read on every frame: (path, name).
     active_pack_label: (String, String),
@@ -306,11 +329,18 @@ impl OverlayrApp {
             settings_page: SettingsPage::General,
             mode: Mode::Translate,
             studio: StudioView::default(),
+            marketplace: MarketplaceView::default(),
+            thumbnail_images: HashMap::new(),
+            unlocking: None,
+            unlocked: None,
             studio_overlay: None,
             last_exclusion_update: None,
             running_pack: None,
             live_tab: LiveTab::Live,
             debug_texture: None,
+            resources: ResourceMonitor::default(),
+            debug_tab: DebugTab::Pipeline,
+            selected_resource: Resource::default(),
             active_pack_label: (String::new(), "Machine translation".into()),
         };
         app.start_scan();
@@ -380,7 +410,9 @@ impl OverlayrApp {
             .map(|source| source.id.clone())
             .collect::<Vec<_>>();
         self.thumbnails.retain(|id, _| known.contains(id));
+        self.thumbnail_images.retain(|id, _| known.contains(id));
         for (id, image) in scan.thumbnails {
+            self.thumbnail_images.insert(id.clone(), image.clone());
             match self.thumbnails.get_mut(&id) {
                 Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
                 None => {
@@ -722,6 +754,44 @@ impl OverlayrApp {
         }
     }
 
+    /// Unlocks an installed marketplace pack in the background, then starts
+    /// the overlay with it.
+    fn unlock(&mut self, id: String) {
+        if self.unlocking.is_some() {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let pack_id = id.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(crate::marketplace::unlock(&pack_id));
+        });
+        self.unlocking = Some((id, receiver));
+    }
+
+    fn poll_unlock(&mut self) {
+        let Some((id, receiver)) = &self.unlocking else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("could not unlock the pack".into())
+            }
+        };
+        let id = id.clone();
+        self.unlocking = None;
+        match result {
+            Ok(pack) => {
+                self.unlocked = Some((id, pack));
+                self.start();
+            }
+            Err(error) => {
+                self.error = Some(format!("Could not use the marketplace pack: {error}"));
+            }
+        }
+    }
+
     fn start(&mut self) {
         if self.worker.is_some() || self.stopping.is_some() {
             return;
@@ -752,6 +822,18 @@ impl OverlayrApp {
             Some(self.studio.pack().clone())
         } else if self.config.active_pack.is_empty() {
             None
+        } else if let Some(id) = self
+            .config
+            .active_pack
+            .strip_prefix(crate::marketplace::ACTIVE_PREFIX)
+        {
+            match &self.unlocked {
+                Some((unlocked, pack)) if unlocked == id => Some(pack.clone()),
+                _ => {
+                    self.unlock(id.to_owned());
+                    return;
+                }
+            }
         } else {
             match Pack::load(&self.config.active_pack) {
                 Ok(pack) => Some(pack),
@@ -1044,6 +1126,8 @@ impl OverlayrApp {
             ui.label(RichText::new("Overlayr").size(title_size).strong());
             ui.add_space(if compact { 2.0 } else { 8.0 });
             ui.selectable_value(&mut self.mode, Mode::Translate, "Translate");
+            ui.selectable_value(&mut self.mode, Mode::Marketplace, "Marketplace")
+                .on_hover_text("Find translation packs made by others, or share yours");
             let studio_label = if self.studio.is_recording() {
                 "● Studio"
             } else {
@@ -1098,12 +1182,17 @@ impl OverlayrApp {
                 self.stop();
             }
         } else {
-            let label = if compact {
+            let label = if self.unlocking.is_some() {
+                "Unlocking pack…"
+            } else if compact {
                 "▶ Start"
             } else {
                 "▶ Start overlay"
             };
-            let response = ui.add_enabled(self.stopping.is_none(), primary_button(label, ACCENT));
+            let response = ui.add_enabled(
+                self.stopping.is_none() && self.unlocking.is_none(),
+                primary_button(label, ACCENT),
+            );
             if response
                 .on_hover_text(if self.mode == Mode::Studio {
                     "Test the pack you're editing on the studio's application; \
@@ -1288,8 +1377,15 @@ impl OverlayrApp {
     fn translation_settings(&mut self, ui: &mut egui::Ui) {
         section(ui, "Translate with", |ui| {
             if self.active_pack_label.0 != self.config.active_pack {
+                let market = self
+                    .config
+                    .active_pack
+                    .strip_prefix(crate::marketplace::ACTIVE_PREFIX);
                 let name = if self.config.active_pack.is_empty() {
                     "Machine translation".to_string()
+                } else if let Some(id) = market {
+                    crate::marketplace::installed_listing(id)
+                        .map_or_else(|| "Missing pack".into(), |listing| listing.title)
                 } else {
                     Pack::load(&self.config.active_pack)
                         .map(|pack| pack.name)
@@ -1313,6 +1409,14 @@ impl OverlayrApp {
                             &mut self.config.active_pack,
                             path.to_string_lossy().into_owned(),
                             label,
+                        );
+                    }
+                    for installed in crate::marketplace::installed() {
+                        let listing = installed.listing;
+                        ui.selectable_value(
+                            &mut self.config.active_pack,
+                            format!("{}{}", crate::marketplace::ACTIVE_PREFIX, listing.id),
+                            format!("🛒 {} (by {})", listing.title, listing.author),
                         );
                     }
                 });
@@ -1517,8 +1621,8 @@ impl OverlayrApp {
                 .spacing([12.0, 10.0])
                 .show(ui, |ui| {
                     ui.label("OCR threads").on_hover_text(
-                        "CPU threads each text reader uses. More reads faster but takes more CPU \
-                         from the game.",
+                        "How many CPU threads text reading uses at once. More reads faster but \
+                         takes more CPU from the game; above 4 it barely gets faster.",
                     );
                     ui.add(egui::Slider::new(&mut performance.ocr_threads, 1..=8));
                     ui.end_row();
@@ -1990,8 +2094,36 @@ impl OverlayrApp {
                 }
                 match (&snapshot.debug, self.live_tab) {
                     (Some(debug), LiveTab::Debug) => {
-                        let debug = std::sync::Arc::clone(debug);
-                        self.debug_ui(ui, &snapshot, &debug);
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(
+                                &mut self.debug_tab,
+                                DebugTab::Pipeline,
+                                "Pipeline",
+                            );
+                            ui.selectable_value(
+                                &mut self.debug_tab,
+                                DebugTab::Resources,
+                                "Resources",
+                            );
+                        });
+                        ui.separator();
+                        match self.debug_tab {
+                            DebugTab::Pipeline => {
+                                let debug = std::sync::Arc::clone(debug);
+                                self.debug_ui(ui, &snapshot, &debug);
+                            }
+                            DebugTab::Resources => {
+                                egui::ScrollArea::vertical()
+                                    .auto_shrink(false)
+                                    .show(ui, |ui| {
+                                        resources_ui(
+                                            ui,
+                                            &self.resources,
+                                            &mut self.selected_resource,
+                                        );
+                                    });
+                            }
+                        }
                     }
                     _ => live_ui(ui, snapshot, self.running_pack.as_deref()),
                 }
@@ -2559,7 +2691,13 @@ impl eframe::App for OverlayrApp {
         self.reap_scan(ctx);
         self.reap_install();
         self.poll_translation_startup();
+        self.poll_unlock();
         ctx.request_repaint_after(Duration::from_millis(100));
+        // Sampled all along in debug mode, so the graphs already hold the
+        // last minute when the Resources tab is opened.
+        if self.config.debug {
+            self.resources.tick();
+        }
         if self.is_dirty()
             && self.worker.is_none()
             && ctx.input_mut(|input| {
@@ -2576,6 +2714,7 @@ impl eframe::App for OverlayrApp {
         let picker_visible = match self.mode {
             Mode::Translate => self.worker.is_none() && self.stopping.is_none(),
             Mode::Studio => !self.studio.is_recording(),
+            Mode::Marketplace => self.marketplace.wants_previews(),
         };
         self.watch_windows(ctx);
         if picker_visible {
@@ -2632,6 +2771,34 @@ impl eframe::App for OverlayrApp {
                     self.selected_source = Some(source);
                 }
                 self.mode = Mode::Translate;
+            }
+        } else if self.mode == Mode::Marketplace {
+            let sources = self.picker_sources().cloned().collect::<Vec<_>>();
+            match self
+                .marketplace
+                .show(ctx, &sources, &self.thumbnails, &self.thumbnail_images)
+            {
+                Some(MarketplaceAction::Use(id)) => {
+                    self.config.active_pack = format!("{}{id}", crate::marketplace::ACTIVE_PREFIX);
+                    self.save();
+                    self.mode = Mode::Translate;
+                }
+                Some(MarketplaceAction::Uninstalled(id)) => {
+                    if self.config.active_pack
+                        == format!("{}{id}", crate::marketplace::ACTIVE_PREFIX)
+                    {
+                        self.config.active_pack.clear();
+                        self.save();
+                    }
+                    if self
+                        .unlocked
+                        .as_ref()
+                        .is_some_and(|(unlocked, _)| *unlocked == id)
+                    {
+                        self.unlocked = None;
+                    }
+                }
+                None => {}
             }
         } else {
             egui::CentralPanel::default()

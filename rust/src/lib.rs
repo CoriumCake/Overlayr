@@ -12,10 +12,14 @@ pub mod diagnostics;
 #[cfg(unix)]
 pub mod hyprland;
 pub mod installer;
+pub mod marketplace;
+pub mod marketplace_ui;
 pub mod neural;
 pub mod ocr;
 pub mod pack;
 pub mod pipeline;
+pub mod resources;
+pub mod resources_ui;
 pub mod runtime;
 pub mod services;
 pub mod single_instance;

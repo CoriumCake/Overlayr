@@ -13,7 +13,14 @@ pub struct AuthSession {
     pub uid: String,
     pub access_token: String,
     pub timestamp: u64,
+    /// Renews `access_token`, which expires after an hour. Older
+    /// logins don't have one and must log in again once the token expires.
+    #[serde(default)]
+    pub refresh_token: String,
 }
+
+/// ID tokens live an hour; renew a little before that.
+const TOKEN_LIFETIME_SECS: u64 = 50 * 60;
 
 pub fn handle_launch_args<I, S>(args: I) -> io::Result<bool>
 where
@@ -34,12 +41,14 @@ pub fn parse_deep_link(url: &str) -> Option<AuthSession> {
     let query = url.strip_prefix("overlayr://auth?")?;
     let mut uid = None;
     let mut access_token = None;
+    let mut refresh_token = String::new();
     for pair in query.split('&') {
         let (key, value) = pair.split_once('=')?;
         let value = percent_decode(value)?;
         match key {
             "uid" => uid = Some(value),
             "token" => access_token = Some(value),
+            "refresh" => refresh_token = value,
             _ => {}
         }
     }
@@ -53,8 +62,73 @@ pub fn parse_deep_link(url: &str) -> Option<AuthSession> {
     Some(AuthSession {
         uid,
         access_token,
-        timestamp: SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs(),
+        timestamp: now()?,
+        refresh_token: refresh_token.trim().to_owned(),
     })
+}
+
+fn now() -> Option<u64> {
+    Some(SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs())
+}
+
+/// The saved login, if the user has logged in on this computer.
+pub fn load_session() -> Option<AuthSession> {
+    serde_json::from_slice(&fs::read(session_path()).ok()?).ok()
+}
+
+/// Forgets the saved login, and asks `api_base` in the background to revoke
+/// its refresh token so a copied session file stops working too.
+pub fn logout(api_base: &str) -> io::Result<()> {
+    if let Some(session) = load_session().filter(|session| !session.refresh_token.is_empty()) {
+        let url = format!("{api_base}/api/auth/logout");
+        std::thread::spawn(move || {
+            let _ = reqwest::blocking::Client::new()
+                .post(url)
+                .timeout(std::time::Duration::from_secs(15))
+                .json(&serde_json::json!({ "refreshToken": session.refresh_token }))
+                .send();
+        });
+    }
+    match fs::remove_file(session_path()) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// A valid ID token for the Overlayr API, renewed through `api_base` when
+/// the saved one has expired.
+pub fn id_token(api_base: &str) -> Result<String, String> {
+    let mut session = load_session().ok_or("Log in to use the marketplace")?;
+    let age = now().unwrap_or(0).saturating_sub(session.timestamp);
+    if age < TOKEN_LIFETIME_SECS {
+        return Ok(session.access_token);
+    }
+    if session.refresh_token.is_empty() {
+        return Err("Your login expired. Log in again".into());
+    }
+    #[derive(Deserialize)]
+    struct Refreshed {
+        token: String,
+        #[serde(rename = "refreshToken")]
+        refresh_token: String,
+    }
+    let response = reqwest::blocking::Client::new()
+        .post(format!("{api_base}/api/auth/refresh"))
+        .timeout(std::time::Duration::from_secs(15))
+        .json(&serde_json::json!({ "refreshToken": session.refresh_token }))
+        .send()
+        .map_err(|error| format!("could not reach Overlayr: {error}"))?;
+    if !response.status().is_success() {
+        return Err("Your login expired. Log in again".into());
+    }
+    let refreshed: Refreshed = response
+        .json()
+        .map_err(|error| format!("unexpected reply from Overlayr: {error}"))?;
+    session.access_token = refreshed.token;
+    session.refresh_token = refreshed.refresh_token;
+    session.timestamp = now().unwrap_or(0);
+    save_session(&session).map_err(|error| format!("could not save the login: {error}"))?;
+    Ok(session.access_token)
 }
 
 pub fn session_path() -> PathBuf {
@@ -167,6 +241,14 @@ mod tests {
             .expect("deep link should parse");
         assert_eq!(session.uid, "user@example.com");
         assert_eq!(session.access_token, "abc+123");
+        assert!(session.refresh_token.is_empty());
+    }
+
+    #[test]
+    fn keeps_the_refresh_token() {
+        let session = parse_deep_link("overlayr://auth?token=t&uid=u&refresh=r%2Fs")
+            .expect("deep link should parse");
+        assert_eq!(session.refresh_token, "r/s");
     }
 
     #[test]

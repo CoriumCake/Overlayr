@@ -12,6 +12,7 @@ native-ocr = ["dep:leptess"]
 native-production = ["native-capture", "native-ocr"]
 
 [dependencies]
+aes-gcm = "0.10.3"
 base64 = "0.22.1"
 eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "pnm"] }

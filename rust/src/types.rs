@@ -57,6 +57,11 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// For a crop, where it sits in the capture it came from and that
+    /// capture's size, in pixels; a capture is its own source. OCR scales
+    /// crops like their capture, so text reads the same in both.
+    pub origin: (u32, u32),
+    pub source_size: (u32, u32),
 }
 
 impl Frame {
@@ -67,6 +72,8 @@ impl Frame {
             width,
             height,
             rgba,
+            origin: (0, 0),
+            source_size: (width, height),
         }
     }
 
@@ -104,13 +111,16 @@ impl Frame {
             let start = ((y * self.width + left) * 4) as usize;
             rgba.extend_from_slice(&self.rgba[start..start + (width * 4) as usize]);
         }
-        Frame::new(
+        let mut crop = Frame::new(
             self.sequence,
             self.to_screen(left as i32, top as i32, width, height),
             width,
             height,
             rgba,
-        )
+        );
+        crop.origin = (self.origin.0 + left, self.origin.1 + top);
+        crop.source_size = self.source_size;
+        crop
     }
 
     /// Paints an area (in image pixels) with a solid colour.

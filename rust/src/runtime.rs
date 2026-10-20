@@ -106,6 +106,30 @@ struct SharedState {
     waker: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 
+/// Grows a read region (in frame pixels) to a 32-pixel grid. OCR then
+/// samples a crop exactly like the whole frame, so its unchanged lines are
+/// found in the same place and their earlier readings are reused.
+fn align_region(region: Rect) -> Rect {
+    const GRID: i32 = 32;
+    let left = region.left.max(0) / GRID * GRID;
+    let top = region.top.max(0) / GRID * GRID;
+    let right = (region.right().max(0) + GRID - 1) / GRID * GRID;
+    let bottom = (region.bottom().max(0) + GRID - 1) / GRID * GRID;
+    // `Frame::crop` clips anything past the frame's edge.
+    Rect::new(left, top, (right - left) as u32, (bottom - top) as u32)
+}
+
+/// Spawns a thread with a name, which debug mode's Resources tab shows.
+fn spawn_named<T: Send + 'static>(
+    name: &str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> thread::JoinHandle<T> {
+    thread::Builder::new()
+        .name(name.into())
+        .spawn(work)
+        .expect("failed to spawn thread")
+}
+
 /// How long new content must stay still before it is read.
 const SETTLE_TIME: Duration = Duration::from_millis(90);
 /// Content that keeps changing (animation) is read after this long anyway.
@@ -172,7 +196,7 @@ impl PipelineWorker {
         let capture_frames = Arc::clone(&frames);
         let capture_state = Arc::clone(&state);
         let capture_config = config.clone();
-        let capture_handle = thread::spawn(move || {
+        let capture_handle = spawn_named("capture", move || {
             crate::services::lower_thread_priority();
             run_capture(
                 capture_config,
@@ -184,7 +208,7 @@ impl PipelineWorker {
         });
         let pipeline_frames = Arc::clone(&frames);
         let pipeline_state = Arc::clone(&state);
-        let pipeline_handle = thread::spawn(move || {
+        let pipeline_handle = spawn_named("pipeline", move || {
             crate::services::lower_thread_priority();
             run_pipeline(
                 config,
@@ -673,7 +697,7 @@ fn run_pipeline<O, T>(
                 let detection = tracker.take_detection();
                 // Read only the area that changed, when the tracker knows it.
                 let area = match detection.region {
-                    Some(region) => frame.crop(region),
+                    Some(region) => frame.crop(align_region(region)),
                     None => frame.clone(),
                 };
                 if jobs.send(area).is_ok() {
@@ -847,7 +871,7 @@ impl BackgroundTranslator {
     fn start<T: TranslationBackend + 'static>(mut provider: T, pair: LanguagePair) -> Self {
         let (requests, incoming) = std::sync::mpsc::channel::<Vec<String>>();
         let (outgoing, results) = std::sync::mpsc::channel();
-        let handle = thread::spawn(move || {
+        let handle = spawn_named("translate", move || {
             while let Ok(mut texts) = incoming.recv() {
                 // Merge requests that queued up meanwhile.
                 while let Ok(more) = incoming.try_recv() {
