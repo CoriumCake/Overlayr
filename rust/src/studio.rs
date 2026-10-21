@@ -529,6 +529,21 @@ mod tests {
         }
     }
 
+    /// Keyframes the recorder made within `deadline`; waits for the first,
+    /// then a moment more for any extra ones. Slow CI machines need longer
+    /// than a fixed sleep allows.
+    fn keyframes_within(recorder: &Recorder, deadline: Duration) -> Vec<Keyframe> {
+        let started = std::time::Instant::now();
+        let mut keyframes = Vec::new();
+        while keyframes.is_empty() && started.elapsed() < deadline {
+            thread::sleep(Duration::from_millis(50));
+            keyframes = recorder.take_keyframes();
+        }
+        thread::sleep(Duration::from_millis(300));
+        keyframes.extend(recorder.take_keyframes());
+        keyframes
+    }
+
     #[test]
     fn records_one_keyframe_per_new_text_and_on_request() {
         let source = Source {
@@ -550,15 +565,13 @@ mod tests {
                 known_texts: Vec::new(),
             },
         );
-        thread::sleep(Duration::from_millis(900));
-        let first = recorder.take_keyframes();
+        let first = keyframes_within(&recorder, Duration::from_secs(10));
         assert_eq!(first.len(), 1, "a static screen yields one keyframe");
         assert_eq!(first[0].texts[0].text, "Quest log");
         assert!(first[0].frame().is_some());
 
         recorder.capture_now();
-        thread::sleep(Duration::from_millis(600));
-        let manual = recorder.take_keyframes();
+        let manual = keyframes_within(&recorder, Duration::from_secs(10));
         assert_eq!(manual.len(), 1);
         assert_eq!(manual[0].id, 2);
         recorder.stop();
