@@ -147,6 +147,8 @@ jobs:
           merge-multiple: true
       - name: Write latest.json
         run: |
+          # Checkout leaves a lightweight copy of the tag, without its message.
+          git fetch --force origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents)' >notes.txt
           python3 - <<'EOF'
           import datetime, hashlib, json, os, pathlib
