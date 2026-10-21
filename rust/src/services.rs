@@ -189,11 +189,9 @@ pub fn set_low_priority(low: bool) {
 /// worker pools) at low CPU priority, so capture and OCR yield to the game
 /// being translated instead of making it stutter.
 pub fn lower_thread_priority() {
-    if !LOW_PRIORITY.load(std::sync::atomic::Ordering::Relaxed) {
-        return;
-    }
+    let low = LOW_PRIORITY.load(std::sync::atomic::Ordering::Relaxed);
     #[cfg(target_os = "linux")]
-    {
+    if low {
         const PRIO_PROCESS: i32 = 0;
         unsafe extern "C" {
             fn setpriority(which: i32, who: u32, priority: i32) -> i32;
@@ -204,6 +202,22 @@ pub fn lower_thread_priority() {
             setpriority(PRIO_PROCESS, 0, 15);
         }
     }
+    #[cfg(target_os = "macos")]
+    if low {
+        // QOS_CLASS_UTILITY: below the game, but not throttled like
+        // background work.
+        const QOS_CLASS_UTILITY: u32 = 0x11;
+        unsafe extern "C" {
+            fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+        }
+        // SAFETY: changes only the calling thread's quality of service;
+        // failure just leaves it unchanged.
+        unsafe {
+            pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = low;
 }
 
 #[cfg(test)]
