@@ -51,6 +51,17 @@
       "name": "HEAVY_LIMIT",
       "namespace_id": "1002",
       "simple": { "limit": 15, "period": 60 }
+    },
+    {
+      // Free hosted translation, per IP address. The overlay only sends text
+      // that changed, and cached answers skip the model. Workers AI allows
+      // the whole account 300 requests a minute to the translation LLM, so
+      // one player mustn't take a large share of it.
+      "name": "TRANSLATE_LIMIT",
+      "namespace_id": "1003",
+      "simple": { "limit": 60, "period": 60 }
     }
-  ]
+  ],
+  // Workers AI runs the translation model behind /api/translate.
+  "ai": { "binding": "AI" }
 }

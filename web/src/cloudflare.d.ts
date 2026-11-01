@@ -41,6 +41,8 @@ declare module 'cloudflare:workers' {
         RELEASES: R2Bucket;
         API_LIMIT?: RateLimit;
         HEAVY_LIMIT?: RateLimit;
+        TRANSLATE_LIMIT?: RateLimit;
+        AI?: { run(model: string, input: unknown): Promise<unknown> };
         [name: string]: unknown;
     };
 }

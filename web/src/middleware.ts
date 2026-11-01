@@ -1,8 +1,11 @@
 import { defineMiddleware } from 'astro:middleware';
 
-/** Limits each IP address's API requests (see API_LIMIT in wrangler.jsonc). */
+/** Limits each IP address's API requests (see API_LIMIT in wrangler.jsonc).
+ *  Translation has its own, higher limit, since the overlay translates a
+ *  screen of text at a time. */
 export const onRequest = defineMiddleware(async (context, next) => {
     if (!context.url.pathname.startsWith('/api/') || context.isPrerendered) return next();
+    if (context.url.pathname === '/api/translate') return next();
     const { env } = await import('cloudflare:workers');
     const ip = context.request.headers.get('cf-connecting-ip');
     if (env.API_LIMIT && ip) {
