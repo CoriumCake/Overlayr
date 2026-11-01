@@ -27,8 +27,13 @@ single-instance = "0.3.3"
 xcap = { version = "0.9.8", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# Screen Recording permission and receiving overlayr:// login links.
+# Process statistics for the resource monitor.
+libc = "0.2.191"
+# Screen Recording permission, receiving overlayr:// login links, and
+# keeping the overlay above full-screen games.
 objc2 = "0.6.4"
+# Keyboard shortcuts while a game has focus (Hyprland binds them itself).
+global-hotkey = "0.9.0"
 
 [lib]
 name = "overlayr_core"

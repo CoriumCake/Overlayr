@@ -47,8 +47,12 @@ impl Command {
 }
 
 fn socket_path() -> Option<PathBuf> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)?;
-    Some(runtime.join("overlayr.sock"))
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    // macOS has no XDG runtime directory; its temporary directory is private
+    // to the user, like one.
+    #[cfg(target_os = "macos")]
+    let runtime = runtime.or_else(|| Some(std::env::temp_dir()));
+    Some(runtime?.join("overlayr.sock"))
 }
 
 /// Sends `command` to the running Overlayr.

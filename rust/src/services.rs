@@ -108,6 +108,29 @@ pub trait TranslationBackend: Send {
     }
 }
 
+impl TranslationBackend for Box<dyn TranslationBackend> {
+    fn translate(&mut self, pair: &LanguagePair, text: &str) -> ServiceResult<String> {
+        (**self).translate(pair, text)
+    }
+
+    fn translate_many(
+        &mut self,
+        pair: &LanguagePair,
+        texts: &[String],
+    ) -> ServiceResult<Vec<String>> {
+        (**self).translate_many(pair, texts)
+    }
+
+    fn translate_each(
+        &mut self,
+        pair: &LanguagePair,
+        texts: &[String],
+        done: &mut dyn FnMut(usize, ServiceResult<String>),
+    ) {
+        (**self).translate_each(pair, texts, done);
+    }
+}
+
 /// Applies cache, translation, and result assembly consistently for all providers.
 pub struct TranslationCoordinator<P> {
     provider: P,

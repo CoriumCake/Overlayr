@@ -9,6 +9,8 @@ pub mod capture;
 pub mod config;
 pub mod control;
 pub mod diagnostics;
+#[cfg(target_os = "macos")]
+pub mod hotkeys;
 #[cfg(unix)]
 pub mod hyprland;
 pub mod installer;

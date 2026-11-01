@@ -106,6 +106,9 @@ struct OverlayWindow {
     /// Set once the content-protection request has been sent to the current
     /// overlay window, so it isn't re-sent (and repainted) every frame.
     content_protected: Arc<AtomicBool>,
+    /// Set once the current overlay window floats over full-screen Spaces.
+    #[cfg(target_os = "macos")]
+    above_full_screen: Arc<AtomicBool>,
     rule_installed: bool,
     /// Screen areas of other windows above the translated window, where no
     /// translation is drawn.
@@ -201,6 +204,12 @@ pub struct OverlayrApp {
     /// Receives shortcut commands (`overlayr --toggle`).
     control: Option<crate::control::Listener>,
     control_started: bool,
+    /// Source languages whose OCR model was downloaded automatically this
+    /// session.
+    auto_downloaded: std::collections::HashSet<String>,
+    /// Shortcuts registered with macOS, which has no desktop to bind them.
+    #[cfg(target_os = "macos")]
+    hotkeys: Option<crate::hotkeys::Hotkeys>,
     /// Hides the translations to show the original text.
     translations_hidden: bool,
     /// The shortcuts currently registered with the desktop.
@@ -291,6 +300,9 @@ impl OverlayrApp {
         let mut app = Self {
             control: None,
             control_started: false,
+            auto_downloaded: std::collections::HashSet::new(),
+            #[cfg(target_os = "macos")]
+            hotkeys: None,
             translations_hidden: false,
             bound_keybinds: None,
             keybind_error: None,
@@ -525,7 +537,35 @@ impl OverlayrApp {
         if finished && let Some(handle) = self.checking.take() {
             self.readiness = handle.join().ok();
             self.last_check = Some(Instant::now());
+            self.auto_download_model();
         }
+    }
+
+    /// Downloads the OCR model the source language needs as soon as it is
+    /// missing, so players never have to find a download button. Tried once
+    /// per language and session, so a failure (offline, say) doesn't loop;
+    /// the button stays for retrying.
+    fn auto_download_model(&mut self) {
+        let Some(offer) = self
+            .readiness
+            .as_ref()
+            .and_then(|readiness| readiness.model_offer)
+        else {
+            return;
+        };
+        let language = self.config.source_lang.clone();
+        if self.installing.is_some() || !self.auto_downloaded.insert(language) {
+            return;
+        }
+        self.download_model(offer);
+    }
+
+    fn download_model(&mut self, offer: ModelOffer) {
+        let language = self.config.source_lang.clone();
+        self.run_install(Component::OcrModel, false, move || match offer {
+            ModelOffer::Neural => crate::installer::download_neural_ocr(),
+            ModelOffer::Tesseract => crate::installer::download_accurate_model(&language),
+        });
     }
 
     fn component_ready(&self, component: Component) -> bool {
@@ -596,11 +636,7 @@ impl OverlayrApp {
                 .on_hover_text(hover)
                 .clicked()
             {
-                let language = self.config.source_lang.clone();
-                self.run_install(Component::OcrModel, false, move || match offer {
-                    ModelOffer::Neural => crate::installer::download_neural_ocr(),
-                    ModelOffer::Tesseract => crate::installer::download_accurate_model(&language),
-                });
+                self.download_model(offer);
             }
             ui.add(egui::Label::new(RichText::new(note).small().weak()).wrap());
         }
@@ -624,9 +660,9 @@ impl OverlayrApp {
             .unwrap_or_else(|_| Err("the installer stopped unexpectedly".into()));
         let message = match (result, task.component) {
             (Ok(()), Component::Ocr) => InstallMessage::Info("Tesseract installed.".into()),
-            (Ok(()), Component::OcrModel) => {
-                InstallMessage::Info("OCR model installed. It is used from the next start.".into())
-            }
+            (Ok(()), Component::OcrModel) => InstallMessage::Info(
+                "Text reader installed. It's used the next time you start translating.".into(),
+            ),
             (Ok(()), Component::Translation) => {
                 self.translation_wait = Some(Instant::now());
                 InstallMessage::Info(
@@ -868,24 +904,49 @@ impl OverlayrApp {
             self.error = Some(format!("OCR is not ready: {error}"));
             return;
         }
-        let translator = match LibreTranslate::new(
-            self.config.translation_endpoint.clone(),
-            std::env::var("OVERLAYR_TRANSLATION_API_KEY").ok(),
-        ) {
-            Ok(translator) => translator,
-            Err(error) => {
-                self.error = Some(error);
-                return;
+        let ai_provider = crate::ai::Provider::from_id(&self.config.live_translator);
+        let translator: Box<dyn crate::services::TranslationBackend> = match ai_provider {
+            // Packs translate on their own; the AI is only asked for screens
+            // without one.
+            Some(provider) if pack.is_none() => {
+                let model = self
+                    .config
+                    .ai_models
+                    .get(provider.id())
+                    .cloned()
+                    .unwrap_or_default();
+                match crate::ai::translator(provider, &model) {
+                    Ok(translator) => Box::new(crate::ai::LiveTranslator::new(
+                        translator,
+                        source.name.clone(),
+                    )),
+                    Err(error) => {
+                        self.error = Some(error);
+                        return;
+                    }
+                }
+            }
+            _ => {
+                let translator = match LibreTranslate::new(
+                    self.config.translation_endpoint.clone(),
+                    std::env::var("OVERLAYR_TRANSLATION_API_KEY").ok(),
+                ) {
+                    Ok(translator) => translator,
+                    Err(error) => {
+                        self.error = Some(error);
+                        return;
+                    }
+                };
+                // Only machine translation needs the service.
+                if pack.is_none()
+                    && let Err(error) = translator.check_reachable()
+                {
+                    self.error = Some(format!("Translation service is not ready: {error}"));
+                    return;
+                }
+                Box::new(translator)
             }
         };
-        // Packs translate on their own; only machine translation needs the
-        // service.
-        if pack.is_none()
-            && let Err(error) = translator.check_reachable()
-        {
-            self.error = Some(format!("Translation service is not ready: {error}"));
-            return;
-        }
         if !self.save() {
             return;
         }
@@ -1039,6 +1100,10 @@ impl OverlayrApp {
         );
         self.overlay_window.open = false;
         self.overlay_window.content_protected = Arc::default();
+        #[cfg(target_os = "macos")]
+        {
+            self.overlay_window.above_full_screen = Arc::default();
+        }
         self.overlay_window.address = None;
         self.overlay_window.placed = None;
     }
@@ -1426,6 +1491,35 @@ impl OverlayrApp {
                 "Only the pack's handmade translations are shown; other text stays as it is."
             };
             ui.label(RichText::new(hint).small().weak());
+            if self.config.active_pack.is_empty() {
+                ui.add_space(6.0);
+                ui.label(RichText::new("Machine translation by").strong());
+                ui.radio_value(
+                    &mut self.config.live_translator,
+                    "libretranslate".to_string(),
+                    "LibreTranslate (free, offline)",
+                );
+                for provider in crate::ai::Provider::ALL {
+                    let label = if crate::ai::api_key(provider).is_some() {
+                        provider.label().to_string()
+                    } else {
+                        format!("{} (add an API key under AI translation)", provider.label())
+                    };
+                    ui.radio_value(
+                        &mut self.config.live_translator,
+                        provider.id().to_string(),
+                        label,
+                    );
+                }
+                ui.label(
+                    RichText::new(
+                        "AI services translate in context and read better, but each new \
+                         screen waits for an online request and costs a little.",
+                    )
+                    .small()
+                    .weak(),
+                );
+            }
         });
 
         if self.config.active_pack.is_empty() {
@@ -1852,12 +1946,27 @@ impl OverlayrApp {
                 Ok(listener) => self.control = Some(listener),
                 Err(error) => self.keybind_error = Some(format!("Shortcuts are off: {error}")),
             }
+            #[cfg(target_os = "macos")]
+            {
+                let wake = ctx.clone();
+                match crate::hotkeys::Hotkeys::start(move || wake.request_repaint()) {
+                    Ok(hotkeys) => self.hotkeys = Some(hotkeys),
+                    Err(error) => {
+                        self.keybind_error = Some(format!("Shortcuts are off: {error}"));
+                    }
+                }
+            }
         }
-        let commands = self
+        #[allow(unused_mut)]
+        let mut commands = self
             .control
             .as_ref()
             .map(crate::control::Listener::received)
             .unwrap_or_default();
+        #[cfg(target_os = "macos")]
+        if let Some(hotkeys) = &self.hotkeys {
+            commands.extend(hotkeys.received());
+        }
         for command in commands {
             match command {
                 crate::control::Command::ToggleOverlay => {
@@ -1875,13 +1984,20 @@ impl OverlayrApp {
         }
     }
 
-    /// Registers the configured shortcuts with the desktop (Hyprland), and
-    /// removes ones that changed.
+    /// Registers the configured shortcuts with the desktop (Hyprland) or
+    /// macOS, and removes ones that changed.
     fn apply_keybinds(&mut self) {
         if self.bound_keybinds.as_ref() == Some(&self.config.keybinds) {
             return;
         }
-        #[cfg(unix)]
+        #[cfg(target_os = "macos")]
+        if let Some(hotkeys) = &mut self.hotkeys {
+            self.keybind_error = hotkeys
+                .bind(&self.config.keybinds)
+                .err()
+                .map(|error| format!("Couldn't set shortcuts: {error}"));
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
         if crate::hyprland::is_available() {
             let previous = self
                 .bound_keybinds
@@ -1966,7 +2082,7 @@ impl OverlayrApp {
                 } else if keys.is_empty() {
                     "Off".to_string()
                 } else {
-                    keys.clone()
+                    shown_keys(keys)
                 };
                 if ui
                     .add(egui::Button::new(RichText::new(shown).monospace()).selected(picking))
@@ -1996,7 +2112,7 @@ impl OverlayrApp {
         ui.horizontal_wrapped(|ui| {
             for modifier in ["SUPER", "CTRL", "ALT", "SHIFT"] {
                 let mut on = parts.iter().any(|part| part == modifier);
-                if ui.toggle_value(&mut on, modifier).changed() {
+                if ui.toggle_value(&mut on, shown_keys(modifier)).changed() {
                     if on {
                         parts.push(modifier.to_string());
                     } else {
@@ -2045,7 +2161,7 @@ impl OverlayrApp {
             ui.add(
                 egui::TextEdit::singleline(&mut self.config.translation_endpoint)
                     .desired_width(f32::INFINITY)
-                    .hint_text("http://localhost:5000/translate"),
+                    .hint_text(crate::config::HOSTED_TRANSLATION_ENDPOINT),
             );
             let key_hint = if std::env::var_os("OVERLAYR_TRANSLATION_API_KEY").is_some() {
                 "API key loaded from OVERLAYR_TRANSLATION_API_KEY"
@@ -2937,6 +3053,8 @@ impl eframe::App for OverlayrApp {
                 .with_mouse_passthrough(true);
             self.overlay_window.open = true;
             let content_protected = Arc::clone(&self.overlay_window.content_protected);
+            #[cfg(target_os = "macos")]
+            let above_full_screen = Arc::clone(&self.overlay_window.above_full_screen);
             // The overlay only redraws when asked; refresh it with each update
             // so new translations appear.
             ctx.request_repaint_of(viewport_id);
@@ -2948,6 +3066,14 @@ impl eframe::App for OverlayrApp {
                 // This prevents OCR feedback loops from reading our own text.
                 if !content_protected.swap(true, Ordering::Relaxed) {
                     overlay_ctx.send_viewport_cmd(egui::ViewportCommand::ContentProtected(true));
+                }
+                // Always-on-top alone doesn't reach a game in native full
+                // screen, which runs on a Space of its own.
+                #[cfg(target_os = "macos")]
+                if !above_full_screen.load(Ordering::Relaxed)
+                    && crate::macos::keep_above_full_screen(OVERLAY_TITLE)
+                {
+                    above_full_screen.store(true, Ordering::Relaxed);
                 }
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
@@ -3137,6 +3263,23 @@ impl KeybindSlot {
             Self::ToggleOverlay => &mut keybinds.toggle_overlay,
             Self::ToggleTranslations => &mut keybinds.toggle_translations,
         }
+    }
+}
+
+/// A stored shortcut as the keyboard labels it: macOS calls SUPER and ALT
+/// Command and Option.
+fn shown_keys(keys: &str) -> String {
+    if cfg!(target_os = "macos") {
+        keys.split(" + ")
+            .map(|part| match part {
+                "SUPER" => "CMD",
+                "ALT" => "OPTION",
+                other => other,
+            })
+            .collect::<Vec<_>>()
+            .join(" + ")
+    } else {
+        keys.to_string()
     }
 }
 

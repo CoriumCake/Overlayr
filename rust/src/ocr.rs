@@ -42,10 +42,19 @@ pub fn tesseract_engine(grouping_mode: &str) -> Box<dyn OcrBackend> {
     #[cfg(feature = "native-ocr")]
     return Box::new(NativeTesseractOcr::new(grouping_mode));
     #[cfg(not(feature = "native-ocr"))]
-    Box::new(TesseractOcr::new(
-        std::env::var("OVERLAYR_TESSERACT_BIN").unwrap_or_else(|_| "tesseract".into()),
-        grouping_mode,
-    ))
+    Box::new(TesseractOcr::new(tesseract_executable(), grouping_mode))
+}
+
+/// The Tesseract command line to run. Apps opened from the macOS Finder get a
+/// minimal PATH without Homebrew's folders, so a bare "tesseract" would not
+/// be found there; look it up the way the diagnostics do.
+#[cfg(not(feature = "native-ocr"))]
+fn tesseract_executable() -> String {
+    std::env::var("OVERLAYR_TESSERACT_BIN").unwrap_or_else(|_| {
+        crate::diagnostics::find_command("tesseract")
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "tesseract".into())
+    })
 }
 
 pub fn accurate_model_path(language: &str) -> Option<PathBuf> {

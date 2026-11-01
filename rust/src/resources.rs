@@ -88,7 +88,7 @@ impl ResourceMonitor {
 
     /// Whether this platform can be measured at all.
     pub fn supported() -> bool {
-        cfg!(target_os = "linux")
+        cfg!(any(target_os = "linux", target_os = "macos"))
     }
 }
 
@@ -343,7 +343,79 @@ fn read_gpu() -> Option<GpuStats> {
     (!clients.is_empty()).then_some(gpu)
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS has no per-thread names to show without the Mach thread APIs, so
+/// only process totals are read; GPU use isn't exposed per process.
+#[cfg(target_os = "macos")]
+fn read_process() -> Option<ProcessStats> {
+    use std::mem::MaybeUninit;
+
+    let cpu_time = |who: libc::c_int| {
+        let mut usage = MaybeUninit::<libc::rusage>::zeroed();
+        // SAFETY: getrusage fills the rusage it is given.
+        if unsafe { libc::getrusage(who, usage.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        // SAFETY: initialised by the successful call above.
+        let usage = unsafe { usage.assume_init() };
+        let time = |value: libc::timeval| {
+            Duration::from_secs(value.tv_sec.max(0) as u64)
+                + Duration::from_micros(value.tv_usec.max(0) as u64)
+        };
+        // ru_maxrss is in bytes on macOS (kilobytes on Linux).
+        Some((
+            time(usage.ru_utime) + time(usage.ru_stime),
+            usage.ru_maxrss.max(0) as u64,
+        ))
+    };
+    let (own, peak_memory_bytes) = cpu_time(libc::RUSAGE_SELF)?;
+    let (children, _) = cpu_time(libc::RUSAGE_CHILDREN).unwrap_or_default();
+
+    let pid = std::process::id() as libc::c_int;
+    let mut usage = MaybeUninit::<libc::rusage_info_v2>::zeroed();
+    // SAFETY: RUSAGE_INFO_V2 asks for exactly a rusage_info_v2, which the
+    // function writes through the pointer it is given.
+    let usage = (unsafe {
+        libc::proc_pid_rusage(
+            pid,
+            libc::RUSAGE_INFO_V2,
+            usage.as_mut_ptr().cast::<libc::rusage_info_t>(),
+        )
+    } == 0)
+        // SAFETY: initialised by the successful call above.
+        .then(|| unsafe { usage.assume_init() });
+
+    let mut task = MaybeUninit::<libc::proc_taskinfo>::zeroed();
+    let size = size_of::<libc::proc_taskinfo>() as libc::c_int;
+    // SAFETY: PROC_PIDTASKINFO fills a proc_taskinfo of the given size.
+    let task = (unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTASKINFO,
+            0,
+            task.as_mut_ptr().cast::<libc::c_void>(),
+            size,
+        )
+    } == size)
+        // SAFETY: fully written by the successful call above.
+        .then(|| unsafe { task.assume_init() });
+
+    Some(ProcessStats {
+        cpu_time: own + children,
+        children_cpu_time: children,
+        threads: Vec::new(),
+        memory_bytes: usage
+            .map(|usage| usage.ri_resident_size)
+            .or(task.map(|task| task.pti_resident_size))
+            .unwrap_or(0),
+        peak_memory_bytes,
+        virtual_bytes: task.map_or(0, |task| task.pti_virtual_size),
+        disk_read: usage.map_or(0, |usage| usage.ri_diskio_bytesread),
+        disk_write: usage.map_or(0, |usage| usage.ri_diskio_byteswritten),
+        gpu: None,
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn read_process() -> Option<ProcessStats> {
     None
 }

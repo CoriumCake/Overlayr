@@ -1,6 +1,6 @@
-//! macOS integration: the Screen Recording permission, and `overlayr://`
-//! login links, which macOS delivers as an Apple Event instead of a launch
-//! argument.
+//! macOS integration: the Screen Recording permission, `overlayr://` login
+//! links, which macOS delivers as an Apple Event instead of a launch
+//! argument, and keeping the overlay above full-screen games.
 
 use std::ffi::{CStr, c_char};
 
@@ -105,4 +105,68 @@ pub fn handle_login_links() {
         // The manager doesn't retain its handler; keep it for the app's life.
         std::mem::forget(handler);
     }
+}
+
+/// Whether Overlayr is the app in front, for example while its settings
+/// window has focus.
+pub fn is_frontmost() -> bool {
+    // SAFETY: documented NSRunningApplication class method and property,
+    // with the return types declared here.
+    unsafe {
+        let app: Option<Retained<AnyObject>> =
+            msg_send![class!(NSRunningApplication), currentApplication];
+        app.is_some_and(|app| msg_send![&*app, isActive])
+    }
+}
+
+/// `NSWindowCollectionBehaviorCanJoinAllSpaces`: shown on every Space.
+const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
+/// `NSWindowCollectionBehaviorStationary`: stays put while Spaces switch.
+const STATIONARY: usize = 1 << 4;
+/// `NSWindowCollectionBehaviorIgnoresCycle`: not in the Command-` cycle.
+const IGNORES_CYCLE: usize = 1 << 6;
+/// `NSWindowCollectionBehaviorFullScreenAuxiliary`: may appear on another
+/// app's full-screen Space.
+const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
+/// `NSStatusWindowLevel`: above normal and floating windows.
+const STATUS_WINDOW_LEVEL: isize = 25;
+
+/// Lets the window titled `title` float over every Space, including a game
+/// running in native full screen, which otherwise gets a Space of its own
+/// that always-on-top windows don't reach. Returns whether the window was
+/// found. Must run on the main thread.
+pub fn keep_above_full_screen(title: &str) -> bool {
+    let behavior = CAN_JOIN_ALL_SPACES | STATIONARY | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY;
+    // SAFETY: documented NSApplication, NSArray, NSWindow and NSString
+    // methods, called on the main thread, with the argument and return
+    // types AppKit declares (NSUInteger is usize, NSInteger is isize).
+    unsafe {
+        let app: Option<Retained<AnyObject>> = msg_send![class!(NSApplication), sharedApplication];
+        let Some(app) = app else {
+            return false;
+        };
+        let windows: Option<Retained<AnyObject>> = msg_send![&*app, windows];
+        let Some(windows) = windows else {
+            return false;
+        };
+        let count: usize = msg_send![&*windows, count];
+        for index in 0..count {
+            let window: Option<Retained<AnyObject>> = msg_send![&*windows, objectAtIndex: index];
+            let Some(window) = window else {
+                continue;
+            };
+            let window_title: Option<Retained<AnyObject>> = msg_send![&*window, title];
+            let Some(window_title) = window_title else {
+                continue;
+            };
+            let utf8: *const c_char = msg_send![&*window_title, UTF8String];
+            if utf8.is_null() || CStr::from_ptr(utf8).to_bytes() != title.as_bytes() {
+                continue;
+            }
+            let _: () = msg_send![&*window, setCollectionBehavior: behavior];
+            let _: () = msg_send![&*window, setLevel: STATUS_WINDOW_LEVEL];
+            return true;
+        }
+    }
+    false
 }

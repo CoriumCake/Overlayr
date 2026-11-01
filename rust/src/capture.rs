@@ -612,12 +612,18 @@ impl CaptureBackend for XCapCapture {
             .into_iter()
             .find(|window| window.id().ok() == Some(id))
             .ok_or_else(|| "selected window is no longer available".to_string())?;
-        // Shown unless minimised: switching to another application must not
-        // stop translation.
-        window
-            .is_minimized()
-            .map(|minimized| !minimized)
-            .map_err(|error| error.to_string())
+        if window.is_minimized().map_err(|error| error.to_string())? {
+            return Ok(false);
+        }
+        // On macOS, translations hide while another app is in front, as on
+        // Hyprland; clicking Overlayr's own window keeps them.
+        #[cfg(target_os = "macos")]
+        if !window.is_focused().unwrap_or(true) && !crate::macos::is_frontmost() {
+            return Ok(false);
+        }
+        // Elsewhere, shown unless minimised: switching to another
+        // application must not stop translation.
+        Ok(true)
     }
 }
 

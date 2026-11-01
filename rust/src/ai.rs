@@ -231,6 +231,74 @@ pub fn translator(provider: Provider, model: &str) -> ServiceResult<Box<dyn Draf
         other => Box::new(ChatTranslator::new(other, key, model)?),
     })
 }
+/// Machine translation by an AI service while the overlay runs, for screens
+/// with no pack. Each batch of new text goes out as one request, so a screen
+/// costs one round trip instead of one per line.
+pub struct LiveTranslator {
+    translator: Box<dyn DraftTranslator>,
+    /// The window being translated, so translations fit the game.
+    application: String,
+}
+
+impl LiveTranslator {
+    pub fn new(translator: Box<dyn DraftTranslator>, application: impl Into<String>) -> Self {
+        Self {
+            translator,
+            application: application.into(),
+        }
+    }
+}
+
+impl crate::services::TranslationBackend for LiveTranslator {
+    fn translate(&mut self, pair: &LanguagePair, text: &str) -> ServiceResult<String> {
+        self.translate_many(pair, &[text.to_string()])?
+            .pop()
+            .ok_or_else(|| "the AI returned no translation".to_string())
+    }
+
+    fn translate_many(
+        &mut self,
+        pair: &LanguagePair,
+        texts: &[String],
+    ) -> ServiceResult<Vec<String>> {
+        if pair.source == pair.target {
+            return Ok(texts.to_vec());
+        }
+        let context = Context {
+            application: &self.application,
+            glossary: &[],
+            notes: "",
+        };
+        let mut results = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(BATCH_SIZE) {
+            results.extend(self.translator.translate(pair, &context, batch)?);
+        }
+        Ok(results)
+    }
+
+    fn translate_each(
+        &mut self,
+        pair: &LanguagePair,
+        texts: &[String],
+        done: &mut dyn FnMut(usize, ServiceResult<String>),
+    ) {
+        for (start, batch) in (0..).step_by(BATCH_SIZE).zip(texts.chunks(BATCH_SIZE)) {
+            match self.translate_many(pair, batch) {
+                Ok(translations) => {
+                    for (offset, translation) in translations.into_iter().enumerate() {
+                        done(start + offset, Ok(translation));
+                    }
+                }
+                Err(error) => {
+                    for offset in 0..batch.len() {
+                        done(start + offset, Err(error.clone()));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Texts per request; larger screens are split.
 pub const BATCH_SIZE: usize = 40;
 /// Glossary entries sent with each request.
@@ -619,6 +687,43 @@ fn language_name(code: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::TranslationBackend;
+
+    /// Answers each text with its upper-case form and counts requests.
+    struct Shouting(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl DraftTranslator for Shouting {
+        fn translate(
+            &self,
+            _pair: &LanguagePair,
+            context: &Context<'_>,
+            texts: &[String],
+        ) -> ServiceResult<Vec<String>> {
+            assert_eq!(context.application, "StoneBlock");
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(texts.iter().map(|text| text.to_uppercase()).collect())
+        }
+    }
+
+    #[test]
+    fn live_translation_sends_one_request_per_batch_and_reports_every_text() {
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut live = LiveTranslator::new(Box::new(Shouting(requests.clone())), "StoneBlock");
+        let texts = (0..BATCH_SIZE + 3)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>();
+        let mut reported = vec![None; texts.len()];
+        live.translate_each(
+            &LanguagePair::new("en", "th"),
+            &texts,
+            &mut |index, result| {
+                reported[index] = Some(result.unwrap());
+            },
+        );
+        assert_eq!(requests.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(reported[BATCH_SIZE + 2].as_deref(), Some("LINE 42"));
+        assert!(reported.iter().all(Option::is_some));
+    }
 
     #[test]
     fn request_carries_context_glossary_and_a_strict_schema() {

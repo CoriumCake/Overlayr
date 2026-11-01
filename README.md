@@ -56,9 +56,11 @@ The desktop app is written in Rust and lives in `rust/`. The website lives in
   keys, keybinds and performance options. The performance options include
   capture rate, highlight following, settle waits, OCR threads and low
   priority, so Overlayr can run on low-end machines.
-- Setup checks that download the OCR models and ONNX Runtime, and can install
-  Tesseract and a local LibreTranslate server. Steps that need root go through
-  `pkexec`.
+- Free hosted translation at `https://overlayr.app/api/translate` (Gemma 4 on
+  Workers AI, 140+ languages), so players install nothing for it.
+- Setup checks that download the OCR models and ONNX Runtime automatically when
+  they're missing, and can install Tesseract or a self-hosted LibreTranslate
+  server. Steps that need root go through `pkexec`.
 - `overlayr://` login callback for the web account.
 - Single-instance locking, atomic settings writes, and `overlayr --diagnose`.
 
@@ -98,9 +100,11 @@ Build-time packages for `native-ocr` on Linux: `libclang-dev`,
 `libtesseract-dev`, `libleptonica-dev`.
 
 Runtime dependencies on Linux/Wayland are `grim`, `slurp`, and Tesseract with
-the language packs you need. You also need a LibreTranslate-compatible
-endpoint, which defaults to `http://localhost:5000/translate`. Set
-`OVERLAYR_TRANSLATION_API_KEY` if your endpoint needs a key.
+the language packs you need. Translation defaults to the free hosted endpoint
+`https://overlayr.app/api/translate`. Any LibreTranslate-compatible server works
+instead; set `OVERLAYR_TRANSLATION_API_KEY` if yours needs a key. Settings that
+still use the old default, `http://localhost:5000/translate`, move to the hosted
+endpoint.
 
 The setup checks download the neural OCR models (about 30 MB) and ONNX
 Runtime (about 11 MB) into `~/.local/share/overlayr/`. The ONNX Runtime

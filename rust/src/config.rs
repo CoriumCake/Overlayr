@@ -29,10 +29,18 @@ pub struct AppConfig {
     /// Collects and shows what the pipeline is doing.
     pub debug: bool,
     pub translation_endpoint: String,
+    /// Set once the old Docker default has moved to hosted translation, so
+    /// a self-hosted server on that address is kept afterwards. Settings
+    /// saved before the field existed load it as false.
+    #[serde(default)]
+    pub translation_migrated: bool,
     pub keybinds: Keybinds,
     /// Drafts translations in the studio: "libretranslate", or an AI
     /// provider ("claude", "chatgpt", "gemini", "deepseek").
     pub draft_translator: String,
+    /// Machine translation while the overlay runs: "libretranslate", or an
+    /// AI provider ("claude", "chatgpt", "gemini", "deepseek").
+    pub live_translator: String,
     /// Model per AI provider, when not its default.
     pub ai_models: std::collections::BTreeMap<String, String>,
     /// How much CPU the overlay may use, traded against how fast it reacts.
@@ -176,17 +184,32 @@ impl Default for AppConfig {
             detect_threshold: 0.001,
             active_pack: String::new(),
             debug: false,
-            translation_endpoint: "http://localhost:5000/translate".into(),
+            translation_endpoint: HOSTED_TRANSLATION_ENDPOINT.into(),
+            // New settings start on hosted translation.
+            translation_migrated: true,
             keybinds: Keybinds::default(),
             draft_translator: "libretranslate".into(),
+            live_translator: "libretranslate".into(),
             ai_models: std::collections::BTreeMap::new(),
             performance: Performance::default(),
         }
     }
 }
 
+/// Free translation hosted by overlayr.app, so players don't need to run a
+/// server. It speaks the LibreTranslate API, like a self-hosted server.
+pub const HOSTED_TRANSLATION_ENDPOINT: &str = "https://overlayr.app/api/translate";
+/// The old default: a LibreTranslate server the player had to run in Docker.
+const LEGACY_LOCAL_ENDPOINT: &str = "http://localhost:5000/translate";
+
 impl AppConfig {
     fn migrate_legacy_values(&mut self) {
+        if !self.translation_migrated {
+            if self.translation_endpoint == LEGACY_LOCAL_ENDPOINT {
+                self.translation_endpoint = HOSTED_TRANSLATION_ENDPOINT.into();
+            }
+            self.translation_migrated = true;
+        }
         self.source_lang = normalize_language(&self.source_lang);
         self.target_lang = normalize_language(&self.target_lang);
         if self.grouping_mode.eq_ignore_ascii_case("group (manga)") {
@@ -362,10 +385,7 @@ mod tests {
         assert_eq!(config.source_lang, "ja");
         assert_eq!(config.target_lang, "th");
         assert!(config.translate_only_when_changed);
-        assert_eq!(
-            config.translation_endpoint,
-            "http://localhost:5000/translate"
-        );
+        assert_eq!(config.translation_endpoint, HOSTED_TRANSLATION_ENDPOINT);
     }
 
     #[test]
@@ -409,13 +429,30 @@ mod tests {
         fs::create_dir_all(&directory).expect("test directory creation failed");
         fs::write(
             &path,
-            r#"{"source_lang":"Japanese","target_lang":"Thai","grouping_mode":"Group (Manga)"}"#,
+            r#"{"source_lang":"Japanese","target_lang":"Thai","grouping_mode":"Group (Manga)",
+                "translation_endpoint":"http://localhost:5000/translate"}"#,
         )
         .expect("legacy config write failed");
         let migrated = AppConfig::load(&path).expect("legacy config load failed");
         assert_eq!(migrated.source_lang, "ja");
         assert_eq!(migrated.target_lang, "th");
         assert_eq!(migrated.grouping_mode, "paragraph");
+        // The old Docker default moves to hosted translation once; a
+        // self-hosted server chosen afterwards, even on that address, stays.
+        assert_eq!(migrated.translation_endpoint, HOSTED_TRANSLATION_ENDPOINT);
+        let self_hosted = AppConfig {
+            translation_endpoint: LEGACY_LOCAL_ENDPOINT.into(),
+            ..migrated
+        };
+        self_hosted
+            .save(&path)
+            .expect("self-hosted config save failed");
+        assert_eq!(
+            AppConfig::load(&path)
+                .expect("self-hosted config load failed")
+                .translation_endpoint,
+            LEGACY_LOCAL_ENDPOINT
+        );
         fs::remove_dir_all(directory).expect("test cleanup failed");
     }
 
