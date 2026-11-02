@@ -517,7 +517,7 @@ impl OverlayrApp {
                 .any(|check| check.name == "OCR" && check.passed);
             let language = &config.source_lang;
             let model_offer = if crate::neural::supports_language(language) {
-                (!crate::neural::is_installed()).then_some(ModelOffer::Neural)
+                (!crate::neural::is_installed(language)).then_some(ModelOffer::Neural)
             } else {
                 ((ocr_ready || crate::ocr::tesseract_available())
                     && !crate::ocr::has_accurate_model(language))
@@ -565,7 +565,7 @@ impl OverlayrApp {
     fn download_model(&mut self, offer: ModelOffer) {
         let language = self.config.source_lang.clone();
         self.run_install(Component::OcrModel, false, move || match offer {
-            ModelOffer::Neural => crate::installer::download_neural_ocr(),
+            ModelOffer::Neural => crate::installer::download_neural_ocr(&language),
             ModelOffer::Tesseract => crate::installer::download_accurate_model(&language),
         });
     }
@@ -624,7 +624,7 @@ impl OverlayrApp {
                     "PaddleOCR scene-text models and ONNX Runtime, saved to your user folder",
                     "An AI text reader trained on text in images and screenshots. It reads \
                      pixel and stylised game fonts far more accurately than Tesseract. \
-                     Downloads about 40 MB; no password needed.",
+                     Downloads 8–40 MB; no password needed.",
                 ),
                 ModelOffer::Tesseract => (
                     "Download high-accuracy model",

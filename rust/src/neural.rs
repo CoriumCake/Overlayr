@@ -68,13 +68,88 @@ const RECOGNITION_BATCH: usize = 6;
 /// Readings below this mean character probability are discarded.
 const MIN_LINE_CONFIDENCE: f32 = 0.5;
 
-/// Languages the multilingual PP-OCRv6 models read.
-const SUPPORTED_LANGUAGES: &[&str] = &[
+/// Languages the multilingual PP-OCRv6 recognition model reads.
+const PP_OCR_V6_LANGUAGES: &[&str] = &[
     "en", "zh", "zh-CN", "zh-TW", "ja", "af", "az", "bs", "ca", "cs", "cy", "da", "de", "es", "et",
     "eu", "fi", "fr", "ga", "gl", "hr", "hu", "id", "is", "it", "ku", "la", "lb", "lt", "lv", "mi",
     "ms", "mt", "nl", "no", "nb", "oc", "pl", "pt", "qu", "rm", "ro", "sk", "sl", "sq", "sv", "sw",
     "tl", "tr", "uz", "vi",
 ];
+
+/// A text recognition model: its file, the model release folder it is
+/// published in, and the languages it reads. PaddleOCR's own table of which
+/// model reads which language (`paddleocr/_utils/langs.py`), in ISO 639
+/// codes; earlier entries win.
+pub struct RecognitionModel {
+    pub file: &'static str,
+    pub release: &'static str,
+    languages: &'static [&'static str],
+    /// The model reads right-to-left scripts in visual order, left to
+    /// right, so its output is reversed into reading order.
+    right_to_left: bool,
+}
+
+const fn script_model(
+    file: &'static str,
+    languages: &'static [&'static str],
+    right_to_left: bool,
+) -> RecognitionModel {
+    RecognitionModel {
+        file,
+        release: "PP-OCRv5",
+        languages,
+        right_to_left,
+    }
+}
+
+const RECOGNITION_MODELS: &[RecognitionModel] = &[
+    RecognitionModel {
+        file: RECOGNITION_MODEL,
+        release: "PP-OCRv6",
+        languages: PP_OCR_V6_LANGUAGES,
+        right_to_left: false,
+    },
+    script_model("korean_PP-OCRv5_rec_mobile.onnx", &["ko"], false),
+    script_model("th_PP-OCRv5_rec_mobile.onnx", &["th"], false),
+    script_model("el_PP-OCRv5_rec_mobile.onnx", &["el"], false),
+    script_model("ta_PP-OCRv5_rec_mobile.onnx", &["ta"], false),
+    script_model("te_PP-OCRv5_rec_mobile.onnx", &["te"], false),
+    // East Slavic languages have their own, more accurate model.
+    script_model("eslav_PP-OCRv5_rec_mobile.onnx", &["ru", "uk", "be"], false),
+    script_model(
+        "cyrillic_PP-OCRv5_rec_mobile.onnx",
+        &[
+            "bg", "sr", "mk", "mn", "kk", "ky", "tg", "tt", "ba", "cv", "os", "kv", "av", "ce",
+            "sah", "udm", "kbd", "ady", "inh", "lez", "bua", "tyv", "kaa",
+        ],
+        false,
+    ),
+    script_model(
+        "arabic_PP-OCRv5_rec_mobile.onnx",
+        &["ar", "fa", "ur", "ug", "ps", "sd", "bal"],
+        true,
+    ),
+    script_model(
+        "devanagari_PP-OCRv5_rec_mobile.onnx",
+        &["hi", "mr", "ne", "sa", "mai", "bho", "new", "gom"],
+        false,
+    ),
+];
+
+/// The recognition model that reads `language` ("th", "pt-BR"), matching the
+/// full code first, then its primary language.
+pub fn recognition_model(language: &str) -> Option<&'static RecognitionModel> {
+    let reads = |code: &str| {
+        RECOGNITION_MODELS.iter().find(|model| {
+            model
+                .languages
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(code))
+        })
+    };
+    let language = language.trim();
+    reads(language).or_else(|| reads(language.split(['-', '_']).next()?))
+}
 
 /// Per-user directory holding the models and, when the system doesn't
 /// provide one, the ONNX Runtime library.
@@ -111,19 +186,20 @@ pub fn model_file(name: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-pub fn has_models() -> bool {
-    model_file(DETECTION_MODEL).is_some() && model_file(RECOGNITION_MODEL).is_some()
+/// Whether the models that read `language` are present.
+pub fn has_models(language: &str) -> bool {
+    model_file(DETECTION_MODEL).is_some()
+        && recognition_model(language).is_some_and(|model| model_file(model.file).is_some())
 }
 
-/// Whether the neural engine can run: models and runtime are installed.
-pub fn is_installed() -> bool {
-    has_models() && runtime_library().is_some()
+/// Whether the neural engine can read `language` now: its models and the
+/// runtime are installed.
+pub fn is_installed(language: &str) -> bool {
+    has_models(language) && runtime_library().is_some()
 }
 
 pub fn supports_language(language: &str) -> bool {
-    SUPPORTED_LANGUAGES
-        .iter()
-        .any(|supported| supported.eq_ignore_ascii_case(language))
+    recognition_model(language).is_some()
 }
 
 /// Loads ONNX Runtime once per process.
@@ -198,6 +274,9 @@ struct Models {
     recognition: Vec<Session>,
     /// Index 0 is the CTC blank; the last entry is a space.
     characters: Vec<String>,
+    /// Readings are in visual order and are reversed; see
+    /// [`RecognitionModel::right_to_left`].
+    right_to_left: bool,
     /// Text and confidence of lines already read, by [`line_key`]. The
     /// same pixels always read the same, so lines that didn't change (most
     /// of them, when one row of a menu is hovered) skip recognition.
@@ -205,11 +284,13 @@ struct Models {
 }
 
 impl Models {
-    fn load() -> ServiceResult<Self> {
+    fn load(language: &str) -> ServiceResult<Self> {
         load_runtime()?;
+        let model = recognition_model(language)
+            .ok_or_else(|| format!("the neural OCR does not read '{language}'"))?;
         let missing = || "the neural OCR models are not installed".to_string();
         let detection_model = model_file(DETECTION_MODEL).ok_or_else(missing)?;
-        let recognition_model = model_file(RECOGNITION_MODEL).ok_or_else(missing)?;
+        let recognition_model = model_file(model.file).ok_or_else(missing)?;
         let threads = SESSION_THREADS.load(std::sync::atomic::Ordering::Relaxed);
         let detection = open_session(&detection_model, detection_threads(threads))?;
         let recognition = (0..recognition_workers(threads))
@@ -228,6 +309,7 @@ impl Models {
             detection,
             recognition,
             characters,
+            right_to_left: model.right_to_left,
             cache: HashMap::new(),
         })
     }
@@ -236,14 +318,17 @@ impl Models {
 /// PaddleOCR text detection and recognition. The models load on first use.
 pub struct NeuralOcr {
     grouping_mode: String,
+    language: String,
     models: Option<Models>,
     rejected: Vec<RejectedText>,
 }
 
 impl NeuralOcr {
-    pub fn new(grouping_mode: impl Into<String>) -> Self {
+    /// Reads `language`, which picks the recognition model.
+    pub fn new(grouping_mode: impl Into<String>, language: impl Into<String>) -> Self {
         Self {
             grouping_mode: grouping_mode.into(),
+            language: language.into(),
             models: None,
             rejected: Vec::new(),
         }
@@ -251,7 +336,7 @@ impl NeuralOcr {
 
     fn models(&mut self) -> ServiceResult<&mut Models> {
         if self.models.is_none() {
-            self.models = Some(Models::load()?);
+            self.models = Some(Models::load(&self.language)?);
         }
         Ok(self.models.as_mut().expect("models were just loaded"))
     }
@@ -525,7 +610,10 @@ fn recognize(models: &mut Models, frame: &Frame, boxes: &[PixelBox]) -> ServiceR
     if models.cache.len() + read.len() > RECOGNITION_CACHE {
         models.cache.clear();
     }
-    for (index, line) in read {
+    for (index, mut line) in read {
+        if models.right_to_left {
+            line.text = reading_order(&line.text);
+        }
         models
             .cache
             .insert(keys[index], (line.text.clone(), line.confidence));
@@ -676,6 +764,32 @@ fn recognize_batch(
         .collect())
 }
 
+/// A right-to-left reading in visual order (left to right) put into
+/// reading order. Runs of Latin letters, digits and their punctuation read
+/// left to right inside right-to-left text, so they keep their order, as in
+/// PaddleOCR's own decoder.
+fn reading_order(visual: &str) -> String {
+    let left_to_right = |character: char| {
+        character.is_ascii_alphanumeric() || " :*./%+-".contains(character)
+    };
+    let mut runs: Vec<String> = Vec::new();
+    let mut run = String::new();
+    for character in visual.chars() {
+        if left_to_right(character) {
+            run.push(character);
+        } else {
+            if !run.is_empty() {
+                runs.push(std::mem::take(&mut run));
+            }
+            runs.push(character.to_string());
+        }
+    }
+    if !run.is_empty() {
+        runs.push(run);
+    }
+    runs.into_iter().rev().collect()
+}
+
 /// Greedy CTC decoding: the likeliest class per step, with repeats and
 /// blanks removed. Confidence is the mean probability of kept characters.
 fn decode(sequence: &[f32], classes: usize, characters: &[String]) -> (String, f32) {
@@ -789,7 +903,7 @@ impl OcrBackend for NeuralOcr {
         if !supports_language(language) {
             return Err(format!("the neural OCR does not read '{language}'"));
         }
-        if !has_models() {
+        if !has_models(language) {
             return Err("the neural OCR models are not installed".into());
         }
         load_runtime()
@@ -847,7 +961,8 @@ mod tests {
         ));
         for setting in [8, 2] {
             set_threads(setting);
-            let mut models = Models::load().expect("models");
+            let language = std::env::var("OVERLAYR_BENCH_LANGUAGE").unwrap_or_else(|_| "en".into());
+            let mut models = Models::load(&language).expect("models");
             let mut read = |label: &str, frame: &Frame| {
                 let (start, cpu_start) = (std::time::Instant::now(), cpu());
                 let boxes = detect(&mut models.detection, frame).unwrap();
@@ -871,6 +986,53 @@ mod tests {
             read("hovered", &hovered);
             read("region", &region);
         }
+    }
+
+    /// Prints what the engine reads in an image. Run with:
+    /// `OVERLAYR_BENCH_IMAGE=shot.png OVERLAYR_BENCH_LANGUAGE=th cargo test --release --features native-ocr --lib reads_image -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn reads_image() {
+        let path = std::env::var("OVERLAYR_BENCH_IMAGE").expect("OVERLAYR_BENCH_IMAGE");
+        let language = std::env::var("OVERLAYR_BENCH_LANGUAGE").unwrap_or_else(|_| "en".into());
+        let image = image::open(&path).expect("image").to_rgba8();
+        let (width, height) = image.dimensions();
+        let frame = Frame::new(
+            1,
+            crate::types::Rect::new(0, 0, width, height),
+            width,
+            height,
+            image.into_raw(),
+        );
+        let mut ocr = NeuralOcr::new("line", &language);
+        for line in ocr.read_lines(&frame).expect("read") {
+            println!("{:.2} {}", line.confidence, line.text);
+        }
+    }
+
+    #[test]
+    fn picks_the_model_that_reads_each_language() {
+        let file = |language| recognition_model(language).map(|model| model.file);
+        assert_eq!(file("ja"), Some(RECOGNITION_MODEL));
+        assert_eq!(file("pt-BR"), Some(RECOGNITION_MODEL));
+        assert_eq!(file("zh-TW"), Some(RECOGNITION_MODEL));
+        assert_eq!(file("th"), Some("th_PP-OCRv5_rec_mobile.onnx"));
+        assert_eq!(file("ko"), Some("korean_PP-OCRv5_rec_mobile.onnx"));
+        assert_eq!(file("ru"), Some("eslav_PP-OCRv5_rec_mobile.onnx"));
+        assert_eq!(file("bg"), Some("cyrillic_PP-OCRv5_rec_mobile.onnx"));
+        assert_eq!(file("ar"), Some("arabic_PP-OCRv5_rec_mobile.onnx"));
+        assert_eq!(file("hi"), Some("devanagari_PP-OCRv5_rec_mobile.onnx"));
+        assert_eq!(file("am"), None);
+    }
+
+    #[test]
+    fn puts_right_to_left_readings_in_reading_order() {
+        assert_eq!(reading_order("cba"), "cba");
+        assert_eq!(reading_order("\u{645}\u{644}\u{643}"), "\u{643}\u{644}\u{645}");
+        assert_eq!(
+            reading_order("\u{628} HP 50\u{627}"),
+            "\u{627} HP 50\u{628}"
+        );
     }
 
     #[test]

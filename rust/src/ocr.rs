@@ -38,8 +38,8 @@ pub fn accurate_model_dir() -> Option<PathBuf> {
 /// The best OCR engine installed for `language`: the neural engine when its
 /// models and runtime are present and it reads the language, else Tesseract.
 pub fn engine(language: &str, grouping_mode: &str) -> Box<dyn OcrBackend> {
-    let neural = crate::neural::NeuralOcr::new(grouping_mode);
-    if crate::neural::is_installed() && neural.validate_language(language).is_ok() {
+    let neural = crate::neural::NeuralOcr::new(grouping_mode, language);
+    if crate::neural::is_installed(language) && neural.validate_language(language).is_ok() {
         return Box::new(neural);
     }
     tesseract_engine(grouping_mode)

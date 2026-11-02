@@ -209,8 +209,8 @@ pub fn download_accurate_model(language: &str) -> ServiceResult<()> {
         .map_err(|error| format!("could not save the model to {}: {error}", path.display()))
 }
 
-const NEURAL_MODEL_URL: &str =
-    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6";
+/// RapidOCR's ONNX conversions of the PaddleOCR models, by release folder.
+const NEURAL_MODEL_URL: &str = "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx";
 const ONNX_RUNTIME_VERSION: &str = "1.31.0";
 
 /// Downloads `url` into `path`, through a temporary name so an interrupted
@@ -243,25 +243,28 @@ fn download(
         .map_err(|error| format!("could not save {}: {error}", path.display()))
 }
 
-/// Downloads the PaddleOCR models and, unless the system already has one,
-/// the ONNX Runtime library into Overlayr's per-user data directory. About
-/// 30 MB of models plus 11 MB for the runtime; no password needed.
-pub fn download_neural_ocr() -> ServiceResult<()> {
+/// Downloads the PaddleOCR models that read `language` and, unless Overlayr
+/// or the system already has one, the ONNX Runtime library into Overlayr's
+/// per-user data directory. 8–30 MB of models plus 11 MB for the runtime;
+/// no password needed.
+pub fn download_neural_ocr(language: &str) -> ServiceResult<()> {
     let models = crate::neural::model_dir()
         .ok_or_else(|| "could not determine your user data directory".to_string())?;
+    let recognition = crate::neural::recognition_model(language)
+        .ok_or_else(|| format!("the neural OCR does not read '{language}'"))?;
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(1800))
         .build()
         .map_err(|error| format!("could not create download client: {error}"))?;
-    for (kind, file) in [
-        ("det", crate::neural::DETECTION_MODEL),
-        ("rec", crate::neural::RECOGNITION_MODEL),
+    for (release, kind, file) in [
+        ("PP-OCRv6", "det", crate::neural::DETECTION_MODEL),
+        (recognition.release, "rec", recognition.file),
     ] {
         let path = models.join(file);
         if crate::neural::model_file(file).is_none() {
             download(
                 &client,
-                &format!("{NEURAL_MODEL_URL}/{kind}/{file}"),
+                &format!("{NEURAL_MODEL_URL}/{release}/{kind}/{file}"),
                 &path,
                 1024 * 1024,
             )?;
