@@ -10,6 +10,10 @@
 #
 # Set OVERLAYR_INTEL_OCR to a folder made on an Intel Mac by
 # `packaging/fetch-ocr.sh macos-intel` to include Tesseract for Intel Macs.
+#
+# Set OVERLAYR_SIGN_IDENTITY to a Developer ID Application identity in the
+# keychain ("Developer ID Application: Name (TEAMID)") to sign for release;
+# without it the app gets an ad-hoc signature, which macOS warns about.
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -53,9 +57,19 @@ else
     echo "rsvg-convert not found: building without an icon (brew install librsvg)" >&2
 fi
 
-# An ad-hoc signature: Apple Silicon refuses to run unsigned code. Public
-# releases need a Developer ID signature and notarization instead.
-codesign --force --sign - "$app"
+if [ -n "${OVERLAYR_SIGN_IDENTITY:-}" ]; then
+    # Every program and library inside first, then the app, with the
+    # hardened runtime notarization requires.
+    find "$app/Contents/Resources/ocr" -type f \( -name '*.dylib' -o -perm -u+x \) |
+        while read -r file; do
+            codesign --force --timestamp --options runtime --sign "$OVERLAYR_SIGN_IDENTITY" "$file"
+        done
+    codesign --force --timestamp --options runtime --sign "$OVERLAYR_SIGN_IDENTITY" "$app"
+    codesign --verify --strict --deep --verbose=2 "$app"
+else
+    # An ad-hoc signature: Apple Silicon refuses to run unsigned code.
+    codesign --force --sign - "$app"
+fi
 
 # A disk image with an Applications shortcut to drag the app onto.
 staging="$out/dmg"
@@ -64,5 +78,8 @@ cp -R "$app" "$staging/"
 ln -s /Applications "$staging/Applications"
 hdiutil create -volname Overlayr -srcfolder "$staging" -ov -format UDZO "$out/Overlayr.dmg"
 rm -rf "$staging"
+if [ -n "${OVERLAYR_SIGN_IDENTITY:-}" ]; then
+    codesign --force --timestamp --sign "$OVERLAYR_SIGN_IDENTITY" "$out/Overlayr.dmg"
+fi
 
 echo "Built $app and $out/Overlayr.dmg"
