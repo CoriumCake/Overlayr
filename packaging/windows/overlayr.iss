@@ -36,7 +36,13 @@ CloseApplications=yes
 
 [Files]
 Source: "{#Source}\overlayr.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Tesseract and the neural OCR engine (packaging/fetch-ocr.sh).
+Source: "{#Source}\ocr\*"; DestDir: "{app}\ocr"; Flags: ignoreversion recursesubdirs
 Source: "..\..\Icon.ico"; DestDir: "{app}"; DestName: "overlayr.ico"; Flags: ignoreversion
+
+[InstallDelete]
+; Files from an older version's OCR bundle.
+Type: filesandordirs; Name: "{app}\ocr"
 
 [Icons]
 Name: "{autoprograms}\Overlayr"; Filename: "{app}\overlayr.exe"; IconFilename: "{app}\overlayr.ico"

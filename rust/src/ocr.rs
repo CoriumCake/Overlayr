@@ -14,6 +14,13 @@ use crate::types::{Frame, RejectedText, TextBlock};
 /// Overlayr's per-user data directory, for downloads that don't need
 /// administrator access.
 pub fn data_dir() -> Option<PathBuf> {
+    // Windows has no HOME; per-user program data goes in %LOCALAPPDATA%.
+    if cfg!(windows) {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .map(|path| path.join("Overlayr"));
+    }
     let data_home = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
@@ -45,16 +52,42 @@ pub fn tesseract_engine(grouping_mode: &str) -> Box<dyn OcrBackend> {
     Box::new(TesseractOcr::new(tesseract_executable(), grouping_mode))
 }
 
-/// The Tesseract command line to run. Apps opened from the macOS Finder get a
-/// minimal PATH without Homebrew's folders, so a bare "tesseract" would not
-/// be found there; look it up the way the diagnostics do.
+/// The Tesseract command line to run: the one shipped with Overlayr, else
+/// the system's. Apps opened from the macOS Finder get a minimal PATH
+/// without Homebrew's folders, so a bare "tesseract" would not be found
+/// there; look it up the way the diagnostics do.
 #[cfg(not(feature = "native-ocr"))]
 fn tesseract_executable() -> String {
     std::env::var("OVERLAYR_TESSERACT_BIN").unwrap_or_else(|_| {
-        crate::diagnostics::find_command("tesseract")
+        crate::bundle::tesseract()
+            .or_else(|| crate::diagnostics::find_command("tesseract"))
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "tesseract".into())
     })
+}
+
+/// Whether a Tesseract engine exists, so downloading a language model for
+/// it is enough to read that language.
+pub fn tesseract_available() -> bool {
+    #[cfg(feature = "native-ocr")]
+    return true;
+    #[cfg(not(feature = "native-ocr"))]
+    crate::diagnostics::command_available(&tesseract_executable())
+}
+
+/// A Tesseract process. Overlayr is a windowed program on Windows, so a
+/// console program it starts would open a console window on every frame
+/// unless told not to.
+fn tesseract_command(executable: &str) -> Command {
+    #[allow(unused_mut)]
+    let mut command = Command::new(executable);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
 }
 
 pub fn accurate_model_path(language: &str) -> Option<PathBuf> {
@@ -201,7 +234,7 @@ impl TesseractOcr {
         if has_accurate_model(language) && crate::diagnostics::command_available(&self.executable) {
             return Ok(());
         }
-        let output = Command::new(&self.executable)
+        let output = tesseract_command(&self.executable)
             .arg("--list-langs")
             .output()
             .map_err(|error| format!("failed to start {}: {error}", self.executable))?;
@@ -763,7 +796,7 @@ impl OcrBackend for TesseractOcr {
 
 /// Runs the Tesseract command line on an encoded image and returns its TSV.
 fn run_tesseract(executable: &str, bytes: &[u8], language: &str) -> ServiceResult<String> {
-    let mut command = Command::new(executable);
+    let mut command = tesseract_command(executable);
     if has_accurate_model(language)
         && let Some(directory) = accurate_model_dir()
     {

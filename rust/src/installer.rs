@@ -258,7 +258,7 @@ pub fn download_neural_ocr() -> ServiceResult<()> {
         ("rec", crate::neural::RECOGNITION_MODEL),
     ] {
         let path = models.join(file);
-        if !path.is_file() {
+        if crate::neural::model_file(file).is_none() {
             download(
                 &client,
                 &format!("{NEURAL_MODEL_URL}/{kind}/{file}"),

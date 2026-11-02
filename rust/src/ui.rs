@@ -518,8 +518,9 @@ impl OverlayrApp {
             let model_offer = if crate::neural::supports_language(language) {
                 (!crate::neural::is_installed()).then_some(ModelOffer::Neural)
             } else {
-                (ocr_ready && !crate::ocr::has_accurate_model(language))
-                    .then_some(ModelOffer::Tesseract)
+                ((ocr_ready || crate::ocr::tesseract_available())
+                    && !crate::ocr::has_accurate_model(language))
+                .then_some(ModelOffer::Tesseract)
             };
             Readiness {
                 model_offer,

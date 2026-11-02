@@ -305,6 +305,13 @@ pub const BATCH_SIZE: usize = 40;
 const MAX_GLOSSARY: usize = 150;
 
 fn config_dir() -> Option<PathBuf> {
+    // Windows has no HOME; settings live in %APPDATA%\Overlayr.
+    if cfg!(windows) {
+        return std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .map(|path| path.join("Overlayr"));
+    }
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())

@@ -79,11 +79,22 @@ impl Drop for StoredImage {
 fn keyframe_dir() -> Option<PathBuf> {
     static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        let cache = std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
-        let root = cache.join("overlayr").join("keyframes");
+        // Windows has no HOME; caches go in %LOCALAPPDATA%\Overlayr.
+        let cache = if cfg!(windows) {
+            std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())?
+                .join("Overlayr")
+        } else {
+            std::env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .or_else(|| {
+                    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache"))
+                })?
+                .join("overlayr")
+        };
+        let root = cache.join("keyframes");
         let own = std::process::id().to_string();
         if let Ok(entries) = std::fs::read_dir(&root) {
             for entry in entries.flatten() {

@@ -4,8 +4,9 @@
 #
 #   packaging/macos/build-app.sh
 #
-# Needs the Rust targets aarch64-apple-darwin and x86_64-apple-darwin, and
-# rsvg-convert (`brew install librsvg`) for the icon.
+# Needs an Apple Silicon Mac with Homebrew, the Rust targets
+# aarch64-apple-darwin and x86_64-apple-darwin, and rsvg-convert
+# (`brew install librsvg`) for the icon.
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -25,6 +26,9 @@ lipo -create -output "$app/Contents/MacOS/overlayr" \
     target/x86_64-apple-darwin/release/overlayr
 sed "s/@VERSION@/$version/g" "$root/packaging/macos/Info.plist" >"$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist"
+
+# Tesseract and the neural OCR engine, so text reading needs no installs.
+"$root/packaging/fetch-ocr.sh" macos "$app/Contents/Resources/ocr"
 
 # The icon, rendered at every size macOS uses.
 if command -v rsvg-convert >/dev/null 2>&1; then

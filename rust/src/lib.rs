@@ -5,6 +5,7 @@
 
 pub mod ai;
 pub mod auth;
+pub mod bundle;
 pub mod capture;
 pub mod config;
 pub mod control;

@@ -87,22 +87,32 @@ pub fn runtime_dir() -> Option<PathBuf> {
 }
 
 /// Finds the ONNX Runtime library: an explicit `ORT_DYLIB_PATH`, the copy
-/// Overlayr downloaded, then the system's.
+/// Overlayr downloaded, the one shipped with Overlayr, then the system's.
 pub fn runtime_library() -> Option<PathBuf> {
     let explicit = std::env::var_os("ORT_DYLIB_PATH").map(PathBuf::from);
     let downloaded = runtime_dir().map(|directory| directory.join(RUNTIME_LIBRARY));
+    let bundled = crate::bundle::ocr_dir().map(|directory| directory.join(RUNTIME_LIBRARY));
     let system = SYSTEM_RUNTIME_LIBRARIES.iter().map(PathBuf::from);
     explicit
         .into_iter()
         .chain(downloaded)
+        .chain(bundled)
         .chain(system)
         .find(|path| path.is_file())
 }
 
+/// The model file `name`: a downloaded copy (which may be newer), else the
+/// one shipped with Overlayr.
+pub fn model_file(name: &str) -> Option<PathBuf> {
+    model_dir()
+        .map(|directory| directory.join(name))
+        .into_iter()
+        .chain(crate::bundle::ocr_dir().map(|directory| directory.join(name)))
+        .find(|path| path.is_file())
+}
+
 pub fn has_models() -> bool {
-    model_dir().is_some_and(|directory| {
-        directory.join(DETECTION_MODEL).is_file() && directory.join(RECOGNITION_MODEL).is_file()
-    })
+    model_file(DETECTION_MODEL).is_some() && model_file(RECOGNITION_MODEL).is_some()
 }
 
 /// Whether the neural engine can run: models and runtime are installed.
@@ -197,12 +207,13 @@ struct Models {
 impl Models {
     fn load() -> ServiceResult<Self> {
         load_runtime()?;
-        let directory = model_dir()
-            .ok_or_else(|| "could not determine your user data directory".to_string())?;
+        let missing = || "the neural OCR models are not installed".to_string();
+        let detection_model = model_file(DETECTION_MODEL).ok_or_else(missing)?;
+        let recognition_model = model_file(RECOGNITION_MODEL).ok_or_else(missing)?;
         let threads = SESSION_THREADS.load(std::sync::atomic::Ordering::Relaxed);
-        let detection = open_session(&directory.join(DETECTION_MODEL), detection_threads(threads))?;
+        let detection = open_session(&detection_model, detection_threads(threads))?;
         let recognition = (0..recognition_workers(threads))
-            .map(|_| open_session(&directory.join(RECOGNITION_MODEL), 1))
+            .map(|_| open_session(&recognition_model, 1))
             .collect::<ServiceResult<Vec<_>>>()?;
         let dictionary = recognition[0]
             .metadata()

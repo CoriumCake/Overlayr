@@ -132,6 +132,15 @@ pub fn id_token(api_base: &str) -> Result<String, String> {
 }
 
 pub fn session_path() -> PathBuf {
+    // Windows has no HOME, and the working directory of a program opened
+    // from an overlayr:// link isn't the user's; use %APPDATA%\Overlayr.
+    if cfg!(windows)
+        && let Some(app_data) = std::env::var_os("APPDATA")
+    {
+        return PathBuf::from(app_data)
+            .join("Overlayr")
+            .join("auth_session.json");
+    }
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
