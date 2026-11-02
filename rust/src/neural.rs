@@ -166,7 +166,7 @@ pub fn runtime_dir() -> Option<PathBuf> {
 pub fn runtime_library() -> Option<PathBuf> {
     let explicit = std::env::var_os("ORT_DYLIB_PATH").map(PathBuf::from);
     let downloaded = runtime_dir().map(|directory| directory.join(RUNTIME_LIBRARY));
-    let bundled = crate::bundle::ocr_dir().map(|directory| directory.join(RUNTIME_LIBRARY));
+    let bundled = crate::bundle::program_dir().map(|directory| directory.join(RUNTIME_LIBRARY));
     let system = SYSTEM_RUNTIME_LIBRARIES.iter().map(PathBuf::from);
     explicit
         .into_iter()
@@ -198,8 +198,11 @@ pub fn is_installed(language: &str) -> bool {
     has_models(language) && runtime_library().is_some()
 }
 
+/// Whether the neural engine can read `language` on this computer. ONNX
+/// Runtime isn't built for Intel Macs, which use Tesseract.
 pub fn supports_language(language: &str) -> bool {
-    recognition_model(language).is_some()
+    let intel_mac = cfg!(target_os = "macos") && std::env::consts::ARCH == "x86_64";
+    !intel_mac && recognition_model(language).is_some()
 }
 
 /// Loads ONNX Runtime once per process.

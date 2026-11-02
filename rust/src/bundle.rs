@@ -13,22 +13,36 @@
 //!   PP-OCRv6_det_small.onnx
 //!   PP-OCRv6_rec_small.onnx
 //!   tesseract/tesseract(.exe) and its libraries
+//!   x86_64/tesseract/...   (macOS: Tesseract for Intel Macs)
 //! ```
+//!
+//! The macOS app runs on Apple Silicon and Intel, so its programs for Intel
+//! Macs sit in `x86_64`. There is no ONNX Runtime for Intel Macs, so they
+//! read text with Tesseract only.
 
 use std::path::PathBuf;
 
-/// The bundled `ocr` folder, if this build has one that runs on this
-/// computer. The macOS bundle holds Apple Silicon programs only, so Intel
-/// Macs fall back to downloads and Homebrew.
+/// Whether this is an Intel Mac, which gets its own programs.
+fn intel_mac() -> bool {
+    cfg!(target_os = "macos") && std::env::consts::ARCH == "x86_64"
+}
+
+/// The bundled `ocr` folder, which holds the models, if this build has one.
 pub fn ocr_dir() -> Option<PathBuf> {
-    if cfg!(target_os = "macos") && std::env::consts::ARCH != "aarch64" {
-        return None;
-    }
     let executable = std::env::current_exe().ok()?;
     let directory = executable.parent()?;
     #[cfg(target_os = "macos")]
     let directory = directory.parent()?.join("Resources");
     Some(directory.join("ocr")).filter(|path| path.is_dir())
+}
+
+/// The bundled folder with programs and libraries for this computer.
+pub fn program_dir() -> Option<PathBuf> {
+    let directory = ocr_dir()?;
+    if intel_mac() {
+        return Some(directory.join("x86_64")).filter(|path| path.is_dir());
+    }
+    Some(directory)
 }
 
 /// The bundled Tesseract command line.
@@ -38,5 +52,5 @@ pub fn tesseract() -> Option<PathBuf> {
     } else {
         "tesseract"
     };
-    Some(ocr_dir()?.join("tesseract").join(name)).filter(|path| path.is_file())
+    Some(program_dir()?.join("tesseract").join(name)).filter(|path| path.is_file())
 }

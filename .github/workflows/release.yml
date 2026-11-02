@@ -120,8 +120,25 @@ jobs:
           path: rust/target/windows/*.exe
           if-no-files-found: error
 
+  # Tesseract for Intel Macs, built on one: Homebrew's Intel build with its
+  # libraries. Packed with tar, which keeps the programs executable.
+  macos-intel-ocr:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gather Tesseract for Intel Macs
+        run: |
+          packaging/fetch-ocr.sh macos-intel ocr-x86_64
+          tar -czf macos-intel-ocr.tgz ocr-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-intel-ocr
+          path: macos-intel-ocr.tgz
+          retention-days: 1
+          if-no-files-found: error
+
   macos:
-    needs: version
+    needs: [version, macos-intel-ocr]
     runs-on: macos-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -135,9 +152,13 @@ jobs:
           workspaces: rust
       - name: Install the icon renderer
         run: brew install librsvg
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-intel-ocr
       - name: Build Overlayr.app and the disk image
         run: |
-          packaging/macos/build-app.sh
+          tar -xzf macos-intel-ocr.tgz
+          OVERLAYR_INTEL_OCR="$PWD/ocr-x86_64" packaging/macos/build-app.sh
           mv rust/target/macos/Overlayr.dmg "rust/target/macos/Overlayr-$VERSION-macos.dmg"
       - uses: actions/upload-artifact@v4
         with:
@@ -163,6 +184,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Keep only the installers
+        run: rm -f dist/macos-intel-ocr.tgz
       - name: Write latest.json
         run: |
           # Checkout leaves a lightweight copy of the tag, without its message.

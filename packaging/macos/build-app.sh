@@ -7,6 +7,9 @@
 # Needs an Apple Silicon Mac with Homebrew, the Rust targets
 # aarch64-apple-darwin and x86_64-apple-darwin, and rsvg-convert
 # (`brew install librsvg`) for the icon.
+#
+# Set OVERLAYR_INTEL_OCR to a folder made on an Intel Mac by
+# `packaging/fetch-ocr.sh macos-intel` to include Tesseract for Intel Macs.
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -29,6 +32,10 @@ plutil -lint "$app/Contents/Info.plist"
 
 # Tesseract and the neural OCR engine, so text reading needs no installs.
 "$root/packaging/fetch-ocr.sh" macos "$app/Contents/Resources/ocr"
+if [ -n "${OVERLAYR_INTEL_OCR:-}" ]; then
+    cp -R "$OVERLAYR_INTEL_OCR" "$app/Contents/Resources/ocr/x86_64"
+    test -x "$app/Contents/Resources/ocr/x86_64/tesseract/tesseract"
+fi
 
 # The icon, rendered at every size macOS uses.
 if command -v rsvg-convert >/dev/null 2>&1; then

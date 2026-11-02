@@ -2,11 +2,14 @@
 # Gathers the OCR programs and models the installers ship, so Overlayr reads
 # text straight after installing (see rust/src/bundle.rs for the layout):
 #
-#   packaging/fetch-ocr.sh windows <dest>   # on Windows, in Git Bash
-#   packaging/fetch-ocr.sh macos <dest>     # on an Apple Silicon Mac
+#   packaging/fetch-ocr.sh windows <dest>       # on Windows, in Git Bash
+#   packaging/fetch-ocr.sh macos <dest>         # on an Apple Silicon Mac
+#   packaging/fetch-ocr.sh macos-intel <dest>   # on an Intel Mac
 #
 # <dest> becomes the `ocr` folder: ONNX Runtime and the PaddleOCR models for
 # the neural engine, plus Tesseract for languages those models can't read.
+# macos-intel gathers only Tesseract (there is no ONNX Runtime for Intel
+# Macs), for the app's ocr/x86_64 folder.
 # Tesseract's language models aren't included; the app downloads the one a
 # game needs.
 #
@@ -28,12 +31,37 @@ fetch() {
 }
 
 # The neural engine's models.
-for kind in det rec; do
-    fetch "$NEURAL_MODEL_URL/$kind/PP-OCRv6_${kind}_small.onnx" "$dest/PP-OCRv6_${kind}_small.onnx"
-done
+fetch_models() {
+    for kind in det rec; do
+        fetch "$NEURAL_MODEL_URL/$kind/PP-OCRv6_${kind}_small.onnx" "$dest/PP-OCRv6_${kind}_small.onnx"
+    done
+}
+
+# Homebrew's Tesseract, with every library it links copied next to it and
+# its references rewritten to point there.
+macos_tesseract() {
+    brew list tesseract >/dev/null 2>&1 || brew install tesseract
+    brew list dylibbundler >/dev/null 2>&1 || brew install dylibbundler
+    cp -L "$(brew --prefix)/bin/tesseract" "$dest/tesseract/tesseract"
+    chmod u+w "$dest/tesseract/tesseract"
+    dylibbundler --overwrite-dir --bundle-deps --create-dir \
+        --fix-file "$dest/tesseract/tesseract" \
+        --dest-dir "$dest/tesseract/libs" \
+        --install-path @executable_path/libs/
+    # Rewriting invalidates signatures, and Apple Silicon won't run unsigned
+    # code: sign each piece ad hoc before the app itself is signed.
+    codesign --force --sign - "$dest/tesseract/libs/"*.dylib "$dest/tesseract/tesseract"
+    # Proves no library still points into Homebrew.
+    if otool -L "$dest/tesseract/tesseract" "$dest/tesseract/libs/"*.dylib | grep -E '/(opt/homebrew|usr/local)/'; then
+        echo "Tesseract still links Homebrew libraries" >&2
+        exit 1
+    fi
+    "$dest/tesseract/tesseract" --version
+}
 
 case "$platform" in
 windows)
+    fetch_models
     name="onnxruntime-win-x64-$ONNX_RUNTIME_VERSION"
     fetch "https://github.com/microsoft/onnxruntime/releases/download/v$ONNX_RUNTIME_VERSION/$name.zip" "$work/onnx.zip"
     7z e -y -o"$dest" "$work/onnx.zip" "$name/lib/onnxruntime.dll" >/dev/null
@@ -50,34 +78,23 @@ macos)
         echo "Run this on an Apple Silicon Mac: the bundle is for Apple Silicon" >&2
         exit 1
     fi
+    fetch_models
     name="onnxruntime-osx-arm64-$ONNX_RUNTIME_VERSION"
     fetch "https://github.com/microsoft/onnxruntime/releases/download/v$ONNX_RUNTIME_VERSION/$name.tgz" "$work/onnx.tgz"
     tar -xzf "$work/onnx.tgz" -C "$work"
     cp "$work/$name/lib/libonnxruntime.$ONNX_RUNTIME_VERSION.dylib" "$dest/libonnxruntime.dylib"
-
-    # Homebrew's Tesseract, with every library it links copied next to it
-    # and its references rewritten to point there.
-    brew list tesseract >/dev/null 2>&1 || brew install tesseract
-    brew list dylibbundler >/dev/null 2>&1 || brew install dylibbundler
-    cp -L "$(brew --prefix)/bin/tesseract" "$dest/tesseract/tesseract"
-    chmod u+w "$dest/tesseract/tesseract"
-    dylibbundler --overwrite-dir --bundle-deps --create-dir \
-        --fix-file "$dest/tesseract/tesseract" \
-        --dest-dir "$dest/tesseract/libs" \
-        --install-path @executable_path/libs/
-    # Rewriting invalidates signatures, and Apple Silicon won't run unsigned
-    # code: sign each piece ad hoc before the app itself is signed.
-    codesign --force --sign - "$dest/tesseract/libs/"*.dylib "$dest/tesseract/tesseract" \
-        "$dest/libonnxruntime.dylib"
-    # Proves no library still points into Homebrew.
-    if otool -L "$dest/tesseract/tesseract" "$dest/tesseract/libs/"*.dylib | grep -E '/(opt/homebrew|usr/local)/'; then
-        echo "Tesseract still links Homebrew libraries" >&2
+    codesign --force --sign - "$dest/libonnxruntime.dylib"
+    macos_tesseract
+    ;;
+macos-intel)
+    if [ "$(uname -m)" != x86_64 ]; then
+        echo "Run this on an Intel Mac: the bundle is for Intel Macs" >&2
         exit 1
     fi
-    "$dest/tesseract/tesseract" --version
+    macos_tesseract
     ;;
 *)
-    echo "usage: $0 windows|macos <dest>" >&2
+    echo "usage: $0 windows|macos|macos-intel <dest>" >&2
     exit 2
     ;;
 esac
