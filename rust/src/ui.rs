@@ -3302,7 +3302,8 @@ fn download_progress_bar(ui: &mut egui::Ui, fallback: &str) {
         }
     }
     // Keep the bar moving while bytes arrive.
-    ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(100));
 }
 
 fn shown_keys(keys: &str) -> String {

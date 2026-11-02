@@ -198,7 +198,8 @@ pub fn download_accurate_model(language: &str) -> ServiceResult<()> {
 }
 
 /// RapidOCR's ONNX conversions of the PaddleOCR models, by release folder.
-const NEURAL_MODEL_URL: &str = "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx";
+const NEURAL_MODEL_URL: &str =
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx";
 const ONNX_RUNTIME_VERSION: &str = "1.31.0";
 
 /// An HTTP client for downloads that give up after `seconds`. It names

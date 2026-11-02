@@ -772,9 +772,8 @@ fn recognize_batch(
 /// left to right inside right-to-left text, so they keep their order, as in
 /// PaddleOCR's own decoder.
 fn reading_order(visual: &str) -> String {
-    let left_to_right = |character: char| {
-        character.is_ascii_alphanumeric() || " :*./%+-".contains(character)
-    };
+    let left_to_right =
+        |character: char| character.is_ascii_alphanumeric() || " :*./%+-".contains(character);
     let mut runs: Vec<String> = Vec::new();
     let mut run = String::new();
     for character in visual.chars() {
@@ -1031,7 +1030,10 @@ mod tests {
     #[test]
     fn puts_right_to_left_readings_in_reading_order() {
         assert_eq!(reading_order("cba"), "cba");
-        assert_eq!(reading_order("\u{645}\u{644}\u{643}"), "\u{643}\u{644}\u{645}");
+        assert_eq!(
+            reading_order("\u{645}\u{644}\u{643}"),
+            "\u{643}\u{644}\u{645}"
+        );
         assert_eq!(
             reading_order("\u{628} HP 50\u{627}"),
             "\u{627} HP 50\u{628}"
