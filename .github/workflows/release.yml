@@ -13,8 +13,12 @@ name: Release
 # Signing runs once its secrets are added; until then the installers are
 # unsigned, and Windows and macOS warn before opening them.
 #
-#   Windows (Authenticode): WINDOWS_CERTIFICATE (the .pfx, base64-encoded)
-#     and WINDOWS_CERTIFICATE_PASSWORD.
+#   Windows (SSL.com eSigner cloud signing): ES_USERNAME and ES_PASSWORD
+#     (the SSL.com account), ES_CREDENTIAL_ID (the certificate's eSigner
+#     credential) and ES_TOTP_SECRET (the secret code shown with the eSigner
+#     QR code when the certificate is enrolled). Only Overlayr's own files
+#     are signed, overlayr.exe and the installer, on tagged releases and
+#     manual runs, to stay within the eSigner plan's monthly signatures.
 #   macOS (Developer ID, then notarization): MACOS_CERTIFICATE (the
 #     Developer ID Application .p12, base64-encoded),
 #     MACOS_CERTIFICATE_PASSWORD, MACOS_SIGNING_IDENTITY ("Developer ID
@@ -104,8 +108,9 @@ jobs:
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      # Gates the signing steps.
-      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      # Signs on releases and manual runs once the eSigner secrets are set,
+      # not on pull requests: each signature counts against the plan.
+      SIGN: ${{ secrets.ES_USERNAME != '' && github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -118,23 +123,19 @@ jobs:
       - name: Bundle Tesseract and the neural OCR engine
         shell: bash
         run: packaging/fetch-ocr.sh windows rust/target/release/ocr
-      - name: Sign the programs
-        if: env.WINDOWS_CERTIFICATE != ''
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          $pfx = Join-Path $env:RUNNER_TEMP "overlayr.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
-            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -Last 1
-          $files = @("rust\target\release\overlayr.exe") +
-            (Get-ChildItem rust\target\release\ocr -Recurse -Include *.exe, *.dll).FullName
-          & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD `
-            /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $files
-          if ($LASTEXITCODE -ne 0) { throw "Signing failed" }
-          "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
-          "PFX=$pfx" >> $env:GITHUB_ENV
+      - name: Sign Overlayr
+        if: env.SIGN == 'true'
+        uses: sslcom/esigner-codesign@v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.ES_USERNAME }}
+          password: ${{ secrets.ES_PASSWORD }}
+          credential_id: ${{ secrets.ES_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
+          file_path: ${{ github.workspace }}/rust/target/release/overlayr.exe
+          override: true
+          malware_block: false
+          environment_name: PROD
       - name: Build the installer
         shell: pwsh
         run: |
@@ -144,16 +145,34 @@ jobs:
           }
           & $iscc "/DVersion=$env:VERSION" "/DSource=$PWD\rust\target\release" packaging\windows\overlayr.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
-      - name: Sign the installer
-        if: env.WINDOWS_CERTIFICATE != ''
+      - name: Find the installer
+        if: env.SIGN == 'true'
         shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          & $env:SIGNTOOL sign /f $env:PFX /p $env:WINDOWS_CERTIFICATE_PASSWORD `
-            /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 (Get-ChildItem rust\target\windows\*.exe).FullName
-          if ($LASTEXITCODE -ne 0) { throw "Signing failed" }
-          Remove-Item $env:PFX
+          $installer = (Get-ChildItem rust\target\windows\*.exe | Select-Object -First 1).FullName
+          "INSTALLER=$installer" >> $env:GITHUB_ENV
+      - name: Sign the installer
+        if: env.SIGN == 'true'
+        uses: sslcom/esigner-codesign@v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.ES_USERNAME }}
+          password: ${{ secrets.ES_PASSWORD }}
+          credential_id: ${{ secrets.ES_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
+          file_path: ${{ env.INSTALLER }}
+          override: true
+          malware_block: false
+          environment_name: PROD
+      - name: Check the signatures
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: |
+          foreach ($file in @("rust\target\release\overlayr.exe", $env:INSTALLER)) {
+            $signature = Get-AuthenticodeSignature $file
+            "$file : $($signature.Status) $($signature.SignerCertificate.Subject)"
+            if ($signature.Status -ne "Valid") { throw "$file isn't signed" }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: windows
