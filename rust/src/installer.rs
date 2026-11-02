@@ -188,30 +188,50 @@ pub fn download_accurate_model(language: &str) -> ServiceResult<()> {
         std::fs::create_dir_all(directory)
             .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
     }
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(600))
-        .build()
-        .map_err(|error| format!("could not create download client: {error}"))?;
-    let bytes = client
-        .get(format!("{ACCURATE_MODEL_URL}/{code}.traineddata"))
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::bytes)
-        .map_err(|error| format!("could not download the '{code}' model: {error}"))?;
-    if bytes.len() < 64 * 1024 {
-        return Err(format!("the downloaded '{code}' model is incomplete"));
-    }
-    // Write to a temporary name first so an interrupted download never
-    // leaves a truncated model that OCR would try to load.
-    let partial = path.with_extension("part");
-    std::fs::write(&partial, &bytes)
-        .and_then(|()| std::fs::rename(&partial, &path))
-        .map_err(|error| format!("could not save the model to {}: {error}", path.display()))
+    let client = download_client(600)?;
+    download(
+        &client,
+        &format!("{ACCURATE_MODEL_URL}/{code}.traineddata"),
+        &path,
+        64 * 1024,
+    )
 }
 
 /// RapidOCR's ONNX conversions of the PaddleOCR models, by release folder.
 const NEURAL_MODEL_URL: &str = "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx";
 const ONNX_RUNTIME_VERSION: &str = "1.31.0";
+
+/// An HTTP client for downloads that give up after `seconds`. It names
+/// itself: ModelScope's servers refuse requests without a User-Agent.
+fn download_client(seconds: u64) -> ServiceResult<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(seconds))
+        .user_agent(concat!("Overlayr/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| format!("could not create download client: {error}"))
+}
+
+/// The file being downloaded now, for showing progress.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DownloadProgress {
+    pub file: String,
+    pub received: u64,
+    /// The file's size, when the server says.
+    pub size: Option<u64>,
+}
+
+static PROGRESS: std::sync::Mutex<Option<DownloadProgress>> = std::sync::Mutex::new(None);
+
+/// Progress of the download running now, if any.
+pub fn download_progress() -> Option<DownloadProgress> {
+    PROGRESS.lock().ok()?.clone()
+}
+
+fn set_progress(progress: Option<DownloadProgress>) {
+    if let Ok(mut current) = PROGRESS.lock() {
+        *current = progress;
+    }
+}
 
 /// Downloads `url` into `path`, through a temporary name so an interrupted
 /// download never leaves a truncated file behind.
@@ -221,15 +241,34 @@ fn download(
     path: &Path,
     minimum: usize,
 ) -> ServiceResult<()> {
+    use std::io::Read;
     let name = path
         .file_name()
         .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-    let bytes = client
+    let failed = |error: &dyn std::fmt::Display| format!("could not download {name}: {error}");
+    let mut response = client
         .get(url)
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::bytes)
-        .map_err(|error| format!("could not download {name}: {error}"))?;
+        .map_err(|error| failed(&error))?;
+    let size = response.content_length();
+    let mut bytes = Vec::with_capacity(size.unwrap_or(0).min(512 * 1024 * 1024) as usize);
+    let mut chunk = vec![0; 64 * 1024];
+    let result = loop {
+        set_progress(Some(DownloadProgress {
+            file: name.clone(),
+            received: bytes.len() as u64,
+            size,
+        }));
+        match response.read(&mut chunk) {
+            Ok(0) => break Ok(()),
+            Ok(read) => bytes.extend_from_slice(&chunk[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => break Err(failed(&error)),
+        }
+    };
+    set_progress(None);
+    result?;
     if bytes.len() < minimum {
         return Err(format!("the downloaded {name} is incomplete"));
     }
@@ -252,10 +291,7 @@ pub fn download_neural_ocr(language: &str) -> ServiceResult<()> {
         .ok_or_else(|| "could not determine your user data directory".to_string())?;
     let recognition = crate::neural::recognition_model(language)
         .ok_or_else(|| format!("the neural OCR does not read '{language}'"))?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(1800))
-        .build()
-        .map_err(|error| format!("could not create download client: {error}"))?;
+    let client = download_client(1800)?;
     for (release, kind, file) in [
         ("PP-OCRv6", "det", crate::neural::DETECTION_MODEL),
         (recognition.release, "rec", recognition.file),

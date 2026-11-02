@@ -613,10 +613,7 @@ impl OverlayrApp {
             .as_ref()
             .and_then(|readiness| readiness.model_offer);
         if downloading {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(RichText::new("Downloading OCR model…").small());
-            });
+            download_progress_bar(ui, "Downloading OCR model…");
         } else if let Some(offer) = offer {
             let (label, hover, note) = match offer {
                 ModelOffer::Neural => (
@@ -715,15 +712,17 @@ impl OverlayrApp {
             .as_ref()
             .filter(|task| task.component == component);
         if let Some(task) = installing {
-            let text = if task.needs_password {
-                "Installing… approve the password prompt if one appears."
+            if task.needs_password {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("Installing… approve the password prompt if one appears.")
+                            .small(),
+                    );
+                });
             } else {
-                "Installing…"
-            };
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(RichText::new(text).small());
-            });
+                download_progress_bar(ui, "Installing…");
+            }
         } else if component == Component::Translation && self.translation_wait.is_some() {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -3270,6 +3269,42 @@ impl KeybindSlot {
 
 /// A stored shortcut as the keyboard labels it: macOS calls SUPER and ALT
 /// Command and Option.
+/// The running download's progress, or a spinner with `fallback` before
+/// it starts.
+fn download_progress_bar(ui: &mut egui::Ui, fallback: &str) {
+    let megabytes = |bytes: u64| bytes as f32 / 1_000_000.0;
+    match crate::installer::download_progress() {
+        Some(progress) => {
+            let text = match progress.size {
+                Some(size) => format!(
+                    "{}  {:.1} / {:.1} MB",
+                    progress.file,
+                    megabytes(progress.received),
+                    megabytes(size)
+                ),
+                None => format!("{}  {:.1} MB", progress.file, megabytes(progress.received)),
+            };
+            let fraction = progress
+                .size
+                .filter(|&size| size > 0)
+                .map_or(0.0, |size| progress.received as f32 / size as f32);
+            ui.add(
+                egui::ProgressBar::new(fraction)
+                    .text(RichText::new(text).small())
+                    .animate(progress.size.is_none()),
+            );
+        }
+        None => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new(fallback).small());
+            });
+        }
+    }
+    // Keep the bar moving while bytes arrive.
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+}
+
 fn shown_keys(keys: &str) -> String {
     if cfg!(target_os = "macos") {
         keys.split(" + ")
