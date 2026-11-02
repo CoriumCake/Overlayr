@@ -207,8 +207,9 @@ pub struct OverlayrApp {
     /// Source languages whose OCR model was downloaded automatically this
     /// session.
     auto_downloaded: std::collections::HashSet<String>,
-    /// Shortcuts registered with macOS, which has no desktop to bind them.
-    #[cfg(target_os = "macos")]
+    /// Shortcuts registered with macOS or Windows, which have no desktop
+    /// shortcut list for Overlayr to add to.
+    #[cfg(any(target_os = "macos", windows))]
     hotkeys: Option<crate::hotkeys::Hotkeys>,
     /// Hides the translations to show the original text.
     translations_hidden: bool,
@@ -301,7 +302,7 @@ impl OverlayrApp {
             control: None,
             control_started: false,
             auto_downloaded: std::collections::HashSet::new(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             hotkeys: None,
             translations_hidden: false,
             bound_keybinds: None,
@@ -1947,7 +1948,7 @@ impl OverlayrApp {
                 Ok(listener) => self.control = Some(listener),
                 Err(error) => self.keybind_error = Some(format!("Shortcuts are off: {error}")),
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             {
                 let wake = ctx.clone();
                 match crate::hotkeys::Hotkeys::start(move || wake.request_repaint()) {
@@ -1964,7 +1965,7 @@ impl OverlayrApp {
             .as_ref()
             .map(crate::control::Listener::received)
             .unwrap_or_default();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(hotkeys) = &self.hotkeys {
             commands.extend(hotkeys.received());
         }
@@ -1985,13 +1986,13 @@ impl OverlayrApp {
         }
     }
 
-    /// Registers the configured shortcuts with the desktop (Hyprland) or
-    /// macOS, and removes ones that changed.
+    /// Registers the configured shortcuts with the desktop (Hyprland),
+    /// macOS or Windows, and removes ones that changed.
     fn apply_keybinds(&mut self) {
         if self.bound_keybinds.as_ref() == Some(&self.config.keybinds) {
             return;
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(hotkeys) = &mut self.hotkeys {
             self.keybind_error = hotkeys
                 .bind(&self.config.keybinds)
@@ -3279,6 +3280,8 @@ fn shown_keys(keys: &str) -> String {
             })
             .collect::<Vec<_>>()
             .join(" + ")
+    } else if cfg!(windows) {
+        keys.replace("SUPER", "WIN")
     } else {
         keys.to_string()
     }

@@ -161,10 +161,13 @@ pub struct Keybinds {
 }
 
 impl Default for Keybinds {
+    /// Windows keeps most Windows-key shortcuts for itself, so Overlayr's
+    /// use Ctrl there.
     fn default() -> Self {
+        let modifier = if cfg!(windows) { "CTRL" } else { "SUPER" };
         Self {
-            toggle_overlay: "SUPER + SHIFT + O".into(),
-            toggle_translations: "SUPER + SHIFT + H".into(),
+            toggle_overlay: format!("{modifier} + SHIFT + O"),
+            toggle_translations: format!("{modifier} + SHIFT + H"),
         }
     }
 }

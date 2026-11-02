@@ -1,5 +1,5 @@
-//! Keyboard shortcuts on macOS, which work while another app (the game) has
-//! focus. Hyprland binds shortcuts itself and runs `overlayr --toggle`; see
+//! Keyboard shortcuts on macOS and Windows, which work while another app
+//! (the game) has focus. Hyprland binds shortcuts itself and runs `overlayr --toggle`; see
 //! [`crate::control`].
 
 use std::str::FromStr;
@@ -84,7 +84,8 @@ impl Hotkeys {
 }
 
 /// A stored shortcut ("SUPER + SHIFT + O", with XKB key names as Hyprland
-/// knows them) as a hotkey. SUPER is the Command key.
+/// knows them) as a hotkey. SUPER is the Command key on macOS and the
+/// Windows key on Windows.
 fn parse(keys: &str) -> Result<HotKey, String> {
     let tokens = keys
         .split('+')
