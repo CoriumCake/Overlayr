@@ -35,8 +35,7 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# Vercel & Astro
-.vercel/
+# Astro
 .output/
 .astro/
 
