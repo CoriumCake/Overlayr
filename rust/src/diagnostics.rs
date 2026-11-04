@@ -243,23 +243,50 @@ pub fn command_available(command: &str) -> bool {
 }
 
 /// Resolves a command the way a shell would, returning its full path.
-/// Where Homebrew and Docker Desktop install their commands. Apps opened from
-/// the Dock or Finder get a minimal `PATH` without them.
-#[cfg(target_os = "macos")]
-const EXTRA_COMMAND_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
-#[cfg(not(target_os = "macos"))]
-const EXTRA_COMMAND_DIRS: &[&str] = &[];
+/// Also looks where installers put commands outside `PATH`: Homebrew and
+/// Docker Desktop on macOS (apps opened from the Dock or Finder get a minimal
+/// `PATH` without them), and Tesseract's own folder on Windows, whose
+/// installer doesn't add it to `PATH`.
+fn extra_command_dirs() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    return vec!["/opt/homebrew/bin".into(), "/usr/local/bin".into()];
+    #[cfg(windows)]
+    return ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .flat_map(|base| {
+            let base = PathBuf::from(base);
+            [
+                base.join("Tesseract-OCR"),
+                base.join("Programs").join("Tesseract-OCR"),
+            ]
+        })
+        .collect();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    Vec::new()
+}
+
+/// The file names a command can have: on Windows, `tesseract` is
+/// `tesseract.exe` on disk.
+fn command_file_names(command: &str) -> Vec<String> {
+    if cfg!(windows) && Path::new(command).extension().is_none() {
+        vec![format!("{command}.exe"), command.to_string()]
+    } else {
+        vec![command.to_string()]
+    }
+}
 
 pub fn find_command(command: &str) -> Option<PathBuf> {
     let command_path = Path::new(command);
     if command_path.components().count() > 1 {
         return command_path.is_file().then(|| command_path.to_path_buf());
     }
+    let names = command_file_names(command);
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .chain(EXTRA_COMMAND_DIRS.iter().map(PathBuf::from))
-        .map(|directory| directory.join(command))
+        .chain(extra_command_dirs())
+        .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
         .find(|path| {
             if !path.is_file() {
                 return false;
