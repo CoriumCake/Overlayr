@@ -800,7 +800,19 @@ fn run_tesseract(executable: &str, bytes: &[u8], language: &str) -> ServiceResul
     if has_accurate_model(language)
         && let Some(directory) = accurate_model_dir()
     {
-        command.arg("--tessdata-dir").arg(directory);
+        // Tesseract on Windows opens files with the ANSI API, which can't
+        // reach a folder with Thai or other non-English characters, as a
+        // Windows user name puts in every path under %LOCALAPPDATA%. Run it
+        // from the folder above, which Windows enters by its Unicode name,
+        // and name the model folder relative to that.
+        match (directory.parent(), directory.file_name()) {
+            (Some(parent), Some(name)) => {
+                command.current_dir(parent).arg("--tessdata-dir").arg(name);
+            }
+            _ => {
+                command.arg("--tessdata-dir").arg(&directory);
+            }
+        }
     }
     let mut child = command
         .args([
