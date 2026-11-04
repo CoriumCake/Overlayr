@@ -23,6 +23,8 @@ ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "
 reqwest = { version = "0.13.4", default-features = true, features = ["blocking", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# Verifies downloaded updates.
+sha2 = "0.10.9"
 single-instance = "0.3.3"
 xcap = { version = "0.9.8", optional = true }
 

@@ -35,6 +35,7 @@ pub mod tracker;
 pub mod translation;
 pub mod types;
 pub mod ui;
+pub mod updater;
 
 #[cfg(feature = "native-capture")]
 pub use capture::XCapCapture;

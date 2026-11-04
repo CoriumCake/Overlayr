@@ -37,7 +37,9 @@ CloseApplications=yes
 [Files]
 Source: "{#Source}\overlayr.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; Tesseract and the neural OCR engine (packaging/fetch-ocr.sh).
-Source: "{#Source}\ocr\*"; DestDir: "{app}\ocr"; Flags: ignoreversion recursesubdirs
+Source: "{#Source}\ocr\*"; DestDir: "{app}\ocr"; Excludes: "crt"; Flags: ignoreversion recursesubdirs
+; The Visual C++ runtime ONNX Runtime needs, where Windows looks for it.
+Source: "{#Source}\ocr\crt\*"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\Icon.ico"; DestDir: "{app}"; DestName: "overlayr.ico"; Flags: ignoreversion
 
 [InstallDelete]
@@ -60,3 +62,12 @@ Root: HKCU; Subkey: "Software\Classes\overlayr\shell\open\command"; ValueType: s
 
 [Run]
 Filename: "{app}\overlayr.exe"; Description: "{cm:LaunchProgram,Overlayr}"; Flags: nowait postinstall skipifsilent
+; Updates from inside Overlayr (rust/src/updater.rs) install silently
+; with /RELAUNCH=1, and start Overlayr again afterwards.
+Filename: "{app}\overlayr.exe"; Flags: nowait; Check: Relaunch
+
+[Code]
+function Relaunch: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
+end;

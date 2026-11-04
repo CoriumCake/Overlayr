@@ -65,6 +65,13 @@ windows)
     name="onnxruntime-win-x64-$ONNX_RUNTIME_VERSION"
     fetch "https://github.com/microsoft/onnxruntime/releases/download/v$ONNX_RUNTIME_VERSION/$name.zip" "$work/onnx.zip"
     7z e -y -o"$dest" "$work/onnx.zip" "$name/lib/onnxruntime.dll" >/dev/null
+    # ONNX Runtime needs the Visual C++ runtime, which a fresh Windows
+    # doesn't have. Microsoft allows shipping its DLLs with an app; they go
+    # next to overlayr.exe, where Windows looks for a DLL's libraries.
+    vs=$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' -property installationPath | tr -d '\r')
+    crt=$(ls -d "$(cygpath "$vs")"/VC/Redist/MSVC/*/x64/Microsoft.VC14*.CRT | sort -V | tail -n 1)
+    mkdir -p "$dest/crt"
+    cp "$crt"/*.dll "$dest/crt/"
 
     # UB Mannheim's Tesseract build, unpacked from its installer: the
     # program and the libraries next to it.

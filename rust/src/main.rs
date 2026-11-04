@@ -4,6 +4,7 @@
 
 fn main() -> eframe::Result {
     limit_malloc_arenas();
+    report_crashes();
     let arguments = std::env::args().collect::<Vec<_>>();
     let argument = arguments.get(1).map(String::as_str);
     if let Err(error) = overlayr_core::auth::handle_launch_args(&arguments[1..]) {
@@ -19,6 +20,7 @@ fn main() -> eframe::Result {
                 | "--diagnose"
                 | "--toggle"
                 | "--toggle-translations"
+                | "--ocr-test"
         )
     );
     if !is_command && let Err(error) = overlayr_core::auth::register_protocol() {
@@ -45,6 +47,20 @@ fn main() -> eframe::Result {
         println!(
             "Overlayr - real-time screen translation overlay\n\nUsage:\n  overlayr           Open the settings window\n  overlayr --diagnose Check desktop, OCR, and configuration readiness\n  overlayr --toggle   Start or stop the overlay of the running Overlayr\n  overlayr --toggle-translations\n                      Hide or show the translations\n  overlayr --version  Print the application version"
         );
+        return Ok(());
+    }
+    // Not in --help: proves the bundled OCR works, for CI and support.
+    if matches!(argument, Some("--ocr-test")) {
+        let image = arguments.get(2).map_or("", String::as_str);
+        let language = arguments.get(3).map_or("en", String::as_str);
+        let engine = arguments.get(4).map_or("auto", String::as_str);
+        match overlayr_core::diagnostics::ocr_test(std::path::Path::new(image), language, engine) {
+            Ok(text) => println!("{text}"),
+            Err(error) => {
+                println!("OCR test failed: {error}");
+                std::process::exit(1);
+            }
+        }
         return Ok(());
     }
     if matches!(argument, Some("--diagnose")) {
@@ -83,11 +99,50 @@ fn main() -> eframe::Result {
         vsync: false,
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "Overlayr",
         native_options,
         Box::new(|_creation_context| Ok(Box::new(overlayr_core::ui::OverlayrApp::new()))),
-    )
+    );
+    if let Err(error) = &result {
+        show_error(&format!(
+            "Overlayr could not open its window: {error}\n\nUpdating your graphics driver usually fixes this."
+        ));
+    }
+    result
+}
+
+/// Windows shows nothing when a windowed program fails, so a crash would
+/// look like Overlayr never started: say what happened, and keep it in
+/// crash.log next to the settings for support.
+fn report_crashes() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_hook(info);
+        show_error(&format!("Overlayr stopped because of an error:\n\n{info}"));
+    }));
+}
+
+fn show_error(message: &str) {
+    eprintln!("{message}");
+    if let Some(directory) = overlayr_core::AppConfig::default_path().parent() {
+        let _ = std::fs::create_dir_all(directory);
+        let _ = std::fs::write(directory.join("crash.log"), message);
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
+        }
+        let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+        let (text, caption) = (wide(message), wide("Overlayr"));
+        const MB_ICONERROR: u32 = 0x10;
+        // SAFETY: both strings are NUL-terminated UTF-16 that outlive the call.
+        unsafe {
+            MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR);
+        }
+    }
 }
 
 /// glibc gives each thread that allocates its own memory pool, and with

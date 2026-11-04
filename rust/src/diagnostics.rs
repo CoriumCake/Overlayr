@@ -238,6 +238,52 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Reads the text in an image file with the engine Overlayr would use, or
+/// with Tesseract when `engine` is "tesseract", downloading a missing model
+/// first, as the app does. Proves on a fresh computer that the bundled OCR
+/// starts and reads: `overlayr --ocr-test shot.png en [tesseract]`.
+pub fn ocr_test(image: &Path, language: &str, engine: &str) -> Result<String, String> {
+    let image = image::open(image)
+        .map_err(|error| format!("could not open {}: {error}", image.display()))?
+        .to_rgba8();
+    let tesseract = engine.eq_ignore_ascii_case("tesseract");
+    if tesseract {
+        if !crate::ocr::has_accurate_model(language) {
+            crate::installer::download_accurate_model(language)?;
+        }
+    } else if crate::neural::supports_language(language) && !crate::neural::is_installed(language) {
+        crate::installer::download_neural_ocr(language)?;
+    }
+    let mut ocr = if tesseract {
+        crate::ocr::tesseract_engine("paragraph")
+    } else {
+        crate::ocr::engine(language, "paragraph")
+    };
+    ocr.validate_language(language)?;
+    let (width, height) = image.dimensions();
+    let frame = crate::types::Frame {
+        sequence: 1,
+        bounds: crate::types::Rect {
+            left: 0,
+            top: 0,
+            width,
+            height,
+        },
+        width,
+        height,
+        rgba: image.into_raw(),
+        origin: (0, 0),
+        source_size: (width, height),
+    };
+    let blocks = ocr.recognize(&frame, language)?;
+    let text = blocks
+        .iter()
+        .map(|block| block.source_text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(format!("{}: {text}", ocr.name()))
+}
+
 pub fn command_available(command: &str) -> bool {
     find_command(command).is_some()
 }
@@ -332,7 +378,7 @@ mod tests {
 
     #[test]
     fn version_matches_package_metadata() {
-        assert_eq!(version(), "0.1.0");
+        assert_eq!(version(), "0.1.1");
     }
 
     #[test]

@@ -286,6 +286,8 @@ pub struct OverlayrApp {
     /// Display name of `config.active_pack`, cached so the pack file isn't
     /// read on every frame: (path, name).
     active_pack_label: (String, String),
+    /// Downloads new versions and offers to restart into them.
+    updater: crate::updater::Updater,
 }
 
 impl OverlayrApp {
@@ -299,6 +301,7 @@ impl OverlayrApp {
             ),
         };
         let mut app = Self {
+            updater: crate::updater::Updater::default(),
             control: None,
             control_started: false,
             auto_downloaded: std::collections::HashSet::new(),
@@ -2890,6 +2893,7 @@ impl eframe::App for OverlayrApp {
         self.reap_install();
         self.poll_translation_startup();
         self.poll_unlock();
+        self.updater.tick();
         ctx.request_repaint_after(Duration::from_millis(100));
         // Sampled all along in debug mode, so the graphs already hold the
         // last minute when the Resources tab is opened.
@@ -2934,6 +2938,14 @@ impl eframe::App for OverlayrApp {
                 egui::Frame::side_top_panel(&ctx.style()).inner_margin(Margin::symmetric(16, 10)),
             )
             .show(ctx, |ui| self.header_ui(ui, snapshot.as_ref(), narrow));
+        if let Some(update) = self.updater.offer() {
+            egui::TopBottomPanel::top("update")
+                .frame(
+                    egui::Frame::side_top_panel(&ctx.style())
+                        .inner_margin(Margin::symmetric(16, 6)),
+                )
+                .show(ctx, |ui| self.update_banner(ui, &update));
+        }
 
         let content_frame = egui::Frame::central_panel(&ctx.style()).inner_margin(Margin::same(16));
         self.exclude_own_windows();
@@ -3271,6 +3283,32 @@ impl KeybindSlot {
 /// Command and Option.
 /// The running download's progress, or a spinner with `fallback` before
 /// it starts.
+impl OverlayrApp {
+    /// Offers the downloaded update: restart into it now, or later.
+    fn update_banner(&mut self, ui: &mut egui::Ui, update: &crate::updater::Update) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(format!("Overlayr {} is ready.", update.version)).strong());
+            if let Some(note) = update.notes.first() {
+                ui.label(RichText::new(note).weak());
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Later").clicked() {
+                    self.updater.dismiss();
+                }
+                let restart = ui.add(egui::Button::new("Restart and update").fill(ACCENT));
+                if restart.clicked() {
+                    if self.is_dirty() {
+                        self.save();
+                    }
+                    if let Err(error) = self.updater.install() {
+                        self.error = Some(format!("Could not update: {error}"));
+                    }
+                }
+            });
+        });
+    }
+}
+
 fn download_progress_bar(ui: &mut egui::Ui, fallback: &str) {
     let megabytes = |bytes: u64| bytes as f32 / 1_000_000.0;
     match crate::installer::download_progress() {
