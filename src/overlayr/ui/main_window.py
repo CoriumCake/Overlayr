@@ -514,7 +514,7 @@ class MainWindow(ctk.CTk):
         """Opens the login page in browser."""
         import webbrowser
         # Using a fixed URL for now, will match the Astro page
-        login_url = "https://overlayr.catcode.tech/login?callback=desktop"
+        login_url = "https://overlayr.app/login?callback=desktop"
         webbrowser.open(login_url)
         self.lbl_status.configure(text="Waiting for login...", text_color="yellow")
         self.start_login_polling()

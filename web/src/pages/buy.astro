@@ -1,0 +1,135 @@
+---
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout title="Buy a pack - Overlayr">
+    <div class="buy-wrapper">
+        <div class="buy-card">
+            <h1 id="buy-title" class="buy-title">Buying a pack</h1>
+            <p id="buy-text" class="buy-text">Taking you to the payment page…</p>
+            <button id="btn-retry" class="buy-btn hidden">Go to payment</button>
+        </div>
+    </div>
+</Layout>
+
+<style>
+    .buy-wrapper {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 80vh;
+        padding: 2rem 1rem;
+    }
+
+    .buy-card {
+        background-color: #ffffff;
+        color: #1a1a1a;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        border-radius: 1.5rem;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.06);
+        padding: 2.5rem;
+        max-width: 28rem;
+        width: 100%;
+        text-align: center;
+    }
+
+    .buy-title {
+        font-size: 1.5rem;
+        margin: 0 0 1rem;
+        color: #111;
+    }
+
+    .buy-text {
+        color: #555;
+        line-height: 1.6;
+        margin: 0;
+    }
+
+    .buy-text.error {
+        color: #dc2626;
+    }
+
+    .buy-btn {
+        margin-top: 1.5rem;
+        width: 100%;
+        padding: 0.75rem 1rem;
+        border: none;
+        border-radius: 0.5rem;
+        font-weight: 600;
+        cursor: pointer;
+        color: white;
+        background: linear-gradient(135deg, #ec4899, #8b5cf6);
+    }
+
+    .hidden {
+        display: none;
+    }
+</style>
+
+<script>
+    import { onUser, postAsUser } from "../lib/session";
+
+    // The desktop app opens /buy?pack=<id>. Stripe comes back here with
+    // &session=<id> after paying, or &cancelled=1.
+    const params = new URLSearchParams(window.location.search);
+    const pack = params.get("pack") ?? "";
+    const title = document.getElementById("buy-title")!;
+    const text = document.getElementById("buy-text")!;
+    const retry = document.getElementById("btn-retry")!;
+
+    function show(heading: string, body: string, error = false) {
+        title.textContent = heading;
+        text.textContent = body;
+        text.classList.toggle("error", error);
+    }
+
+    async function checkout() {
+        retry.classList.add("hidden");
+        show("Buying a pack", "Taking you to the payment page…");
+        const response = await postAsUser("/api/marketplace/checkout", { id: pack });
+        const body = await response.json().catch(() => ({}));
+        if (response.ok && body.url) {
+            window.location.href = body.url;
+            return;
+        }
+        show("Could not start the payment", body.error || "Try again in a moment.", true);
+        retry.classList.remove("hidden");
+    }
+
+    /** Waits for Stripe's confirmation to reach Overlayr (PromptPay can take a moment). */
+    async function confirmPurchase() {
+        show("Payment received", "Confirming your purchase…");
+        for (let attempt = 0; attempt < 20; attempt++) {
+            const response = await fetch("/api/marketplace/owned", { credentials: "same-origin" });
+            const owned: string[] = response.ok ? (await response.json()).packs : [];
+            if (owned.includes(pack)) {
+                show("Pack bought", "Go back to Overlayr and press Install. You can close this tab.");
+                return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+        show(
+            "Still confirming",
+            "Stripe hasn't confirmed the payment yet. Try Install in Overlayr in a few minutes; if it still says to buy the pack, contact support.",
+        );
+    }
+
+    retry.addEventListener("click", checkout);
+
+    onUser((user) => {
+        if (!pack) {
+            show("No pack selected", "Open the pack in Overlayr's Marketplace and press Buy.", true);
+            return;
+        }
+        if (!user) {
+            const here = window.location.pathname + window.location.search;
+            window.location.href = `/login?callback=${encodeURIComponent(here)}`;
+            return;
+        }
+        if (params.get("session")) confirmPurchase();
+        else if (params.get("cancelled")) {
+            show("Payment cancelled", "You weren't charged.");
+            retry.classList.remove("hidden");
+        } else checkout();
+    });
+</script>

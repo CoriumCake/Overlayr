@@ -1,6 +1,7 @@
 ---
 import ContactTemplate from "../../components/templates/Contact.astro";
 import { languages } from "../../i18n/ui";
+import type { Lang } from "../../i18n/ui";
 
 export function getStaticPaths() {
     const keys = Object.keys(languages);
@@ -12,4 +13,4 @@ export function getStaticPaths() {
 const { lang } = Astro.params;
 ---
 
-<ContactTemplate lang={lang as "ja" | "es"} />
+<ContactTemplate lang={lang as Lang} />

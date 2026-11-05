@@ -99,67 +99,90 @@ import Layout from "../layouts/Layout.astro";
 </style>
 
 <script>
-  import {
-    GoogleAuthProvider,
-    signInWithPopup,
-    onAuthStateChanged,
-  } from "firebase/auth";
-  import { auth } from "../lib/firebase";
+  import { currentUser, onUser, signInWithGoogle } from "../lib/session";
 
   const btn = document.getElementById("btn-google");
   const status = document.getElementById("status");
+  const params = new URLSearchParams(window.location.search);
+  // "desktop" hands the login to the Overlayr app; "web" or a same-site URL
+  // returns there; none goes to the profile.
+  const callback = params.get("callback");
+  let handled = false;
 
-  onAuthStateChanged(auth, (user) => {
-    if (user) {
-      const urlParams = new URLSearchParams(window.location.search);
-      const callback = urlParams.get("callback");
-      // If no special callback (like desktop auth), go to profile
-      if (!callback) {
-        window.location.href = "/profile";
-      }
+  function showStatus(text: string, error = false) {
+    if (!status) return;
+    status.innerText = text;
+    status.classList.remove("hidden");
+    status.classList.toggle("text-red-500", error);
+  }
+
+  /** Where a web login goes afterwards, as a site path. */
+  function destination() {
+    if (!callback) return "/profile";
+    if (callback === "web") return "/";
+    try {
+      const url = new URL(callback, window.location.origin);
+      if (url.origin === window.location.origin) return url.pathname + url.search;
+    } catch {}
+    return "/";
+  }
+
+  function openApp(login: { token: string; uid: string; refreshToken: string }) {
+    const deepLink =
+      `overlayr://auth?token=${encodeURIComponent(login.token)}` +
+      `&uid=${encodeURIComponent(login.uid)}` +
+      `&refresh=${encodeURIComponent(login.refreshToken)}`;
+    showStatus("Opening Overlayr…");
+    window.location.href = deepLink;
+    setTimeout(() => showStatus("Opened Overlayr? You can close this tab."), 3000);
+  }
+
+  // Coming back from Google for the app: the tokens are in the fragment,
+  // which never reaches a server. Take them out of the address bar first.
+  const fragment = new URLSearchParams(window.location.hash.slice(1));
+  if (callback === "desktop" && fragment.get("token")) {
+    handled = true;
+    history.replaceState(null, "", window.location.pathname + window.location.search);
+    openApp({
+      token: fragment.get("token")!,
+      uid: fragment.get("uid") ?? "",
+      refreshToken: fragment.get("refresh") ?? "",
+    });
+  }
+  if (params.get("error")) showStatus(params.get("error")!, true);
+
+  async function continueToApp() {
+    const response = await fetch("/api/auth/desktop", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (!response.ok) {
+      window.location.href = "/api/auth/google?return=desktop";
+      return;
     }
+    openApp(await response.json());
+  }
+
+  onUser((user) => {
+    if (!user || handled) return;
+    if (callback === "desktop") {
+      if (btn) btn.lastChild!.textContent = ` Continue to Overlayr as ${user.displayName || user.email}`;
+      return;
+    }
+    handled = true;
+    window.location.href = destination();
   });
 
-  btn?.addEventListener("click", async () => {
-    try {
-      if (status) {
-        status.innerText = "Opening popup...";
-        status.classList.remove("hidden");
-      }
-
-      const provider = new GoogleAuthProvider();
-      const result = await signInWithPopup(auth, provider);
-      const user = result.user;
-      const token = await user.getIdToken();
-
-      if (status) status.innerText = "Success! Redirecting...";
-
-      // Check for callback param
-      const urlParams = new URLSearchParams(window.location.search);
-      const callback = urlParams.get("callback");
-
-      if (callback === "desktop") {
-        // Desktop Deep Link Redirect
-        // Format: overlayr://auth?token=...&uid=...
-        const deepLink = `overlayr://auth?token=${token}&uid=${user.uid}`;
-        console.log("Redirecting to:", deepLink);
-        window.location.href = deepLink;
-
-        setTimeout(() => {
-          if (status)
-            status.innerText = "Opened Overlayr? You can close this tab.";
-        }, 3000);
-      } else {
-        // Normal web login, go to dashboard/pricing
-        window.location.href = "/";
-      }
-    } catch (error: any) {
-      console.error(error);
-      if (status) {
-        status.innerText = "Error: " + error.message;
-        status.classList.add("text-red-500");
-        status.classList.remove("text-yellow-400");
-      }
+  btn?.addEventListener("click", () => {
+    if (callback === "desktop") {
+      handled = true;
+      if (currentUser()) continueToApp();
+      else window.location.href = "/api/auth/google?return=desktop";
+      return;
     }
+    showStatus("Redirecting to Google…");
+    signInWithGoogle(destination());
   });
 </script>

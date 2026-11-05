@@ -1,0 +1,489 @@
+name: Release
+
+# Builds the desktop app for every platform and publishes it on overlayr.app.
+# Push a tag matching the version in rust/Cargo.toml to release it:
+#
+#   git tag -a v0.2.0 -m "Release notes, one change per line"
+#   git push origin v0.2.0
+#
+# The installers go to the overlayr-releases R2 bucket under v<version>/, and
+# latest.json there makes overlayr.app/download serve them. Needs the
+# CLOUDFLARE_API_TOKEN (with R2 edit access) and CLOUDFLARE_ACCOUNT_ID secrets.
+# AUR_SSH_PRIVATE_KEY publishes the overlayr-bin AUR package (see the aur job).
+#
+# Signing runs once its secrets are added; until then the installers are
+# unsigned, and Windows and macOS warn before opening them.
+#
+#   Windows (SSL.com eSigner cloud signing): ES_USERNAME and ES_PASSWORD
+#     (the SSL.com account), ES_CREDENTIAL_ID (the certificate's eSigner
+#     credential) and ES_TOTP_SECRET (the secret code shown with the eSigner
+#     QR code when the certificate is enrolled). Only Overlayr's own files
+#     are signed, overlayr.exe and the installer, on tagged releases and
+#     manual runs, to stay within the eSigner plan's monthly signatures.
+#   macOS (Developer ID, then notarization): MACOS_CERTIFICATE (the
+#     Developer ID Application .p12, base64-encoded),
+#     MACOS_CERTIFICATE_PASSWORD, MACOS_SIGNING_IDENTITY ("Developer ID
+#     Application: Name (TEAMID)"), APPLE_ID, APPLE_APP_PASSWORD (an
+#     app-specific password from account.apple.com) and APPLE_TEAM_ID.
+
+on:
+  push:
+    tags: ["v*"]
+  # Test installers, kept as workflow artifacts and never published: from
+  # the Actions tab, or on pull requests that change the packaging.
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".github/workflows/release.yml"
+      - "rust/src/bundle.rs"
+
+permissions:
+  contents: read
+
+# Releases run one at a time and are never cancelled; a new push to a pull
+# request replaces the test build still going for the old one.
+concurrency:
+  group: release-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Release builds update themselves from overlayr.app (rust/src/updater.rs).
+  OVERLAYR_RELEASE: "1"
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches Cargo.toml
+        id: version
+        run: |
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -n 1)
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            # A test build: the version with the commit, e.g. 0.2.0-test.1a2b3c4.
+            echo "version=$cargo_version-test.${GITHUB_SHA::7}" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$cargo_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match version $cargo_version in rust/Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+  linux:
+    needs: version
+    # The oldest supported runner, so the binary runs on older distributions.
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux windowing dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxkbcommon-dev libxrandr-dev libxi-dev libxinerama-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # The portable build: grim/slurp capture and the Tesseract command, so
+      # it doesn't depend on the build machine's Tesseract libraries.
+      - name: Build
+        working-directory: rust
+        run: cargo build --release
+      - name: Package
+        run: |
+          name="Overlayr-$VERSION-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp rust/target/release/overlayr packaging/overlayr.desktop packaging/overlayr.svg \
+            packaging/linux/install.sh "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+      # What the site offers Linux players; the tarball stays for the AUR
+      # package and older installs that update from it.
+      - name: Build the AppImage
+        run: packaging/linux/build-appimage.sh rust/target/release/overlayr "$VERSION" dist
+      - name: Start the AppImage like a player would
+        run: |
+          appimage="dist/Overlayr-$VERSION-linux-x86_64.AppImage"
+          # The static runtime needs no FUSE 2; this runs it the normal way.
+          sudo apt-get install --no-install-recommends -y fuse3
+          "$appimage" --version | tee version.txt
+          # Test builds are versioned "0.1.2-test.<commit>"; the program
+          # reports its own version, 0.1.2.
+          grep -q "${VERSION%%-test*}" version.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.tar.gz
+            dist/*.AppImage
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # Signs on releases and manual runs once the eSigner secrets are set,
+      # not on pull requests: each signature counts against the plan.
+      SIGN: ${{ secrets.ES_USERNAME != '' && github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build
+        working-directory: rust
+        run: cargo build --release --features native-capture
+      - name: Bundle Tesseract and the neural OCR engine
+        shell: bash
+        run: packaging/fetch-ocr.sh windows rust/target/release/ocr
+      - name: Sign Overlayr
+        if: env.SIGN == 'true'
+        uses: sslcom/esigner-codesign@v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.ES_USERNAME }}
+          password: ${{ secrets.ES_PASSWORD }}
+          credential_id: ${{ secrets.ES_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
+          file_path: ${{ github.workspace }}/rust/target/release/overlayr.exe
+          override: true
+          malware_block: false
+          environment_name: PROD
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          & $iscc "/DVersion=$env:VERSION" "/DSource=$PWD\rust\target\release" packaging\windows\overlayr.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+      # The runner has the Visual C++ runtime and many tools' DLLs on PATH,
+      # which a gamer's PC doesn't: check that every program in the install
+      # finds each library it loads in its own folder or in Windows itself.
+      - name: Install like a player would
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem rust\target\windows\*.exe | Select-Object -First 1).FullName
+          # A Thai folder name, like a Thai Windows user name.
+          $dir = Join-Path $env:RUNNER_TEMP "ผู้เล่น\Overlayr"
+          Start-Process -Wait -FilePath $installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$dir`""
+          if (-not (Test-Path "$dir\overlayr.exe")) { throw "the installer didn't install Overlayr" }
+          "INSTALLED=$dir" >> $env:GITHUB_ENV
+      - name: Check every program finds its libraries
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -Last 1
+          # Libraries every Windows 10 and 11 has. The C++ runtimes aren't.
+          $notWindows = '^(vcruntime|msvcp|concrt|vccorlib|vcomp|msvcr1|ucrtbased)'
+          $missing = @()
+          $programs = Get-ChildItem $env:INSTALLED -Recurse -Include *.exe, *.dll
+          foreach ($program in $programs) {
+            $imports = & $dumpbin.FullName /nologo /dependents $program.FullName |
+              Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim() }
+            foreach ($library in $imports) {
+              $here = Test-Path (Join-Path $program.DirectoryName $library)
+              # A DLL loaded by its full path finds its libraries next to overlayr.exe.
+              $app = Test-Path (Join-Path $env:INSTALLED $library)
+              $windows = ($library -match '^(api|ext)-ms-') -or
+                ((Test-Path "$env:windir\System32\$library") -and ($library -notmatch $notWindows))
+              if (-not ($here -or $windows -or ($app -and $program.Extension -eq '.dll'))) {
+                $missing += "$($program.Name) needs $library"
+              }
+            }
+          }
+          if ($missing) { $missing; throw "libraries missing from the install" }
+          "All $($programs.Count) programs find their libraries"
+      # OCR from the installed app, with PATH cut down to Windows' own folders
+      # and Overlayr's data in a Thai folder: the bundled neural engine, the
+      # bundled Tesseract (with a downloaded model), and languages whose
+      # models download on first use.
+      - name: Read text like a player would
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          function Render($text, $font, $path) {
+            $bitmap = New-Object System.Drawing.Bitmap 900, 140
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $graphics.Clear([System.Drawing.Color]::White)
+            $graphics.TextRenderingHint = 'AntiAliasGridFit'
+            $graphics.DrawString($text, (New-Object System.Drawing.Font $font, 40), [System.Drawing.Brushes]::Black, 20, 30)
+            $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+          }
+          $images = Join-Path $env:RUNNER_TEMP "images"
+          New-Item -ItemType Directory -Force $images | Out-Null
+          Render "Hello Overlayr 123" "Segoe UI" "$images\en.png"
+          Render "안녕하세요 세계" "Malgun Gothic" "$images\ko.png"
+          Render "สวัสดีชาวโลก" "Leelawadee UI" "$images\th.png"
+          $env:PATH = "$env:windir\System32;$env:windir"
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "ผู้เล่น\AppData"
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $failed = $false
+          foreach ($test in @(
+            @("en", "auto", "PaddleOCR", "Hello"),
+            @("en", "tesseract", "Tesseract", "Hello"),
+            @("ko", "auto", "PaddleOCR", "안녕"),
+            @("th", "auto", "PaddleOCR", "สวัสดี"))) {
+            $language, $engine, $expectEngine, $expectText = $test
+            $output = Join-Path $env:RUNNER_TEMP "ocr-$language-$engine.txt"
+            $process = Start-Process -Wait -PassThru -NoNewWindow -FilePath "$env:INSTALLED\overlayr.exe" `
+              -ArgumentList "--ocr-test", "$images\$language.png", $language, $engine `
+              -RedirectStandardOutput $output
+            $text = Get-Content -Raw -Encoding utf8 $output
+            "$language/$engine (exit $($process.ExitCode)): $text"
+            if ($process.ExitCode -ne 0 -or -not $text.StartsWith($expectEngine) -or -not $text.Contains($expectText)) {
+              $failed = $true
+            }
+          }
+          if ($failed) { throw "OCR doesn't work out of the box" }
+      - name: Find the installer
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem rust\target\windows\*.exe | Select-Object -First 1).FullName
+          "INSTALLER=$installer" >> $env:GITHUB_ENV
+      - name: Sign the installer
+        if: env.SIGN == 'true'
+        uses: sslcom/esigner-codesign@v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.ES_USERNAME }}
+          password: ${{ secrets.ES_PASSWORD }}
+          credential_id: ${{ secrets.ES_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
+          file_path: ${{ env.INSTALLER }}
+          override: true
+          malware_block: false
+          environment_name: PROD
+      - name: Check the signatures
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: |
+          foreach ($file in @("rust\target\release\overlayr.exe", $env:INSTALLER)) {
+            $signature = Get-AuthenticodeSignature $file
+            "$file : $($signature.Status) $($signature.SignerCertificate.Subject)"
+            if ($signature.Status -ne "Valid") { throw "$file isn't signed" }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: rust/target/windows/*.exe
+          if-no-files-found: error
+
+  # Tesseract for Intel Macs, built on one: Homebrew's Intel build with its
+  # libraries. Packed with tar, which keeps the programs executable.
+  macos-intel-ocr:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gather Tesseract for Intel Macs
+        run: |
+          packaging/fetch-ocr.sh macos-intel ocr-x86_64
+          tar -czf macos-intel-ocr.tgz ocr-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-intel-ocr
+          path: macos-intel-ocr.tgz
+          retention-days: 1
+          if-no-files-found: error
+
+  macos:
+    needs: [version, macos-intel-ocr]
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # Gates the signing steps.
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install the icon renderer
+        run: brew install librsvg
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-intel-ocr
+      - name: Add the Developer ID certificate
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(openssl rand -hex 16)
+          echo "$MACOS_CERTIFICATE" | base64 --decode >"$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+          echo "OVERLAYR_SIGN_IDENTITY=$MACOS_SIGNING_IDENTITY" >>"$GITHUB_ENV"
+      - name: Build Overlayr.app and the disk image
+        run: |
+          tar -xzf macos-intel-ocr.tgz
+          OVERLAYR_INTEL_OCR="$PWD/ocr-x86_64" packaging/macos/build-app.sh
+          mv rust/target/macos/Overlayr.dmg "rust/target/macos/Overlayr-$VERSION-macos.dmg"
+      - name: Notarize the disk image
+        if: env.OVERLAYR_SIGN_IDENTITY != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          dmg="rust/target/macos/Overlayr-$VERSION-macos.dmg"
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: rust/target/macos/*.dmg
+          if-no-files-found: error
+
+  publish:
+    needs: [version, linux, windows, macos]
+    # Only tagged releases reach overlayr.app. GitHub sometimes has no Apple
+    # Silicon Macs free and drops the macOS build; Windows and Linux still
+    # ship then, and macOS keeps offering the previous release's app.
+    if: >-
+      always() && github.ref_type == 'tag'
+      && needs.linux.result == 'success' && needs.windows.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The tag's message holds the release notes.
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Keep only the installers
+        run: rm -f dist/macos-intel-ocr.tgz
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch the previous release
+        run: |
+          npx --yes wrangler@4 r2 object get overlayr-releases/latest.json \
+            --file previous.json --remote || echo '{}' >previous.json
+      - name: Write latest.json
+        run: |
+          # Checkout leaves a lightweight copy of the tag, without its message.
+          git fetch --force origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents)' >notes.txt
+          python3 - <<'EOF'
+          import datetime, hashlib, json, os, pathlib
+          version = os.environ["VERSION"]
+          files = {}
+          for path in sorted(pathlib.Path("dist").iterdir()):
+              platform = ("windows" if path.name.endswith(".exe")
+                          else "macos" if path.name.endswith(".dmg")
+                          else "appimage" if path.name.endswith(".AppImage")
+                          else "linux")
+              files[platform] = {
+                  "name": path.name,
+                  "size": path.stat().st_size,
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+              }
+          # One change per line; a signature block, if any, isn't notes.
+          notes = []
+          for line in pathlib.Path("notes.txt").read_text().splitlines():
+              if line.startswith("-----BEGIN"):
+                  break
+              line = line.strip().lstrip("-* ").strip()
+              if line:
+                  notes.append(line)
+          # A platform that didn't build keeps the previous release's file.
+          carried = {}
+          previous = json.loads(pathlib.Path("previous.json").read_text())
+          for platform, file in previous.get("files", {}).items():
+              if platform not in files:
+                  files[platform] = file
+                  carried[platform] = f"v{previous['version']}/{file['name']}"
+          pathlib.Path("carried.txt").write_text(
+              "".join(f"{source} v{version}/{pathlib.PurePath(source).name}\n"
+                      for source in carried.values()))
+          release = {
+              "version": version,
+              "date": datetime.date.today().isoformat(),
+              "notes": notes,
+              "files": files,
+          }
+          pathlib.Path("latest.json").write_text(json.dumps(release, indent=2))
+          print(json.dumps(release, indent=2))
+          EOF
+      # The installers first, then latest.json, so the site never points at
+      # files that aren't there yet.
+      - name: Upload to overlayr.app
+        run: |
+          for file in dist/*; do
+            npx --yes wrangler@4 r2 object put "overlayr-releases/v$VERSION/$(basename "$file")" \
+              --file "$file" --content-type application/octet-stream --remote
+          done
+          # Copies of the files carried over from the previous release.
+          while read -r source target; do
+            npx --yes wrangler@4 r2 object get "overlayr-releases/$source" --file carried.bin --remote
+            npx --yes wrangler@4 r2 object put "overlayr-releases/$target" \
+              --file carried.bin --content-type application/octet-stream --remote
+          done <carried.txt
+          npx --yes wrangler@4 r2 object put overlayr-releases/latest.json \
+            --file latest.json --content-type application/json --remote
+
+  # The AUR package overlayr-bin (packaging/arch/PKGBUILD), so Arch players
+  # install with `yay -S overlayr-bin` and update with their system. Runs
+  # once the AUR_SSH_PRIVATE_KEY secret holds a key added to the AUR account
+  # that maintains the package; skipped until then.
+  aur:
+    needs: [version, publish]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+      - uses: actions/download-artifact@v4
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        with:
+          name: linux
+          path: dist
+      - name: Point the PKGBUILD at this release
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        run: |
+          sum=$(sha256sum "dist/Overlayr-$VERSION-linux-x86_64.tar.gz" | cut -d' ' -f1)
+          sed -i -e "s/^pkgver=.*/pkgver=$VERSION/" -e "s/^pkgrel=.*/pkgrel=1/" \
+            -e "s/^sha256sums=.*/sha256sums=('$sum')/" packaging/arch/PKGBUILD
+          cat packaging/arch/PKGBUILD
+      - uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        with:
+          pkgname: overlayr-bin
+          pkgbuild: packaging/arch/PKGBUILD
+          commit_username: coriumcake
+          commit_email: catcode.business@gmail.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ env.VERSION }}"
+          test: true

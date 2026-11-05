@@ -1,0 +1,31 @@
+# Maintainer: coriumcake <catcode.business@gmail.com>
+#
+# The AUR package overlayr-bin, from the portable Linux release. The release
+# workflow (.github/workflows/release.yml) fills in pkgver and the checksum
+# and pushes it to the AUR on every tagged release.
+pkgname=overlayr-bin
+pkgver=0.1.2
+pkgrel=1
+pkgdesc="Real-time screen translation overlay for games and manga"
+arch=('x86_64')
+url="https://overlayr.app"
+license=('MIT')
+# The windowing libraries are loaded at run time, so they're listed by hand.
+depends=('gcc-libs' 'glibc' 'hicolor-icon-theme' 'libglvnd' 'libx11' 'libxcursor'
+         'libxi' 'libxkbcommon' 'libxrandr' 'wayland' 'xdg-utils')
+optdepends=('grim: screen capture on Wayland'
+            'slurp: picking a screen region on Wayland'
+            'tesseract: OCR for languages without a neural model'
+            'tesseract-data-eng: English text for Tesseract')
+provides=('overlayr')
+conflicts=('overlayr')
+options=('!strip' '!debug')
+source=("https://overlayr.app/releases/$pkgver/Overlayr-$pkgver-linux-x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    cd "Overlayr-$pkgver-linux-x86_64"
+    install -Dm755 overlayr "$pkgdir/usr/bin/overlayr"
+    install -Dm644 overlayr.desktop "$pkgdir/usr/share/applications/overlayr.desktop"
+    install -Dm644 overlayr.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/overlayr.svg"
+}

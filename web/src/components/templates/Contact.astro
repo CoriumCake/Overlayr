@@ -1,10 +1,12 @@
 ---
 import Layout from "../../layouts/Layout.astro";
+import Contact from "../sections/Contact.astro";
 import { SITE } from "../../siteConfig";
 import { useTranslations } from "../../i18n/ui";
+import type { Lang } from "../../i18n/ui";
 
 interface Props {
-    lang: "en" | "ja" | "es";
+    lang: Lang;
 }
 
 const { lang } = Astro.props;
@@ -12,102 +14,13 @@ const t = useTranslations(lang);
 ---
 
 <Layout title={`${t("contact.title")} - ${SITE.title}`}>
-    <section class="contact-page">
-        <div class="container">
-            <h1>{t("contact.title")}</h1>
-            <p class="subtitle">{t("contact.subtitle")}</p>
-
-            <div class="grid">
-                <!-- Discord Community -->
-                <div class="glass-panel card">
-                    <div class="icon">💬</div>
-                    <h2>{t("contact.discord")}</h2>
-                    <p>{t("contact.discord.desc")}</p>
-                    <a href="#" class="link">{t("contact.discord.action")}</a>
-                </div>
-
-                <!-- GitHub -->
-                <div class="glass-panel card">
-                    <div class="icon">🐛</div>
-                    <h2>{t("contact.github")}</h2>
-                    <p>{t("contact.github.desc")}</p>
-                    <a href={SITE.issues} class="link"
-                        >{t("contact.github.action")}</a
-                    >
-                </div>
-
-                <!-- Email Support -->
-                <div class="glass-panel card">
-                    <div class="icon">✉️</div>
-                    <h2>{t("contact.email")}</h2>
-                    <p>{t("contact.email.desc")}</p>
-                    <a href={`mailto:${SITE.email}`} class="link"
-                        >{SITE.email}</a
-                    >
-                </div>
-            </div>
-        </div>
-    </section>
+    <div class="contact-page">
+        <Contact lang={lang} />
+    </div>
 </Layout>
 
 <style>
     .contact-page {
-        padding-top: calc(var(--header-height) + var(--space-lg));
-        padding-bottom: var(--space-xl);
-        text-align: center;
-    }
-
-    .subtitle {
-        font-size: var(--text-h3);
-        color: var(--color-text-muted);
-        margin-bottom: var(--space-lg);
-    }
-
-    .grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-        gap: var(--space-md);
-        max-width: 1000px;
-        margin-inline: auto;
-    }
-
-    .card {
-        padding: var(--space-lg);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 1rem;
-        transition: transform 0.3s ease;
-    }
-
-    .card:hover {
-        transform: translateY(-5px);
-        background: var(--glass-bg-hover);
-    }
-
-    .icon {
-        font-size: 3rem;
-    }
-
-    h2 {
-        font-size: 1.5rem;
-        color: var(--color-primary-glow);
-    }
-
-    p {
-        color: var(--color-text-muted);
-    }
-
-    .link {
-        color: var(--color-primary);
-        font-weight: bold;
-        font-size: 1.1rem;
-        text-decoration: underline;
-        text-decoration-thickness: 2px;
-        text-underline-offset: 4px;
-    }
-
-    .link:hover {
-        color: var(--color-accent);
+        padding-top: var(--header-height);
     }
 </style>

@@ -1,6 +1,6 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
-import vercel from '@astrojs/vercel';
+import cloudflare from '@astrojs/cloudflare';
 
 import sitemap from '@astrojs/sitemap';
 
@@ -8,15 +8,18 @@ import sitemap from '@astrojs/sitemap';
 export default defineConfig({
     vite: {
         envDir: '..',
+        ssr: {
+            // Provided by the Workers runtime (nodejs_compat).
+            external: ['node:buffer'],
+        },
     },
-    site: 'https://overlayr.catcode.tech',
+    site: 'https://overlayr.app',
     // Astro 5: 'hybrid' is removed, use 'static'. 
     // Individual routes use 'export const prerender = false' for SSR.
     output: 'static',
-    adapter: vercel({
-        webAnalytics: {
-            enabled: false,
-        },
+    // Runs on Cloudflare Workers; bindings and secrets are in wrangler.jsonc.
+    adapter: cloudflare({
+        imageService: 'passthrough',
     }),
     compressHTML: true,
 

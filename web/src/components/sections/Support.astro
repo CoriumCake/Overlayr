@@ -1,8 +1,9 @@
 ---
 import { useTranslations } from "../../i18n/ui";
+import type { Lang } from "../../i18n/ui";
 
 interface Props {
-    lang: "en" | "ja" | "es";
+    lang: Lang;
 }
 
 const { lang } = Astro.props;
@@ -44,18 +45,18 @@ const t = useTranslations(lang);
     h1 {
         text-align: center;
         margin-bottom: var(--space-md);
-        font-size: var(--text-h1);
+        font-size: var(--text-h2);
     }
 
     .subtitle {
         text-align: center;
         color: var(--color-text-muted);
-        margin-bottom: var(--space-xl);
+        margin-bottom: var(--space-lg);
         font-size: var(--text-h3);
     }
 
     .faq-grid {
-        max-width: 1000px;
+        max-width: 820px;
         margin-inline: auto;
         display: flex;
         flex-direction: column;
@@ -63,25 +64,21 @@ const t = useTranslations(lang);
     }
 
     .faq-item {
-        background: rgba(255, 255, 255, 0.9);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 1px solid rgba(255, 255, 255, 0.5);
-        border-radius: 1rem;
-        box-shadow:
-            0 20px 40px -10px rgba(0, 0, 0, 0.1),
-            0 0 20px rgba(255, 255, 255, 0.2);
+        background: var(--card-bg);
+        border: 1px solid var(--glass-border);
+        border-radius: 1.25rem;
+        box-shadow: var(--glass-shadow);
         padding: 0;
         overflow: hidden;
         margin-bottom: 1rem;
     }
 
     summary {
-        padding: var(--space-md) var(--space-lg);
+        padding: 1.1rem 1.5rem;
         cursor: pointer;
         font-weight: 600;
-        font-size: 1.125rem;
-        color: #1a1a1a; /* Force dark text */
+        font-size: 1rem;
+        color: var(--color-text-main);
         background: transparent;
         transition: background 0.2s;
         border-bottom: 1px solid transparent;
@@ -96,12 +93,12 @@ const t = useTranslations(lang);
     summary::after {
         content: "+";
         position: absolute;
-        right: var(--space-lg);
+        right: 1.5rem;
         font-weight: 300;
         font-size: 1.5rem;
         line-height: 1;
         transition: transform 0.3s;
-        color: #1a1a1a;
+        color: var(--color-text-muted);
     }
 
     details[open] summary::after {
@@ -109,17 +106,17 @@ const t = useTranslations(lang);
     }
 
     details[open] summary {
-        background: rgba(0, 0, 0, 0.05);
-        border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+        background: var(--glass-bg-hover);
+        border-bottom: 1px solid var(--glass-border);
     }
 
     summary:hover {
-        background: rgba(0, 0, 0, 0.02);
+        background: var(--glass-bg);
     }
 
     .faq-item p {
-        padding: var(--space-md) var(--space-lg);
-        color: #333; /* Force dark muted text */
+        padding: 1.1rem 1.5rem;
+        color: var(--color-text-muted);
         line-height: 1.6;
     }
 </style>

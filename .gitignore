@@ -21,6 +21,9 @@ venv/
 build/
 dist/
 
+# Rust
+target/
+
 # IDE
 .vscode/
 .idea/
@@ -32,8 +35,7 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# Vercel & Astro
-.vercel/
+# Astro
 .output/
 .astro/
 
@@ -50,3 +52,11 @@ debug_images/
 
 # Test output
 test_output.txt
+
+# Cloudflare / Wrangler local files
+.dev.vars
+.wrangler/
+web/dist/
+
+# Research (private until publication)
+research/

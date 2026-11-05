@@ -1,108 +1,615 @@
 ---
-import DownloadButton from "./DownloadButton.astro";
+import { getRelativeLocaleUrl } from "astro:i18n";
 import { useTranslations } from "../i18n/ui";
+import type { Lang } from "../i18n/ui";
 
 interface Props {
-    lang?: "en" | "ja" | "es";
+    lang?: Lang;
 }
 
 const { lang = "en" } = Astro.props;
 const t = useTranslations(lang);
+const downloadsUrl = getRelativeLocaleUrl(lang, "downloads");
+const titleWords = [t("hero.title.1"), t("hero.title.2")];
 ---
 
+<!-- Runs before the hero paints: hide the content only when the intro will play. -->
+<script is:inline>
+    (function () {
+        try {
+            var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            var seen = false;
+            try { seen = sessionStorage.getItem("ovl-intro") === "1"; } catch (e) {}
+            if (!reduce && !seen) document.documentElement.classList.add("intro");
+        } catch (e) {}
+    })();
+</script>
+
+<div class="loader" aria-hidden="true">
+    <div class="loader-orb"></div>
+    <p class="loader-count"><span id="loader-num">0</span>%</p>
+</div>
+
 <section class="hero">
-    <!-- Subtle Background Elements -->
+    <div class="bokeh rv" style="--d: 0ms" aria-hidden="true"></div>
 
-    <div class="container hero-container">
-        <div class="content-wrapper">
+    <div class="container hero-grid">
+        <div class="copy">
+            <p class="eyebrow rv" style="--d: 260ms">{t("hero.eyebrow")}</p>
             <h1 class="title">
-                {t("hero.title")}
+                {titleWords.map((w, i) => (
+                    <span class="word rv-blur" style={`--d: ${300 + i * 140}ms`}>{w}</span>
+                ))}
             </h1>
-            <p class="subtitle">
-                {t("hero.subtitle")}
-            </p>
+            <p class="subtitle rv" style="--d: 620ms">{t("hero.subtitle")}</p>
 
-            <div class="cta-wrapper">
-                <DownloadButton version="2.0.0" checksum="a1b2c3d4e5f6..." />
-                <p class="compatibility">{t("hero.compatibility")}</p>
+            <div class="actions rv" style="--d: 720ms">
+                <a class="btn btn-solid" href={downloadsUrl}>{t("hero.cta")}</a>
+                <a class="btn btn-ghost" href="#features">{t("hero.secondary")}</a>
             </div>
+
+            <div class="platforms rv" style="--d: 820ms">
+                <p class="platforms-label">{t("hero.available")}</p>
+                <ul>
+                    <li>
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 5.1 10.4 4v7.2H3V5.1Zm0 13.8 7.4 1.1v-7.1H3v6Zm8.3 1.2L21 21.5v-8.6h-9.7v7.2Zm0-16.2v7.3H21V2.5l-9.7 1.4Z"/></svg>
+                        Windows
+                    </li>
+                    <li>
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.4 12.6c0-2.4 2-3.6 2.1-3.7-1.2-1.7-3-1.9-3.6-2-1.5-.2-3 .9-3.8.9-.8 0-2-.9-3.3-.9-1.7 0-3.3 1-4.2 2.5-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.2 2.6 1.3-.1 1.8-.8 3.3-.8 1.6 0 2 .8 3.4.8 1.4 0 2.300-1.300 3.200-2.500 1-1.400 1.400-2.800 1.400-2.900-.1 0-2.900-1.100-3-4.200ZM13.900 5.200c.700-.900 1.200-2 1.100-3.200-1 0-2.300.700-3 1.500-.700.700-1.300 1.900-1.100 3.100 1.100.100 2.300-.600 3-1.400Z"/></svg>
+                        macOS
+                    </li>
+                    <li>
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2c-2.2 0-3.6 1.800-3.600 4.300 0 1.300.300 2.300.200 3.300-.100 1-1.300 2.300-2.300 3.900-1 1.700-1.400 3.300-.800 4.500-.900.300-1.700.900-1.500 1.700.300 1.200 2.100.900 3.100 1.400 1 .500 1.900.900 2.700.500.500-.200.700-.700.800-1.100h2.800c.100.400.300.900.800 1.100.800.400 1.700 0 2.700-.500 1-.500 2.800-.200 3.100-1.400.200-.800-.600-1.400-1.500-1.700.600-1.200.200-2.800-.800-4.500-1-1.600-2.200-2.900-2.300-3.900-.100-1 .200-2 .200-3.300C15.600 3.800 14.200 2 12 2Zm-1.500 4.200c.400 0 .700.500.700 1.100 0 .600-.300 1.100-.700 1.100s-.700-.500-.700-1.100c0-.600.300-1.100.700-1.100Zm3 0c.400 0 .700.500.700 1.100 0 .600-.300 1.100-.700 1.100s-.700-.500-.700-1.100c0-.600.300-1.100.700-1.100ZM12 9.300c.900 0 2 .600 2 .900 0 .400-1.100 1.100-2 1.100s-2-.700-2-1.100c0-.300 1.100-.900 2-.900Z"/></svg>
+                        Linux
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="art rv" style="--d: 0ms" aria-label={t("hero.demo.alt")} role="img">
+            <div class="orb-light"></div>
+            <span class="shard s1"></span>
+            <span class="shard s2"></span>
+            <span class="shard s3"></span>
+
+            <div class="window">
+                <div class="window-bar">
+                    <span></span><span></span><span></span>
+                    <p>{t("hero.demo.game")}</p>
+                </div>
+                <div class="scene">
+                    <div class="moon"></div>
+                    <div class="hill far"></div>
+                    <div class="hill near"></div>
+                    <div class="tree t1"></div>
+                    <div class="tree t2"></div>
+                    <div class="tree t3"></div>
+
+                    <div class="dialog">
+                        <p class="speaker">{t("hero.demo.speaker")}</p>
+                        <div class="lines">
+                            <p class="line src">{t("hero.demo.src")}</p>
+                            <p class="line dst">{t("hero.demo.dst")}</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <p class="chip">{t("hero.demo.pair")}</p>
         </div>
     </div>
 </section>
 
+<script is:inline>
+    (function () {
+        var root = document.documentElement;
+        if (!root.classList.contains("intro")) return;
+        var num = document.getElementById("loader-num");
+        var done = false;
+        var start = performance.now();
+        var LOAD_MS = 900;
+
+        function finish() {
+            if (done) return;
+            done = true;
+            if (num) num.textContent = "100";
+            root.classList.add("loaded");
+            setTimeout(function () { root.classList.add("go"); }, 250);
+            try { sessionStorage.setItem("ovl-intro", "1"); } catch (e) {}
+        }
+
+        function tick(now) {
+            if (done) return;
+            var p = Math.min(1, (now - start) / LOAD_MS);
+            var eased = 1 - Math.pow(1 - p, 3);
+            if (num) num.textContent = String(Math.round(eased * 100));
+            if (p < 1) requestAnimationFrame(tick);
+            else finish();
+        }
+        requestAnimationFrame(tick);
+
+        // Never leave the page hidden: a click skips, and a timer is the backstop.
+        document.addEventListener("pointerdown", finish, { once: true });
+        document.addEventListener("keydown", finish, { once: true });
+        setTimeout(finish, 1600);
+    })();
+</script>
+
 <style>
     .hero {
         position: relative;
-        min-height: 100svh; /* Dynamic viewport height for perfect mobile fit */
+        min-height: clamp(640px, 100svh, 980px);
         display: flex;
-        flex-direction: column;
-        justify-content: center;
-        overflow: hidden;
-        padding-top: var(--header-height);
-    }
-
-    .hero-container {
-        display: flex;
-        justify-content: center;
-        width: 100%;
-        position: relative;
-        z-index: 1;
-    }
-
-    .content-wrapper {
-        display: flex;
-        flex-direction: column;
         align-items: center;
-        text-align: center;
-        gap: clamp(2rem, 5vh, 4rem); /* Responsive vertical rhythm */
-        max-width: 1000px;
-        width: 100%;
+        padding-top: calc(var(--header-height) + 1rem);
+        padding-bottom: 3rem;
+        overflow: hidden;
+        isolation: isolate;
     }
 
-    /* Elegant Typography */
+    /* Soft out-of-focus lights, drawn already blurred so nothing has to filter. */
+    .bokeh {
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        background:
+            radial-gradient(28% 34% at 12% 30%, var(--bokeh-1), transparent 70%),
+            radial-gradient(22% 28% at 38% 78%, var(--bokeh-2), transparent 70%),
+            radial-gradient(18% 22% at 52% 22%, var(--bokeh-3), transparent 70%),
+            radial-gradient(30% 40% at 86% 70%, var(--bokeh-2), transparent 70%),
+            radial-gradient(14% 18% at 90% 18%, var(--bokeh-1), transparent 70%),
+            linear-gradient(180deg, var(--hero-top), transparent 96%);
+    }
+
+    .hero-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+        align-items: center;
+        gap: clamp(2rem, 5vw, 5rem);
+    }
+
+    .copy {
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+    }
+
+    .eyebrow {
+        font-size: 0.875rem;
+        font-weight: 600;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--color-primary);
+    }
+
+    /* Spaced capitals suit Latin; Thai and Japanese read badly when tracked out. */
+    :global(html:is([lang="th"], [lang="ja"])) .eyebrow {
+        letter-spacing: 0.02em;
+    }
+
     .title {
-        font-size: clamp(3rem, 7vw, 6rem);
-        line-height: 1.1;
-        letter-spacing: -0.02em;
-        font-weight: 800;
+        display: flex;
+        flex-direction: column;
+        font-family: var(--font-heading);
+        font-size: clamp(2.2rem, 3.8vw, 4rem);
+        font-weight: 700;
+        line-height: 1.04;
+        letter-spacing: 0.005em;
         margin: 0;
-        text-wrap: balance; /* Prevents widows/orphans */
-        color: var(--color-text-heading, var(--color-text-main));
+        color: var(--color-title);
+        text-shadow: var(--title-glow);
+    }
+
+    .word {
+        display: block;
     }
 
     .subtitle {
-        font-size: clamp(1.125rem, 2vw, 1.5rem);
-        line-height: 1.6;
+        max-width: 54ch;
+        font-size: clamp(0.95rem, 1.1vw, 1.05rem);
+        line-height: 1.65;
         color: var(--color-text-muted);
-        max-width: 60ch; /* Optimal reading length */
-        margin: 0;
         text-wrap: pretty;
     }
 
-    .cta-wrapper {
+    .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-top: 0.5rem;
+    }
+
+    .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 10rem;
+        min-height: 3rem;
+        padding: 0 1.6rem;
+        border-radius: 0.9rem;
+        font-weight: 600;
+        font-size: 0.95rem;
+        white-space: nowrap;
+        transition: transform 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .btn:hover {
+        transform: translateY(-2px);
+    }
+
+    .btn:focus-visible {
+        outline: 2px solid var(--color-primary);
+        outline-offset: 3px;
+    }
+
+    .btn-solid {
+        background: var(--btn-solid-bg);
+        color: var(--btn-solid-text);
+        box-shadow: 0 10px 30px -10px var(--btn-solid-glow);
+    }
+
+    .btn-ghost {
+        border: 1.5px solid var(--btn-ghost-border);
+        color: var(--color-text-main);
+        background: var(--btn-ghost-bg);
+    }
+
+    .btn-ghost:hover {
+        background: var(--glass-bg-hover);
+    }
+
+    .platforms {
+        margin-top: 0.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+    }
+
+    .platforms-label {
+        font-size: 0.8rem;
+        color: var(--color-text-muted);
+    }
+
+    .platforms ul {
+        list-style: none;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.5rem;
+    }
+
+    .platforms li {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        font-weight: 600;
+        font-size: 0.95rem;
+        color: var(--color-text-main);
+        opacity: 0.9;
+    }
+
+    .platforms svg {
+        width: 1.15rem;
+        height: 1.15rem;
+    }
+
+    /* ---------- Hero art: a floating game window ---------- */
+    .art {
+        position: relative;
+        aspect-ratio: 1 / 0.86;
+        width: 100%;
+        max-width: 540px;
+        justify-self: end;
+    }
+
+    .orb-light {
+        position: absolute;
+        top: 2%;
+        right: 6%;
+        width: 26%;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background: radial-gradient(circle at 40% 38%, #ffffff 0%, #f1ecff 45%, #d9cfff 70%);
+        box-shadow:
+            0 0 40px 10px rgba(226, 214, 255, 0.55),
+            0 0 120px 40px rgba(170, 140, 255, 0.35);
+        animation: bob 7s ease-in-out infinite;
+    }
+
+    .shard {
+        position: absolute;
+        border-radius: 22%;
+        background: linear-gradient(145deg, var(--shard-a), var(--shard-b));
+        box-shadow: 0 10px 30px -8px rgba(0, 0, 0, 0.5);
+        animation: bob 6s ease-in-out infinite;
+    }
+
+    .s1 { width: 9%; aspect-ratio: 1; left: 2%; top: 22%; transform: rotate(18deg); animation-delay: -1s; }
+    .s2 { width: 6%; aspect-ratio: 1; right: 0; bottom: 18%; transform: rotate(-12deg); animation-delay: -3s; }
+    .s3 { width: 5%; aspect-ratio: 1; left: 18%; bottom: 2%; transform: rotate(30deg); animation-delay: -4.5s; }
+
+    .window {
+        position: absolute;
+        left: 6%;
+        right: 4%;
+        top: 18%;
+        bottom: 8%;
+        display: flex;
+        flex-direction: column;
+        border-radius: 1.1rem;
+        overflow: hidden;
+        background: #120d26;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow:
+            0 40px 80px -20px rgba(6, 2, 20, 0.8),
+            0 0 0 1px rgba(160, 130, 255, 0.08),
+            0 0 60px -10px rgba(150, 110, 255, 0.35);
+        transform: perspective(1400px) rotateY(-9deg) rotateX(4deg);
+        animation: float-window 8s ease-in-out infinite;
+    }
+
+    .window-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.6rem 0.9rem;
+        background: rgba(255, 255, 255, 0.05);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    }
+
+    .window-bar span {
+        width: 0.55rem;
+        height: 0.55rem;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.22);
+    }
+
+    .window-bar p {
+        margin-left: 0.5rem;
+        font-size: 0.75rem;
+        color: rgba(235, 228, 255, 0.6);
+    }
+
+    .scene {
+        position: relative;
+        flex: 1;
+        background: linear-gradient(180deg, #2a1f63 0%, #5a2f86 55%, #9a4a8e 100%);
+        overflow: hidden;
+    }
+
+    .moon {
+        position: absolute;
+        top: 12%;
+        left: 14%;
+        width: 13%;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background: #ffe9c7;
+        box-shadow: 0 0 40px 8px rgba(255, 220, 170, 0.45);
+    }
+
+    .hill {
+        position: absolute;
+        left: -10%;
+        right: -10%;
+        border-radius: 50% 50% 0 0;
+    }
+
+    .hill.far { bottom: 18%; height: 42%; background: #3a2370; }
+    .hill.near { bottom: -18%; height: 52%; background: #1d1240; left: -30%; right: -10%; }
+
+    .tree {
+        position: absolute;
+        bottom: 26%;
+        width: 0;
+        height: 0;
+        border-left: 1.1rem solid transparent;
+        border-right: 1.1rem solid transparent;
+        border-bottom: 3.2rem solid #170e35;
+    }
+
+    .t1 { left: 58%; }
+    .t2 { left: 66%; transform: scale(1.35); transform-origin: bottom; }
+    .t3 { left: 76%; transform: scale(0.85); transform-origin: bottom; }
+
+    .dialog {
+        position: absolute;
+        left: 5%;
+        right: 5%;
+        bottom: 6%;
+        padding: 0.8rem 1rem 0.9rem;
+        border-radius: 0.7rem;
+        background: rgba(10, 6, 24, 0.82);
+        border: 1.5px solid rgba(255, 233, 199, 0.55);
+    }
+
+    .speaker {
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #ffd89a;
+        margin-bottom: 0.3rem;
+    }
+
+    .lines {
+        display: grid;
+    }
+
+    .line {
+        grid-area: 1 / 1;
+        font-size: clamp(0.8rem, 1.15vw, 1rem);
+        line-height: 1.45;
+        color: #f5f0ff;
+        font-family: "Courier New", ui-monospace, monospace;
+    }
+
+    /* The translated line takes the original's place, the way the overlay does. */
+    .line.dst {
+        font-family: var(--font-body);
+        font-weight: 600;
+        border-radius: 0.3rem;
+        animation: swap-in 6s ease-in-out infinite;
+    }
+
+    .line.src {
+        animation: swap-out 6s ease-in-out infinite;
+    }
+
+    .chip {
+        position: absolute;
+        left: 0;
+        bottom: 14%;
+        padding: 0.45rem 0.9rem;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        color: #1b1233;
+        background: #f3eeff;
+        box-shadow: 0 8px 24px -6px rgba(170, 140, 255, 0.6);
+    }
+
+    @keyframes swap-out {
+        0%, 38% { opacity: 1; filter: blur(0); }
+        46%, 92% { opacity: 0; filter: blur(3px); }
+        100% { opacity: 1; filter: blur(0); }
+    }
+
+    @keyframes swap-in {
+        0%, 40% { opacity: 0; transform: translateY(4px); }
+        50%, 90% { opacity: 1; transform: none; }
+        98%, 100% { opacity: 0; transform: translateY(4px); }
+    }
+
+    @keyframes bob {
+        0%, 100% { translate: 0 0; }
+        50% { translate: 0 -12px; }
+    }
+
+    @keyframes float-window {
+        0%, 100% { translate: 0 0; }
+        50% { translate: 0 -10px; }
+    }
+
+    /* ---------- Intro: loader, then a staggered reveal ---------- */
+    .loader {
+        display: none;
+    }
+
+    :global(html.intro) .loader {
+        position: fixed;
+        inset: 0;
+        z-index: 200;
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 1rem;
-        margin-top: 1rem;
+        justify-content: center;
+        gap: 1.25rem;
+        background: var(--color-bg);
+        transition: opacity 0.45s ease, visibility 0.45s;
     }
 
-    .compatibility {
-        font-size: 0.875rem;
+    :global(html.intro.loaded) .loader {
+        opacity: 0;
+        visibility: hidden;
+    }
+
+    .loader-orb {
+        width: 72px;
+        height: 72px;
+        border-radius: 50%;
+        background: radial-gradient(circle at 40% 38%, #ffffff, #e3dbff 60%, #b9a8ff);
+        box-shadow: 0 0 30px 6px rgba(200, 185, 255, 0.5);
+        animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    :global(html.intro.loaded) .loader-orb {
+        transform: scale(1.6);
+        transition: transform 0.45s ease;
+    }
+
+    .loader-count {
+        font-family: var(--font-heading);
+        font-size: 0.95rem;
+        letter-spacing: 0.08em;
         color: var(--color-text-muted);
-        opacity: 0.7;
+        font-variant-numeric: tabular-nums;
     }
 
-    /* Mobile Adjustments */
-    @media (max-width: 768px) {
-        .orb {
-            width: 80vw;
-            height: 80vw;
-            opacity: 0.1;
+    @keyframes pulse {
+        0%, 100% { box-shadow: 0 0 24px 4px rgba(200, 185, 255, 0.4); }
+        50% { box-shadow: 0 0 44px 12px rgba(200, 185, 255, 0.65); }
+    }
+
+    :global(html.intro) .rv,
+    :global(html.intro) .rv-blur,
+    :global(html.intro) .main-header {
+        opacity: 0;
+    }
+
+    :global(html.intro.go) .rv,
+    :global(html.intro.go) .main-header {
+        animation: reveal 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+        animation-delay: var(--d, 0ms);
+    }
+
+    :global(html.intro.go) .main-header {
+        --d: 500ms;
+    }
+
+    :global(html.intro.go) .rv-blur {
+        animation: reveal-blur 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+        animation-delay: var(--d, 0ms);
+    }
+
+    /* The window keeps its own floating animation; reveal its wrapper instead. */
+    :global(html.intro.go) .art.rv {
+        animation-name: reveal-art;
+        animation-duration: 1s;
+    }
+
+    @keyframes reveal {
+        from { opacity: 0; transform: translateY(18px); }
+        to { opacity: 1; transform: none; }
+    }
+
+    @keyframes reveal-blur {
+        from { opacity: 0; filter: blur(12px); transform: translateY(10px); }
+        to { opacity: 1; filter: blur(0); transform: none; }
+    }
+
+    @keyframes reveal-art {
+        from { opacity: 0; transform: scale(0.94) translateY(24px); }
+        to { opacity: 1; transform: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .orb-light, .shard, .window, .line.src, .line.dst {
+            animation: none;
+        }
+        .line.src { opacity: 0; }
+        .line.dst { opacity: 1; }
+    }
+
+    @media (max-width: 900px) {
+        .hero {
+            align-items: flex-start;
         }
 
-        .content-wrapper {
-            gap: 2rem;
+        .hero-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .art {
+            order: -1;
+            max-width: 460px;
+            justify-self: center;
+        }
+
+        .btn {
+            flex: 1 1 9rem;
+            min-width: 0;
+            padding: 0 1rem;
         }
     }
 </style>

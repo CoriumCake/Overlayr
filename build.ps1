@@ -1,34 +1,36 @@
-# Build script for Overlayr
+param(
+    [switch]$Native,
+    [string]$Target
+)
 
-Write-Host "Building Overlayr..."
+$ErrorActionPreference = "Stop"
+$projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$manifest = Join-Path $projectRoot "rust/Cargo.toml"
+$features = if ($Native) { "native-production" } else { $null }
 
-# Activate virtual environment if it exists
-if (Test-Path ".venv\Scripts\Activate.ps1") {
-    . .\.venv\Scripts\Activate.ps1
+Write-Host "Building Overlayr with Rust..."
+$cargoArgs = @("build", "--release", "--manifest-path", $manifest)
+if ($features) {
+    $cargoArgs += @("--features", $features)
+}
+if ($Target) {
+    $cargoArgs += @("--target", $Target)
 }
 
-# Clean previous builds
-if (Test-Path "dist") { Remove-Item -Path "dist" -Recurse -Force }
-if (Test-Path "build") { Remove-Item -Path "build" -Recurse -Force }
+& cargo @cargoArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "Cargo release build failed with exit code $LASTEXITCODE"
+}
 
-# Run PyInstaller
-# --onefile: Create a single exe
-# --noconsole: Don't show terminal window (GUI app)
-# --name: Output filename
-# --icon: Application icon
-# --add-data: Include assets folder
-# --collect-all: Collect all dependencies for these packages
+$targetDirectory = if ($Target) {
+    Join-Path $projectRoot "rust/target/$Target/release"
+} else {
+    Join-Path $projectRoot "rust/target/release"
+}
+$binaryName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "overlayr.exe" } else { "overlayr" }
+$binary = Join-Path $targetDirectory $binaryName
+$dist = Join-Path $projectRoot "dist"
+New-Item -ItemType Directory -Force -Path $dist | Out-Null
+Copy-Item -Force $binary (Join-Path $dist $binaryName)
 
-pyinstaller `
-    --noconsole `
-    --onefile `
-    --name "Overlayr" `
-    --icon "icon.ico" `
-    --add-data "assets;assets" `
-    --add-data "src;src" `
-    --collect-all "rapidocr_onnxruntime" `
-    --collect-all "symspellpy" `
-    --collect-all "customtkinter" `
-    main.py
-
-Write-Host "Build complete. Check dist/Overlayr.exe"
+Write-Host "Build complete: $dist/$binaryName"

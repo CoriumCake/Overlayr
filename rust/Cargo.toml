@@ -1,0 +1,57 @@
+[package]
+name = "overlayr-core"
+version = "0.1.2"
+edition = "2024"
+description = "Performance-oriented core for the Overlayr translation overlay"
+license = "MIT"
+
+[features]
+default = []
+native-capture = ["dep:xcap"]
+native-ocr = ["dep:leptess"]
+native-production = ["native-capture", "native-ocr"]
+
+[dependencies]
+aes-gcm = "0.10.3"
+base64 = "0.22.1"
+eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+icu_segmenter = "2"
+image = { version = "0.25.10", default-features = false, features = ["png", "pnm"] }
+leptess = { version = "0.14.0", optional = true }
+# Loaded at run time, so Overlayr starts (with Tesseract) when the ONNX
+# Runtime library isn't installed.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic"] }
+reqwest = { version = "0.13.4", default-features = true, features = ["blocking", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# Verifies downloaded updates.
+sha2 = "0.10.9"
+single-instance = "0.3.3"
+xcap = { version = "0.9.8", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Process statistics for the resource monitor.
+libc = "0.2.191"
+# Screen Recording permission, receiving overlayr:// login links, and
+# keeping the overlay above full-screen games.
+objc2 = "0.6.4"
+
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+# Keyboard shortcuts while a game has focus (Hyprland binds them itself).
+global-hotkey = "0.9.0"
+
+[lib]
+name = "overlayr_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "overlayr"
+path = "src/main.rs"
+
+[profile.release]
+codegen-units = 1
+debug = false
+lto = "thin"
+opt-level = 3
+panic = "abort"
+strip = "symbols"

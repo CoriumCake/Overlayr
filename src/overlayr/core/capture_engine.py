@@ -3,9 +3,29 @@ import mss.tools
 from PIL import Image
 from typing import Optional, Dict, Any, Tuple
 import asyncio
+import time
 from ..utils.singleton import SingletonMeta
 from ..services.source_manager import SourceManager
 from .wgc_capture import WGCCapture
+
+
+WINDOW_FRAME_RETRIES = 3
+WINDOW_FRAME_RETRY_DELAY_SECONDS = 0.01
+
+
+def _is_solid_white(image: Image.Image) -> bool:
+    """Return whether a captured frame contains only opaque white pixels.
+
+    WGC can briefly return a valid frame object whose surface has not received
+    the window contents yet. Those frames show up as an entirely white image.
+    Keep this check deliberately strict so a genuinely mostly-white window is
+    still accepted.
+    """
+    if image.width == 0 or image.height == 0:
+        return True
+
+    extrema = image.convert("RGB").getextrema()
+    return all(channel_min == 255 and channel_max == 255 for channel_min, channel_max in extrema)
 
 class CaptureEngine(metaclass=SingletonMeta):
     """
@@ -76,7 +96,22 @@ class CaptureEngine(metaclass=SingletonMeta):
                 # Actually standard CreateForWindow captures client area + non-client?
                 # Usually entire window including borders.
                 
-                img = self.wgc.get_latest_frame()
+                img = None
+                for attempt in range(WINDOW_FRAME_RETRIES):
+                    candidate = self.wgc.get_latest_frame()
+                    if candidate is None:
+                        break
+                    if not _is_solid_white(candidate):
+                        img = candidate
+                        break
+
+                    # A white frame is commonly produced while WGC is
+                    # attaching to a window or rebuilding its surface after a
+                    # resize. Give the compositor a moment to publish the
+                    # next frame before abandoning this capture tick.
+                    if attempt + 1 < WINDOW_FRAME_RETRIES:
+                        time.sleep(WINDOW_FRAME_RETRY_DELAY_SECONDS)
+
                 if img:
                     # Get Window Position from WGC? No, WGC returns image. 
                     # We still need Window Position to draw the Overlay correctly!

@@ -1,0 +1,125 @@
+name: Rust
+
+# Pull requests into prod and pushes to prod. Pushes to a branch with an
+# open pull request are already checked by the pull request, so they aren't
+# checked twice; any branch can still be checked from the Actions tab.
+on:
+  push:
+    branches: [prod]
+  pull_request:
+    branches: [prod]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request replaces the run still going for the old one.
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install Linux windowing dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxkbcommon-dev libxrandr-dev libxi-dev libxinerama-dev \
+            libclang-dev libpipewire-0.3-dev libtesseract-dev libleptonica-dev \
+            libgbm-dev libegl1-mesa-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run fallback Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Run fallback tests
+        run: cargo test --all-targets
+      - name: Build fallback release binary
+        run: cargo build --release
+      - name: Run native-ocr Clippy (Linux install build)
+        run: cargo clippy --all-targets --features native-ocr -- -D warnings
+      - name: Run native-ocr tests
+        run: cargo test --all-targets --features native-ocr
+      - name: Run native-production Clippy
+        run: cargo clippy --all-targets --features native-production -- -D warnings
+      - name: Run native-production tests
+        run: cargo test --all-targets --features native-production
+      - name: Build native-production release binary
+        run: cargo build --release --features native-production
+
+  platform-check:
+    name: Native capture (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux capture dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxkbcommon-dev libxrandr-dev libxi-dev libxinerama-dev \
+            libclang-dev libpipewire-0.3-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Check native capture on ${{ matrix.os }}
+        run: cargo check --all-targets --features native-capture
+
+  macos:
+    name: macOS app
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install the icon renderer
+        run: brew install librsvg
+      - name: Run Clippy
+        run: cargo clippy --all-targets --features native-capture -- -D warnings
+      - name: Run tests
+        run: cargo test --all-targets --features native-capture
+      - name: Build Overlayr.app and Overlayr.dmg
+        run: ../packaging/macos/build-app.sh
+      - name: Smoke test the app bundle
+        run: |
+          app=target/macos/Overlayr.app
+          file "$app/Contents/MacOS/overlayr"
+          "$app/Contents/MacOS/overlayr" --version
+          # The runner has no Screen Recording access or OCR engines, so the
+          # checks can fail; this only proves the app starts and reports.
+          "$app/Contents/MacOS/overlayr" --diagnose || true
+          codesign --verify --verbose "$app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Overlayr-macOS
+          path: rust/target/macos/Overlayr.dmg
+          if-no-files-found: error

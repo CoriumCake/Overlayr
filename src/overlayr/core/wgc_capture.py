@@ -833,8 +833,24 @@ class WGCCapture:
             if hr != 0 or not frame_ptr:
                 return None
             
-            if hr != 0 or not frame_ptr:
-                return None
+            # A frame can already be stale by the time the polling loop gets
+            # to it (especially while a window is being resized or restored).
+            # Keep only the newest frame so a transient blank surface does not
+            # replace a current capture.
+            latest_frame_ptr = frame_ptr
+            while True:
+                next_frame_ptr = c_void_p()
+                next_hr = TryGetNextFrame(self.pool_ptr, byref(next_frame_ptr))
+                if next_hr != 0 or not next_frame_ptr:
+                    break
+
+                old_frame = latest_frame_ptr
+                latest_frame_ptr = next_frame_ptr
+                old_vtbl = cast(old_frame, POINTER(POINTER(c_void_p))).contents
+                release_old = ctypes.WINFUNCTYPE(wintypes.ULONG, c_void_p)(old_vtbl[2])
+                release_old(old_frame)
+
+            frame_ptr = latest_frame_ptr
             
             try:
                 # We got a frame!
