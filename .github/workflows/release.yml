@@ -41,9 +41,11 @@ on:
 permissions:
   contents: read
 
+# Releases run one at a time and are never cancelled; a new push to a pull
+# request replaces the test build still going for the old one.
 concurrency:
-  group: release
-  cancel-in-progress: false
+  group: release-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Release builds update themselves from overlayr.app (rust/src/updater.rs).
