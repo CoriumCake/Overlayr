@@ -1,23 +1,40 @@
 /* Global CSS & Design Tokens */
 
 /* 1. Imports */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Outfit:wght@400;700;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Prompt:wght@500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap');
 
 :root {
-  /* 2. Color Tokens (HSL for easy manipulation) */
-  --hue-primary: 185;
-  /* Cyan/Turquoise */
-  --hue-accent: 210;
-  /* Royal Blue */
+  /* 2. Color Tokens: deep violet night, lavender light */
+  --hue-primary: 262;
+  --hue-accent: 318;
 
   /* Default Dark Mode */
-  --color-bg: hsl(215, 40%, 6%);
-  --color-surface: hsl(215, 30%, 10%);
-  --color-primary: hsl(var(--hue-primary), 100%, 50%);
-  --color-primary-glow: hsl(var(--hue-primary), 100%, 60%);
-  --color-accent: hsl(var(--hue-accent), 90%, 60%);
-  --color-text-main: hsl(0, 0%, 100%);
-  --color-text-muted: hsl(215, 20%, 75%);
+  --color-bg: hsl(252, 38%, 8%);
+  --color-surface: hsl(252, 30%, 13%);
+  --color-primary: hsl(var(--hue-primary), 95%, 78%);
+  --color-primary-glow: hsl(var(--hue-primary), 100%, 82%);
+  --color-accent: hsl(var(--hue-accent), 75%, 62%);
+  --color-text-main: hsl(252, 60%, 97%);
+  --color-text-muted: hsl(252, 18%, 76%);
+  --color-title: #ffffff;
+  --title-glow: 0 0 18px rgba(196, 176, 255, 0.55), 0 0 48px rgba(150, 120, 255, 0.35);
+
+  /* Hero background */
+  --hero-top: hsl(256, 45%, 16%);
+  --bokeh-1: rgba(122, 92, 255, 0.45);
+  --bokeh-2: rgba(214, 82, 178, 0.32);
+  --bokeh-3: rgba(255, 196, 140, 0.18);
+  --shard-a: #c4447e;
+  --shard-b: #6b1f55;
+
+  /* Buttons */
+  --btn-solid-bg: #ffffff;
+  --btn-solid-text: hsl(252, 45%, 14%);
+  --btn-solid-glow: rgba(196, 176, 255, 0.6);
+  --btn-ghost-border: rgba(255, 255, 255, 0.7);
+  --btn-ghost-bg: rgba(255, 255, 255, 0.04);
+
+  --card-bg: rgba(255, 255, 255, 0.045);
 
   /* Acrylic / Glassmorphism Tokens */
   --noise-url: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.07'/%3E%3C/svg%3E");
@@ -25,7 +42,7 @@
   --glass-bg: rgba(255, 255, 255, 0.05);
   --glass-bg-hover: rgba(255, 255, 255, 0.1);
   --glass-border: rgba(255, 255, 255, 0.1);
-  --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+  --glass-shadow: 0 8px 32px 0 rgba(4, 0, 18, 0.35);
 
   --acrylic-bg: rgba(255, 255, 255, 0.03);
   --acrylic-blur: 24px;
@@ -34,43 +51,57 @@
 
   --backdrop-blur: 24px;
 
-  /* 4. Typography Tokens */
-  --font-body: 'Inter', system-ui, sans-serif;
-  --font-heading: 'Outfit', system-ui, sans-serif;
+  /* 4. Typography Tokens (Prompt and Noto Sans Thai cover Thai) */
+  --font-body: 'Inter', 'Noto Sans Thai', 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic', system-ui, sans-serif;
+  --font-heading: 'Prompt', 'Noto Sans Thai', 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic', system-ui, sans-serif;
 
-  --text-h1: clamp(2.5rem, 5vw + 1rem, 4.5rem);
-  --text-h2: clamp(2rem, 4vw + 1rem, 3.5rem);
-  --text-h3: clamp(1.5rem, 3vw + 1rem, 2.5rem);
-  --text-body: 1.125rem;
+  --text-h1: clamp(2rem, 2.4vw + 1rem, 3.25rem);
+  --text-h2: clamp(1.75rem, 1.6vw + 1rem, 2.5rem);
+  --text-h3: clamp(1.1rem, 0.6vw + 0.9rem, 1.35rem);
+  --text-body: 1rem;
   --text-small: 0.875rem;
 
   /* 5. Spacing Tokens */
   --space-sm: clamp(0.5rem, 1vw, 1rem);
   --space-md: clamp(1rem, 2vw, 2rem);
-  --space-lg: clamp(2rem, 4vw, 4rem);
-  --space-xl: clamp(4rem, 8vw, 8rem);
+  --space-lg: clamp(1.5rem, 2.5vw, 2.5rem);
+  --space-xl: clamp(3rem, 5vw, 5.5rem);
 
   /* 6. Layout */
-  --container-width: 1400px;
-  --header-height: 80px;
+  --container-width: 1200px;
+  --header-height: 76px;
 }
 
 [data-theme="light"] {
-  --color-bg: hsl(215, 20%, 95%);
-  /* Very light blue-grey instead of pure white */
-  --color-surface: hsl(215, 20%, 90%);
+  --color-bg: hsl(255, 45%, 96%);
+  --color-surface: hsl(255, 35%, 91%);
 
-  --color-primary: hsl(var(--hue-primary), 90%, 45%);
-  /* Darker cyan for readability */
-  --color-accent: hsl(var(--hue-accent), 90%, 55%);
+  --color-primary: hsl(var(--hue-primary), 65%, 48%);
+  --color-accent: hsl(var(--hue-accent), 65%, 46%);
 
-  --color-text-main: hsl(215, 40%, 10%);
-  --color-text-muted: hsl(215, 20%, 40%);
+  --color-text-main: hsl(252, 45%, 12%);
+  --color-text-muted: hsl(252, 15%, 36%);
+  --color-title: hsl(252, 55%, 14%);
+  --title-glow: 0 0 28px rgba(150, 120, 255, 0.35);
+
+  --hero-top: hsl(258, 70%, 90%);
+  --bokeh-1: rgba(140, 110, 255, 0.35);
+  --bokeh-2: rgba(230, 110, 190, 0.25);
+  --bokeh-3: rgba(255, 190, 120, 0.25);
+
+  --btn-solid-bg: hsl(252, 45%, 14%);
+  --btn-solid-text: #ffffff;
+  --btn-solid-glow: rgba(110, 80, 220, 0.45);
+  --btn-ghost-border: hsl(252, 45%, 14%);
+  --btn-ghost-bg: rgba(255, 255, 255, 0.5);
+
+  --card-bg: rgba(255, 255, 255, 0.7);
 
   /* Light Acrylic */
-  --glass-bg: rgba(255, 255, 255, 0.4);
-  --glass-border: rgba(255, 255, 255, 0.6);
-  --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.05);
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-bg-hover: rgba(80, 50, 180, 0.08);
+  --glass-border: rgba(60, 40, 140, 0.14);
+  --glass-shadow: 0 8px 32px 0 rgba(60, 40, 140, 0.08);
 
   --acrylic-bg: rgba(255, 255, 255, 0.5);
   --acrylic-border: linear-gradient(135deg, rgba(255, 255, 255, 0.8) 0%, rgba(255, 255, 255, 0.2) 100%);

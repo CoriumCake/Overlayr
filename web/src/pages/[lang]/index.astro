@@ -1,6 +1,7 @@
 ---
 import HomeTemplate from "../../components/templates/Home.astro";
 import { languages } from "../../i18n/ui";
+import type { Lang } from "../../i18n/ui";
 
 export function getStaticPaths() {
     const keys = Object.keys(languages);
@@ -20,4 +21,4 @@ export function getStaticPaths() {
 const { lang } = Astro.params;
 ---
 
-<HomeTemplate lang={lang as "ja" | "es"} />
+<HomeTemplate lang={lang as Lang} />

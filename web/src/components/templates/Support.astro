@@ -2,13 +2,20 @@
 import Layout from "../../layouts/Layout.astro";
 import { SITE } from "../../siteConfig";
 import { useTranslations } from "../../i18n/ui";
+import type { Lang } from "../../i18n/ui";
 
 interface Props {
-    lang: "en" | "ja" | "es";
+    lang: Lang;
 }
 
 const { lang } = Astro.props;
 const t = useTranslations(lang);
+const faqs = [
+    ["support.faq1.q", "support.faq1.a"],
+    ["support.faq2.q", "support.faq2.a"],
+    ["support.faq3.q", "support.faq3.a"],
+    ["support.faq4.q", "support.faq4.a"],
+] as const;
 ---
 
 <Layout title={`${t("support.title")} - ${SITE.title}`}>
@@ -18,43 +25,14 @@ const t = useTranslations(lang);
             <p class="subtitle">{t("support.subtitle")}</p>
 
             <div class="faq-grid">
-                <!-- Native <details> for JS-free interactivity -->
-                <details class="glass-panel faq-item">
-                    <summary>How do I install Overlayr?</summary>
-                    <p>
-                        Simply download the latest installer from our Downloads
-                        page, run the .exe, and follow the on-screen
-                        instructions. No complex setup required.
-                    </p>
-                </details>
-
-                <details class="glass-panel faq-item">
-                    <summary>Does it work with anti-cheat?</summary>
-                    <p>
-                        Yes. Overlayr uses standard Windows APIs for overlay
-                        composition and does not inject code into game
-                        processes, making it safe for most anti-cheat systems.
-                    </p>
-                </details>
-
-                <details class="glass-panel faq-item">
-                    <summary>How do I change the translation language?</summary>
-                    <p>
-                        Open the Overlayr dashboard, navigate to Settings >
-                        Interpretation, and select your target language from the
-                        dropdown menu.
-                    </p>
-                </details>
-
-                <details class="glass-panel faq-item">
-                    <summary>My overlay isn't showing up.</summary>
-                    <p>
-                        Ensure that your game is running in "Borderless Window"
-                        or "Windowed" mode for best compatibility. Exclusive
-                        Fullscreen support requires the "Hook Mode" enabled in
-                        settings.
-                    </p>
-                </details>
+                {
+                    faqs.map(([q, a]) => (
+                        <details class="glass-panel faq-item">
+                            <summary>{t(q)}</summary>
+                            <p>{t(a)}</p>
+                        </details>
+                    ))
+                }
             </div>
         </div>
     </section>
@@ -69,13 +47,13 @@ const t = useTranslations(lang);
     h1 {
         text-align: center;
         margin-bottom: var(--space-md);
-        font-size: var(--text-h1);
+        font-size: var(--text-h2);
     }
 
     .subtitle {
         text-align: center;
         color: var(--color-text-muted);
-        margin-bottom: var(--space-xl);
+        margin-bottom: var(--space-lg);
         font-size: var(--text-h3);
     }
 
@@ -93,7 +71,7 @@ const t = useTranslations(lang);
     }
 
     summary {
-        padding: var(--space-md) var(--space-lg);
+        padding: 1.1rem 1.5rem;
         cursor: pointer;
         font-weight: 600;
         font-size: 1.125rem;
@@ -111,7 +89,7 @@ const t = useTranslations(lang);
     summary::after {
         content: "+";
         position: absolute;
-        right: var(--space-lg);
+        right: 1.5rem;
         font-weight: 300;
         font-size: 1.5rem;
         line-height: 1;
@@ -123,7 +101,7 @@ const t = useTranslations(lang);
     }
 
     details[open] summary {
-        background: rgba(var(--color-primary-rgb), 0.1);
+        background: var(--glass-bg-hover);
         border-bottom: 1px solid var(--glass-border);
     }
 
@@ -132,7 +110,7 @@ const t = useTranslations(lang);
     }
 
     .faq-item p {
-        padding: var(--space-md) var(--space-lg);
+        padding: 1.1rem 1.5rem;
         color: var(--color-text-muted);
         line-height: 1.6;
     }
