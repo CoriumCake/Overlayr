@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn version_matches_package_metadata() {
-        assert_eq!(version(), "0.1.1");
+        assert_eq!(version(), "0.1.2");
     }
 
     #[test]
