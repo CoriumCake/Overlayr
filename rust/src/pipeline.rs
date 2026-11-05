@@ -126,6 +126,15 @@ impl TranslationCache {
         }
     }
 
+    pub fn remove(&mut self, pair: &LanguagePair, text: &str) {
+        let key = TranslationKey {
+            pair: pair.clone(),
+            text: text.to_owned(),
+        };
+        self.values.remove(&key);
+        self.order.retain(|other| *other != key);
+    }
+
     pub fn clear(&mut self) {
         self.values.clear();
         self.order.clear();

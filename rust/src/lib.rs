@@ -4,6 +4,7 @@
 //! contracts rather than on a specific operating system implementation.
 
 pub mod ai;
+pub mod ai_cache;
 pub mod auth;
 pub mod bundle;
 pub mod capture;
@@ -15,6 +16,7 @@ pub mod hotkeys;
 #[cfg(unix)]
 pub mod hyprland;
 pub mod installer;
+pub mod linebreak;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod marketplace;

@@ -23,7 +23,12 @@ pub fn correct_text(input: &str) -> String {
         if *character == '0' {
             let previous_is_letter = index > 0 && chars[index - 1].is_ascii_alphabetic();
             let next_is_letter = index + 1 < chars.len() && chars[index + 1].is_ascii_alphabetic();
-            let previous_is_digit = index > 0 && chars[index - 1].is_ascii_digit();
+            // "100.0k": a zero after a decimal point is still a digit.
+            let previous_is_digit = index > 0
+                && (chars[index - 1].is_ascii_digit()
+                    || (index > 1
+                        && matches!(chars[index - 1], '.' | ',')
+                        && chars[index - 2].is_ascii_digit()));
             let next_is_digit = index + 1 < chars.len() && chars[index + 1].is_ascii_digit();
             if (previous_is_letter || next_is_letter) && !previous_is_digit && !next_is_digit {
                 corrected.push('O');
@@ -67,8 +72,33 @@ pub fn is_valid_text(text: &str, source_lang: &str) -> bool {
     if source_lang == "en" && text.chars().any(is_east_asian) {
         return false;
     }
+    if is_icon_noise(text) {
+        return false;
+    }
 
     true
+}
+
+/// Whether text is OCR's reading of a row of icons rather than words. Round
+/// icons such as hearts, armour and food read as round letters ("TOCT",
+/// "COUOO", "TUWUWCO", "OO"), so text made only of those letters is noise,
+/// apart from the few real words they spell.
+pub fn is_icon_noise(text: &str) -> bool {
+    const ROUND: &str = "cotuvw";
+    const WORDS: [&str; 16] = [
+        "to", "too", "two", "out", "cut", "cot", "cow", "wow", "tow", "coo", "tot", "toot", "tout",
+        "coot", "otto", "tutu",
+    ];
+    let words = text
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    !words.is_empty()
+        && words.iter().all(|word| {
+            let word = word.to_lowercase();
+            word.chars().all(|character| ROUND.contains(character))
+                && !WORDS.contains(&word.as_str())
+        })
 }
 
 /// Drops East Asian characters at the ends of text in a language written
@@ -134,6 +164,19 @@ fn is_single_word_like(token: &str) -> bool {
         character.is_ascii_digit() || matches!(character, ',' | '.' | '%' | ':' | '/')
     }) {
         return core.chars().any(|character| character.is_ascii_digit());
+    }
+    // A quantity with a short unit: "87.4k", "100.0k", "64mB", "20s", "3x".
+    let digits = core
+        .find(|character: char| !(character.is_ascii_digit() || matches!(character, ',' | '.')))
+        .unwrap_or(core.len());
+    let (number, unit) = core.split_at(digits);
+    if number.starts_with(|character: char| character.is_ascii_digit())
+        && (1..=3).contains(&unit.chars().count())
+        && unit
+            .chars()
+            .all(|character| character.is_ascii_alphabetic())
+    {
+        return true;
     }
     if !core
         .chars()
@@ -201,6 +244,22 @@ mod tests {
     #[test]
     fn validates_language_specific_text() {
         assert!(is_valid_text("こんにちは", "ja"));
+        for noise in [
+            "TOCT", "COUOO", "CUUOO", "TUWUWCO", "TOTTO", "TOTTOTO", "OO", "OO TOCT",
+        ] {
+            assert!(!is_valid_text(noise, "en"), "{noise}");
+        }
+        for text in [
+            "Cow",
+            "Too",
+            "Feed to a Cow",
+            "Time Wand",
+            "Tool",
+            "Cobblestone",
+            "Out of Water",
+        ] {
+            assert!(is_valid_text(text, "en"), "{text}");
+        }
         assert!(!is_valid_text("こんにちは", "en"));
         assert!(is_valid_text("สวัสดี", "th"));
     }
@@ -208,6 +267,7 @@ mod tests {
     #[test]
     fn correct_text_preserves_numbers() {
         assert_eq!(correct_text("H0ME 10th"), "HOME 10th");
+        assert_eq!(correct_text("87.4k / 100.0k"), "87.4k / 100.0k");
     }
 
     #[test]
@@ -221,6 +281,7 @@ mod tests {
     fn recognises_word_like_tokens() {
         for word in [
             "Crafting", "Water", "a", "I", "HP", "XP", "1466", "+100%", "(1)", "don't", "Game,",
+            "87.4k", "100.0k", "64mB", "20s", "3x",
         ] {
             assert!(is_word_like(word), "{word} should be word-like");
         }

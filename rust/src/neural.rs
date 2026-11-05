@@ -836,10 +836,74 @@ fn glyph_bounds(area: PixelBox) -> PixelBox {
     }
 }
 
+/// Narrows a line's bounds to the columns holding its text. Detection boxes
+/// of long lines keep a few pixels of padding at the ends, more so when the
+/// capture was scaled down for detection, and a translation drawn from them
+/// starts left of the original. Columns that differ from the line's
+/// background (its most common colour) hold text; only the padding is
+/// trimmed, so busy backgrounds leave the bounds as they were.
+fn ink_columns(frame: &Frame, area: PixelBox) -> PixelBox {
+    const INK: i32 = 48;
+    let right = area.right.min(frame.width);
+    let bottom = area.bottom.min(frame.height);
+    if area.left + 4 >= right || area.top + 2 >= bottom {
+        return area;
+    }
+    let pixel = |x: u32, y: u32| {
+        let index = ((y * frame.width + x) * 4) as usize;
+        [
+            i32::from(frame.rgba[index]),
+            i32::from(frame.rgba[index + 1]),
+            i32::from(frame.rgba[index + 2]),
+        ]
+    };
+    let mut counts = std::collections::HashMap::<[i32; 3], u32>::new();
+    for y in area.top..bottom {
+        for x in area.left..right {
+            *counts
+                .entry(pixel(x, y).map(|channel| channel >> 4))
+                .or_default() += 1;
+        }
+    }
+    let Some(background) = counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(bucket, _)| bucket.map(|channel| (channel << 4) + 8))
+    else {
+        return area;
+    };
+    let has_ink = |x: u32| {
+        (area.top..bottom).any(|y| {
+            pixel(x, y)
+                .iter()
+                .zip(background)
+                .any(|(channel, back)| (channel - back).abs() > INK)
+        })
+    };
+    let most = (bottom - area.top) / 2;
+    let left = (area.left..right).find(|&x| has_ink(x));
+    let last = (area.left..right).rev().find(|&x| has_ink(x));
+    match (left, last) {
+        (Some(left), Some(last)) if left < last => PixelBox {
+            left: if left - area.left <= most {
+                left
+            } else {
+                area.left
+            },
+            right: if right - 1 - last <= most {
+                last + 1
+            } else {
+                area.right
+            },
+            ..area
+        },
+        _ => area,
+    }
+}
+
 /// Splits a recognised line into words with estimated positions, so the
 /// shared noise filters and paragraph grouping can work on it.
-fn words_of(line: &Line) -> Vec<OcrWord> {
-    let area = glyph_bounds(line.area);
+fn words_of(line: &Line, area: PixelBox) -> Vec<OcrWord> {
     let characters = line.text.chars().count().max(1) as f32;
     let per_character = area.width() as f32 / characters;
     let mut words = Vec::new();
@@ -885,7 +949,8 @@ impl OcrBackend for NeuralOcr {
                 });
                 continue;
             }
-            kept.push(words_of(&line));
+            let area = ink_columns(frame, glyph_bounds(line.area));
+            kept.push(words_of(&line, area));
         }
         let (blocks, filtered) = blocks_from_words(frame, kept, &self.grouping_mode);
         rejected.extend(filtered);
@@ -1137,6 +1202,36 @@ mod tests {
     }
 
     #[test]
+    fn trims_line_bounds_to_the_text() {
+        let (width, height) = (100_u32, 20_u32);
+        let mut rgba = [10_u8, 30, 38, 255].repeat((width * height) as usize);
+        for y in 6..14 {
+            for x in (20..80).step_by(3) {
+                let index = ((y * width + x) * 4) as usize;
+                rgba[index..index + 3].copy_from_slice(&[240, 240, 240]);
+            }
+        }
+        let frame = Frame::new(
+            1,
+            crate::types::Rect::new(0, 0, width, height),
+            width,
+            height,
+            rgba,
+        );
+        let area = |left, right| PixelBox {
+            left,
+            top: 4,
+            right,
+            bottom: 16,
+        };
+        let trimmed = ink_columns(&frame, area(15, 82));
+        assert_eq!((trimmed.left, trimmed.right), (20, 78));
+        // Text beyond the padding a box can have is left alone.
+        let wide = ink_columns(&frame, area(0, 99));
+        assert_eq!((wide.left, wide.right), (0, 99));
+    }
+
+    #[test]
     fn splits_lines_into_positioned_words() {
         let line = Line {
             area: PixelBox {
@@ -1148,7 +1243,7 @@ mod tests {
             text: "Back to Game".into(),
             confidence: 0.99,
         };
-        let words = words_of(&line);
+        let words = words_of(&line, glyph_bounds(line.area));
         assert_eq!(
             words
                 .iter()

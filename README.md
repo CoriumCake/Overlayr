@@ -25,10 +25,18 @@ The desktop app is written in Rust and lives in `rust/`. The website lives in
 - **Natural rendering.** Translations take the game's text colour and a
   backdrop sampled from the background. Lines in a list share one size, and
   long text wraps instead of shrinking.
-- **Whole-screen updates.** A screen's machine translations appear together
-  instead of line by line.
-- **Focus-aware.** On Hyprland, the overlay hides as soon as the game loses
-  focus.
+- **Fast AI translation.** A screen's texts go out as a few parallel requests
+  and each translation is drawn as soon as it arrives. Translations are saved
+  and reused, also for text OCR misreads slightly.
+- **Light on the game.** OCR runs only for compact patches of change (new
+  text), not for a moving game world, rests after each read, and backs off
+  while reads find nothing new. While the game is on no monitor, nothing is
+  captured or read; with several monitors, translation goes on while you use
+  another one.
+- **Thai line breaking** between words (Unicode line breaking with a
+  dictionary), since Thai has no spaces between words.
+- **Hide or retranslate** any text from the Live list; icons misread as words
+  are filtered out.
 - **Keybinds** to start or stop the overlay and to hide or show the
   translations.
 
@@ -215,7 +223,8 @@ capture ─▶ tracker (change / follow / detect) ─▶ OCR thread (PaddleOCR |
 | `translation.rs` | LibreTranslate-compatible client with a bounded cache. |
 | `pack.rs` | Translation packs and similarity matching. |
 | `studio.rs`, `studio_ui.rs` | Creator Studio recorder and editor. |
-| `ai.rs` | AI draft translations (Anthropic Messages API, plus OpenAI-compatible APIs). |
+| `ai.rs`, `ai_cache.rs` | AI translations (Anthropic Messages API, plus OpenAI-compatible APIs), saved and reused across sessions. |
+| `linebreak.rs` | Line breaking for Thai and other scripts without spaces. |
 | `runtime.rs`, `pipeline.rs`, `ui.rs` | Pipeline orchestration and the egui overlay and settings. |
 | `control.rs`, `single_instance.rs` | `--toggle` commands over a Unix socket, and instance locking. |
 | `installer.rs`, `diagnostics.rs`, `auth.rs`, `config.rs` | Setup, readiness checks, login session, settings. |

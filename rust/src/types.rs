@@ -18,7 +18,7 @@ pub enum SourceKind {
 }
 
 /// A rectangle in physical screen pixels.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Rect {
     pub left: i32,
     pub top: i32,

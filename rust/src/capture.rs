@@ -125,8 +125,6 @@ fn hyprland_sources() -> ServiceResult<Vec<Source>> {
 struct WindowState {
     bounds: Rect,
     visible: bool,
-    /// The window, or Overlayr itself, has focus.
-    focused: bool,
     full_size: bool,
     /// Identifier for capturing the window's own contents with `grim -T`.
     toplevel: String,
@@ -148,7 +146,6 @@ fn hyprland_window_state(source: &Source) -> Option<ServiceResult<WindowState>> 
             Ok(WindowState {
                 bounds: client.bounds(),
                 visible: client.is_visible(&monitors),
-                focused: crate::hyprland::is_focused(address).unwrap_or(true),
                 full_size: client.is_full_size(&monitors),
                 toplevel: client.stable_id,
             })
@@ -296,9 +293,10 @@ impl CaptureBackend for GrimCapture {
 
     fn source_is_active(&mut self, source: &Source) -> ServiceResult<bool> {
         match hyprland_window_state(source) {
-            // Translations hide while another app has focus, even one in
-            // front of the game on the same workspace.
-            Some(state) => state.map(|window| window.visible && window.focused),
+            // Shown on any monitor counts, focused or not: with several
+            // monitors, players look at the game while using another one.
+            // Windows in front of it are left out by the overlay itself.
+            Some(state) => state.map(|window| window.visible),
             None => Ok(true),
         }
     }

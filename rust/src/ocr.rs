@@ -614,9 +614,14 @@ impl OcrLine {
             .is_some_and(char::is_lowercase);
         let text = join_words(self.words.iter().map(|word| word.text.as_str()));
         let long_enough = if text.chars().any(char::is_alphabetic) && is_latin_text(&text) {
-            // Symbols such as "&" or "-" aren't words.
+            // Symbols such as "&" or "-" aren't words, and nor are
+            // quantities such as "87.4k": "Forge Energy: 87.4k / 100.0k" is a
+            // stat line, not prose that wraps into the next.
             text.split_whitespace()
-                .filter(|word| word.chars().any(char::is_alphabetic))
+                .filter(|word| {
+                    word.chars().any(char::is_alphabetic)
+                        && !word.chars().any(|character| character.is_ascii_digit())
+                })
                 .count()
                 >= 4
         } else {
@@ -950,6 +955,43 @@ mod tests {
         let lines = TesseractOcr::new("tesseract", "line").parse_tsv(&frame, &tsv);
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[1].source_text, "to craft,");
+    }
+
+    #[test]
+    fn keeps_quantities_with_units_at_the_end_of_a_line() {
+        let parser = TesseractOcr::new("tesseract", "line");
+        let frame = Frame::new(1, Rect::new(0, 0, 600, 100), 600, 100, Vec::new());
+        let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
+        let words = [
+            (10, "Forge"),
+            (80, "Energy:"),
+            (180, "87.4k"),
+            (260, "/"),
+            (290, "100.0k"),
+        ];
+        let tsv = words
+            .iter()
+            .map(|(left, text)| format!("5\t1\t1\t1\t1\t1\t{left}\t20\t60\t20\t95\t{text}\n"))
+            .fold(header.to_string(), |tsv, row| tsv + &row);
+        let blocks = parser.parse_tsv(&frame, &tsv);
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].source_text, "Forge Energy: 87.4k / 100.0k");
+
+        // A stat line below is its own line, not the same paragraph.
+        let next = [
+            (10, "Time"),
+            (80, "Fluid:"),
+            (160, "27"),
+            (200, "/"),
+            (230, "8,000"),
+        ];
+        let tsv = next
+            .iter()
+            .map(|(left, text)| format!("5\t1\t1\t1\t2\t1\t{left}\t46\t60\t20\t95\t{text}\n"))
+            .fold(tsv, |tsv, row| tsv + &row);
+        let blocks = TesseractOcr::new("tesseract", "paragraph").parse_tsv(&frame, &tsv);
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
     }
 
     #[test]

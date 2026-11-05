@@ -43,6 +43,15 @@ pub struct AppConfig {
     pub live_translator: String,
     /// Model per AI provider, when not its default.
     pub ai_models: std::collections::BTreeMap<String, String>,
+    /// With a pack, text the pack doesn't cover is translated by the AI
+    /// service chosen in `live_translator` (when it is one).
+    pub ai_fill_pack_gaps: bool,
+    /// Most AI requests one session may send (each up to 40 texts); 0 for
+    /// no limit. Saved translations don't count.
+    pub ai_request_limit: u64,
+    /// Texts the player hid from the overlay (as `tracker::normalize` gives
+    /// them), such as icons OCR reads as words. They're never translated.
+    pub hidden_texts: Vec<String>,
     /// How much CPU the overlay may use, traded against how fast it reacts.
     pub performance: Performance,
 }
@@ -63,7 +72,8 @@ pub struct Performance {
     pub follow_highlights: bool,
     /// Waits until new text stops changing (fading in) before reading it.
     pub wait_for_settle: bool,
-    /// Pauses after each OCR read about as long as the read took.
+    /// Pauses after each OCR read about as long as the read took; off, half
+    /// as long.
     pub rest_between_reads: bool,
     /// CPU threads per OCR model.
     pub ocr_threads: usize,
@@ -194,6 +204,9 @@ impl Default for AppConfig {
             draft_translator: "libretranslate".into(),
             live_translator: "libretranslate".into(),
             ai_models: std::collections::BTreeMap::new(),
+            ai_fill_pack_gaps: false,
+            ai_request_limit: 300,
+            hidden_texts: Vec::new(),
             performance: Performance::default(),
         }
     }

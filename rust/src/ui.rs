@@ -117,6 +117,15 @@ struct OverlayWindow {
     address: Option<String>,
     placed: Option<Rect>,
     last_attempt: Option<Instant>,
+    /// The size the overlay last laid out at. When it differs from the
+    /// window's, the compositor stretches the overlay to fit the window and
+    /// every translation lands off its text.
+    drawn_size: Arc<Mutex<Option<egui::Vec2>>>,
+    /// The overlay window's size in the compositor, when known.
+    window_size: Arc<Mutex<Option<egui::Vec2>>>,
+    size_checked: Option<Instant>,
+    last_resize: Option<Instant>,
+    last_geometry: Option<String>,
 }
 
 /// The main window's two workspaces.
@@ -237,11 +246,12 @@ pub struct OverlayrApp {
     last_scan: Option<Instant>,
     /// Set by the window watcher when a window opens or closes.
     windows_changed: Arc<AtomicBool>,
-    /// Focus moved since the overlay last checked whether the game has it.
+    /// Focus moved since the overlay last checked whether the game is shown.
     focus_changed: Arc<AtomicBool>,
-    /// Another app has focus, so the overlay is hidden. Updated the moment
-    /// focus moves, without waiting for the pipeline's next capture.
-    game_unfocused: bool,
+    /// The game is on no monitor (another workspace), so the overlay is
+    /// hidden. Updated the moment focus moves, without waiting for the
+    /// pipeline's next check.
+    game_hidden: bool,
     watching_windows: bool,
     scan_error: Option<String>,
     worker: Option<PipelineWorker>,
@@ -259,6 +269,8 @@ pub struct OverlayrApp {
     /// The settings window is open, showing this category.
     settings_open: bool,
     settings_page: SettingsPage,
+    /// How many AI translations are saved, and in which file.
+    ai_cache_count: Option<(std::path::PathBuf, usize)>,
     mode: Mode,
     studio: StudioView,
     marketplace: MarketplaceView,
@@ -276,6 +288,8 @@ pub struct OverlayrApp {
     /// Name of the pack the running overlay uses; `None` for machine
     /// translation.
     running_pack: Option<String>,
+    /// What the AI translator has sent this session, when one runs.
+    ai_usage: Option<std::sync::Arc<crate::ai_cache::AiUsage>>,
     live_tab: LiveTab,
     /// Texture of the frame shown in the debug view, by frame sequence.
     debug_texture: Option<(u64, egui::TextureHandle)>,
@@ -326,7 +340,7 @@ impl OverlayrApp {
             last_scan: None,
             windows_changed: Arc::new(AtomicBool::new(false)),
             focus_changed: Arc::new(AtomicBool::new(true)),
-            game_unfocused: false,
+            game_hidden: false,
             watching_windows: false,
             scan_error: None,
             worker: None,
@@ -343,6 +357,7 @@ impl OverlayrApp {
             applied_appearance: None,
             settings_open: false,
             settings_page: SettingsPage::General,
+            ai_cache_count: None,
             mode: Mode::Translate,
             studio: StudioView::default(),
             marketplace: MarketplaceView::default(),
@@ -352,6 +367,7 @@ impl OverlayrApp {
             studio_overlay: None,
             last_exclusion_update: None,
             running_pack: None,
+            ai_usage: None,
             live_tab: LiveTab::Live,
             debug_texture: None,
             resources: ResourceMonitor::default(),
@@ -464,6 +480,23 @@ impl OverlayrApp {
     fn selected(&self) -> Option<&Source> {
         let id = self.selected_source.as_ref()?;
         self.picker_sources().find(|source| &source.id == id)
+    }
+
+    /// Hides `text` from the overlay for good: saved at once, since
+    /// settings are locked while the overlay runs.
+    fn hide_text(&mut self, text: String) {
+        let key = crate::tracker::normalize(&text);
+        if key.is_empty() || self.saved_config.hidden_texts.contains(&key) {
+            return;
+        }
+        self.saved_config.hidden_texts.push(key.clone());
+        self.config.hidden_texts.push(key);
+        if let Err(error) = self.saved_config.save(&self.config_path) {
+            self.error = Some(format!("Could not save settings: {error}"));
+        }
+        if let Some(worker) = &self.worker {
+            worker.set_hidden(&self.saved_config.hidden_texts);
+        }
     }
 
     fn save(&mut self) -> bool {
@@ -909,10 +942,16 @@ impl OverlayrApp {
             return;
         }
         let ai_provider = crate::ai::Provider::from_id(&self.config.live_translator);
+        // With a pack, the AI translates only what the pack doesn't cover,
+        // and only if the player wants it. Creators testing a pack in the
+        // studio see its gaps as they are.
+        let fill_pack_gaps = pack.is_some()
+            && !from_studio
+            && self.config.ai_fill_pack_gaps
+            && ai_provider.is_some();
+        self.ai_usage = None;
         let translator: Box<dyn crate::services::TranslationBackend> = match ai_provider {
-            // Packs translate on their own; the AI is only asked for screens
-            // without one.
-            Some(provider) if pack.is_none() => {
+            Some(provider) if pack.is_none() || fill_pack_gaps => {
                 let model = self
                     .config
                     .ai_models
@@ -920,10 +959,25 @@ impl OverlayrApp {
                     .cloned()
                     .unwrap_or_default();
                 match crate::ai::translator(provider, &model) {
-                    Ok(translator) => Box::new(crate::ai::LiveTranslator::new(
-                        translator,
-                        source.name.clone(),
-                    )),
+                    Ok(translator) => {
+                        // Translations are saved, so text seen in an
+                        // earlier session costs nothing.
+                        let pair = crate::types::LanguagePair::new(
+                            ocr_language.clone(),
+                            self.config.target_lang.clone(),
+                        );
+                        let usage = std::sync::Arc::new(crate::ai_cache::AiUsage::default());
+                        self.ai_usage = Some(std::sync::Arc::clone(&usage));
+                        Box::new(crate::ai_cache::CachedAiTranslator::new(
+                            crate::ai::LiveTranslator::new(translator, source.name.clone()),
+                            pair.clone(),
+                            crate::ai_cache::DiskCache::open(
+                                crate::ai_cache::DiskCache::default_path(&pair).as_deref(),
+                            ),
+                            usage,
+                            self.config.ai_request_limit,
+                        ))
+                    }
                     Err(error) => {
                         self.error = Some(error);
                         return;
@@ -961,6 +1015,7 @@ impl OverlayrApp {
             ocr,
             translator,
             pack,
+            fill_pack_gaps,
         ));
         self.active_source = Some(source);
         self.focus_changed.store(true, Ordering::Relaxed);
@@ -1029,6 +1084,69 @@ impl OverlayrApp {
     }
 
     /// Keeps the overlay window exactly over the captured area.
+    /// Keeps the overlay window and what it draws at the captured window's
+    /// size. When the compositor has resized the window but the overlay
+    /// still draws at an older size, the compositor stretches the drawing
+    /// into the window and every translation lands off its text; asking for
+    /// the size again makes both agree.
+    fn fit_overlay_window(
+        &mut self,
+        ctx: &egui::Context,
+        viewport_id: egui::ViewportId,
+        bounds: Rect,
+    ) {
+        #[cfg(unix)]
+        {
+            let overlay = &mut self.overlay_window;
+            if overlay
+                .size_checked
+                .is_some_and(|checked| checked.elapsed() < Duration::from_millis(500))
+                || !crate::hyprland::is_available()
+            {
+                return;
+            }
+            overlay.size_checked = Some(Instant::now());
+            let client = crate::hyprland::own_window(OVERLAY_TITLE).ok().flatten();
+            let window = client
+                .as_ref()
+                .map(|window| egui::vec2(window.size[0] as f32, window.size[1] as f32));
+            if let Ok(mut size) = overlay.window_size.lock() {
+                *size = window;
+            }
+            let drawn = overlay.drawn_size.lock().ok().and_then(|size| *size);
+            let geometry = format!(
+                "overlay geometry: window at {:?} size {window:?}, drawn {drawn:?}, game {bounds:?}",
+                client.as_ref().map(|window| window.at)
+            );
+            if overlay.last_geometry.as_deref() != Some(geometry.as_str()) {
+                eprintln!("{geometry}");
+                overlay.last_geometry = Some(geometry);
+            }
+            let (Some(window), Some(drawn), Some(client)) = (window, drawn, client) else {
+                return;
+            };
+            let misplaced = client.at != [bounds.left, bounds.top];
+            let wanted = egui::vec2(bounds.width as f32, bounds.height as f32);
+            let fits = |size: egui::Vec2| (size - wanted).abs().max_elem() <= 1.0;
+            if (fits(window) && fits(drawn) && !misplaced)
+                || overlay
+                    .last_resize
+                    .is_some_and(|resized| resized.elapsed() < Duration::from_secs(1))
+            {
+                return;
+            }
+            eprintln!(
+                "overlay: drawn at {drawn:?} in a {window:?} window, wanted {wanted:?}; resizing"
+            );
+            overlay.last_resize = Some(Instant::now());
+            overlay.placed = None;
+            overlay.last_attempt = None;
+            ctx.send_viewport_cmd_to(viewport_id, egui::ViewportCommand::InnerSize(wanted));
+        }
+        #[cfg(not(unix))]
+        let _ = (ctx, viewport_id, bounds);
+    }
+
     fn place_overlay_window(&mut self, bounds: Rect) {
         #[cfg(unix)]
         {
@@ -1110,6 +1228,10 @@ impl OverlayrApp {
         }
         self.overlay_window.address = None;
         self.overlay_window.placed = None;
+        // A new window starts over; the old one's sizes don't apply.
+        self.overlay_window.drawn_size = Arc::default();
+        self.overlay_window.window_size = Arc::default();
+        self.overlay_window.size_checked = None;
     }
 
     fn stop(&mut self) {
@@ -1489,20 +1611,47 @@ impl OverlayrApp {
                         );
                     }
                 });
-            let hint = if self.config.active_pack.is_empty() {
+            let pack_active = !self.config.active_pack.is_empty();
+            let hint = if !pack_active {
                 "Every detected text is translated automatically."
+            } else if self.config.ai_fill_pack_gaps {
+                "The pack's handmade translations are shown; an AI service translates the \
+                 text the pack doesn't cover."
             } else {
                 "Only the pack's handmade translations are shown; other text stays as it is."
             };
             ui.label(RichText::new(hint).small().weak());
-            if self.config.active_pack.is_empty() {
+            if pack_active {
                 ui.add_space(6.0);
-                ui.label(RichText::new("Machine translation by").strong());
-                ui.radio_value(
-                    &mut self.config.live_translator,
-                    "libretranslate".to_string(),
-                    "LibreTranslate (free, offline)",
+                ui.checkbox(
+                    &mut self.config.ai_fill_pack_gaps,
+                    "Translate text the pack doesn't cover with AI",
                 );
+            }
+            let choose_translator = !pack_active || self.config.ai_fill_pack_gaps;
+            if choose_translator {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(if pack_active {
+                        "AI service for missing text"
+                    } else {
+                        "Machine translation by"
+                    })
+                    .strong(),
+                );
+                if !pack_active {
+                    ui.radio_value(
+                        &mut self.config.live_translator,
+                        "libretranslate".to_string(),
+                        "LibreTranslate (free, offline)",
+                    );
+                } else if crate::ai::Provider::from_id(&self.config.live_translator).is_none() {
+                    ui.label(
+                        RichText::new("Choose an AI service, or missing text stays as it is.")
+                            .small()
+                            .color(WARNING),
+                    );
+                }
                 for provider in crate::ai::Provider::ALL {
                     let label = if crate::ai::api_key(provider).is_some() {
                         provider.label().to_string()
@@ -1518,17 +1667,61 @@ impl OverlayrApp {
                 ui.label(
                     RichText::new(
                         "AI services translate in context and read better, but each new \
-                         screen waits for an online request and costs a little.",
+                         screen waits for an online request and costs a little. \
+                         Translations are saved, so text seen before is free.",
                     )
                     .small()
                     .weak(),
                 );
+                if crate::ai::Provider::from_id(&self.config.live_translator).is_some() {
+                    ui.horizontal(|ui| {
+                        ui.label("AI requests per session");
+                        ui.add(
+                            egui::DragValue::new(&mut self.config.ai_request_limit)
+                                .range(0..=100_000),
+                        );
+                    })
+                    .response
+                    .on_hover_text(
+                        "Each request translates up to 40 texts. 0 means no limit. \
+                         Saved translations don't count.",
+                    );
+                }
             }
         });
 
         if self.config.active_pack.is_empty() {
             self.translation_service_section(ui);
         }
+        self.hidden_texts_section(ui);
+    }
+
+    fn hidden_texts_section(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Hidden text", |ui| {
+            ui.label(
+                RichText::new(
+                    "Text you hid with \"Hide\" while the overlay ran. It's never \
+                     translated.",
+                )
+                .small()
+                .weak(),
+            );
+            if self.config.hidden_texts.is_empty() {
+                ui.label(RichText::new("Nothing hidden.").weak());
+            }
+            let mut show = None;
+            for (index, text) in self.config.hidden_texts.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    if ui.small_button("Show again").clicked() {
+                        show = Some(index);
+                    }
+                    ui.label(text);
+                });
+            }
+            if let Some(index) = show {
+                self.config.hidden_texts.remove(index);
+            }
+        });
     }
 
     fn recognition_settings(&mut self, ui: &mut egui::Ui) {
@@ -1711,8 +1904,9 @@ impl OverlayrApp {
             );
             ui.checkbox(&mut performance.rest_between_reads, "Pause between reads")
                 .on_hover_text(
-                    "After reading the screen, wait about as long before reading again. Keeps \
-                     constantly animated games from using several CPU cores.",
+                    "After reading the screen, wait about as long before reading again (half \
+                     as long when off). Keeps constantly animated games from using several CPU \
+                     cores.",
                 );
             egui::Grid::new("ocr_threads")
                 .num_columns(2)
@@ -1758,6 +1952,58 @@ impl OverlayrApp {
                 .small()
                 .weak(),
             );
+        });
+        self.saved_translations_section(ui);
+    }
+
+    fn saved_translations_section(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Saved AI translations", |ui| {
+            ui.label(
+                RichText::new(
+                    "AI translations are saved and reused, so text seen before is free. \
+                     To fix one wrong translation, use \"Translate again\" next to it while \
+                     the overlay runs instead.",
+                )
+                .small()
+                .weak(),
+            );
+            let pair = crate::types::LanguagePair::new(
+                self.config.source_lang.clone(),
+                self.config.target_lang.clone(),
+            );
+            let Some(path) = crate::ai_cache::DiskCache::default_path(&pair) else {
+                return;
+            };
+            // Counted once, not on every frame.
+            if self
+                .ai_cache_count
+                .as_ref()
+                .is_none_or(|(counted, _)| *counted != path)
+            {
+                let count = if path.is_file() {
+                    crate::ai_cache::DiskCache::open(Some(&path)).len()
+                } else {
+                    0
+                };
+                self.ai_cache_count = Some((path.clone(), count));
+            }
+            let count = self.ai_cache_count.as_ref().map_or(0, |(_, count)| *count);
+            let label = format!("Forget {count} saved translations");
+            if ui
+                .add_enabled(count > 0, egui::Button::new(label))
+                .on_hover_text(
+                    "Every text is then translated again, and each new text costs a \
+                     request. Use it after changing the AI model, for example.",
+                )
+                .clicked()
+            {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => self.ai_cache_count = Some((path, 0)),
+                    Err(error) => {
+                        self.error = Some(format!("Could not forget translations: {error}"))
+                    }
+                }
+            }
         });
     }
 
@@ -2245,7 +2491,20 @@ impl OverlayrApp {
                             }
                         }
                     }
-                    _ => live_ui(ui, snapshot, self.running_pack.as_deref()),
+                    _ => match live_ui(
+                        ui,
+                        snapshot,
+                        self.running_pack.as_deref(),
+                        self.ai_usage.as_deref(),
+                    ) {
+                        Some(LiveAction::Hide(text)) => self.hide_text(text),
+                        Some(LiveAction::Retranslate(text)) => {
+                            if let Some(worker) = &self.worker {
+                                worker.retranslate(text);
+                            }
+                        }
+                        None => {}
+                    },
                 }
             }
             None => self.idle_ui(ui),
@@ -2278,6 +2537,7 @@ impl OverlayrApp {
                         Verdict::Noise,
                         Verdict::OwnWindow,
                         Verdict::OverlayEcho,
+                        Verdict::Hidden,
                     ] {
                         ui.label(RichText::new("■").color(verdict_color(verdict)));
                         ui.label(RichText::new(verdict.label()).small());
@@ -3026,10 +3286,22 @@ impl eframe::App for OverlayrApp {
         if let (Some(snapshot), Some(source)) = (snapshot, self.active_source.clone()) {
             #[cfg(unix)]
             if self.focus_changed.swap(false, Ordering::Relaxed) {
-                self.game_unfocused = crate::capture::hyprland_address(&source)
-                    .is_some_and(|address| !crate::hyprland::is_focused(address).unwrap_or(true));
+                // Shown on any monitor counts, focused or not: players with
+                // several monitors look at the game while using another one.
+                self.game_hidden =
+                    crate::capture::hyprland_address(&source).is_some_and(|address| {
+                        let (Ok(clients), Ok(monitors)) =
+                            (crate::hyprland::clients(), crate::hyprland::monitors())
+                        else {
+                            return false;
+                        };
+                        clients
+                            .iter()
+                            .find(|client| client.address == address)
+                            .is_some_and(|client| !client.is_visible(&monitors))
+                    });
             }
-            if !snapshot.source_active || self.game_unfocused {
+            if !snapshot.source_active || self.game_hidden {
                 self.close_overlay_window(ctx);
                 return;
             }
@@ -3050,9 +3322,10 @@ impl eframe::App for OverlayrApp {
             else {
                 return;
             };
+            let viewport_id = egui::ViewportId::from_hash_of("overlayr-translation-overlay");
+            self.fit_overlay_window(ctx, viewport_id, overlay_bounds);
             self.place_overlay_window(overlay_bounds);
             self.update_occluders();
-            let viewport_id = egui::ViewportId::from_hash_of("overlayr-translation-overlay");
             let builder = egui::ViewportBuilder::default()
                 .with_title(OVERLAY_TITLE)
                 .with_position([overlay_bounds.left as f32, overlay_bounds.top as f32])
@@ -3073,6 +3346,8 @@ impl eframe::App for OverlayrApp {
             ctx.request_repaint_of(viewport_id);
             let debug_boxes = snapshot.debug.is_some();
             let occluders = self.overlay_window.occluders.clone();
+            let drawn_size = Arc::clone(&self.overlay_window.drawn_size);
+            let window_size = Arc::clone(&self.overlay_window.window_size);
             ctx.show_viewport_deferred(viewport_id, builder, move |overlay_ctx, _| {
                 // Ask the window system not to include the overlay in screen
                 // captures where the platform supports content protection.
@@ -3091,15 +3366,46 @@ impl eframe::App for OverlayrApp {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
                     .show(overlay_ctx, |ui| {
-                        let origin = ui.max_rect().min
-                            - egui::vec2(overlay_bounds.left as f32, overlay_bounds.top as f32);
+                        let area = ui.max_rect();
+                        if let Ok(mut size) = drawn_size.lock() {
+                            *size = Some(area.size());
+                        }
+                        // Until the window and the overlay agree on a size,
+                        // the compositor stretches the overlay into the
+                        // window; draw where the stretch puts text in place.
+                        let stretch = window_size
+                            .lock()
+                            .ok()
+                            .and_then(|size| *size)
+                            .filter(|size| size.min_elem() >= 1.0)
+                            .map_or(egui::Vec2::splat(1.0), |size| area.size() / size);
+                        let stretched = (stretch - egui::Vec2::splat(1.0)).abs().max_elem() > 0.002;
+                        let origin = area.min;
                         for (block, line_height) in blocks.iter().zip(&line_heights) {
                             // Only translate the selected application: skip
                             // text under windows that sit above it.
                             if occluders.iter().any(|area| overlaps(block.bounds, *area)) {
                                 continue;
                             }
-                            paint_translation(ui.painter(), block, origin, *line_height);
+                            let mut block = block.clone();
+                            let mut line_height = *line_height;
+                            block.bounds = Rect::new(
+                                block.bounds.left - overlay_bounds.left,
+                                block.bounds.top - overlay_bounds.top,
+                                block.bounds.width,
+                                block.bounds.height,
+                            );
+                            if stretched {
+                                block.bounds = Rect::new(
+                                    (block.bounds.left as f32 * stretch.x).round() as i32,
+                                    (block.bounds.top as f32 * stretch.y).round() as i32,
+                                    (block.bounds.width as f32 * stretch.x).round() as u32,
+                                    (block.bounds.height as f32 * stretch.y).round() as u32,
+                                );
+                                line_height *= stretch.y;
+                            }
+                            let block = &block;
+                            paint_translation(ui.painter(), block, origin, line_height);
                             // Debug mode outlines every tracked text, including
                             // text left untranslated.
                             if debug_boxes {
@@ -3141,6 +3447,29 @@ impl eframe::App for OverlayrApp {
 /// colours, size, outline and alignment.
 /// `line_height` is the height of one line of the original text, so the
 /// translation gets the same size; see [`LineSizes`].
+/// [`crate::linebreak::wrap`], remembered: the overlay redraws the same
+/// translations many times a second.
+fn wrapped_text(text: &str, size: f32, width: f32, measure: impl Fn(&str) -> f32) -> String {
+    type Key = (String, u32, u32);
+    thread_local! {
+        static WRAPPED: std::cell::RefCell<HashMap<Key, String>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    let key = (text.to_owned(), size.to_bits(), width.to_bits());
+    if let Some(wrapped) = WRAPPED.with(|cache| cache.borrow().get(&key).cloned()) {
+        return wrapped;
+    }
+    let wrapped = crate::linebreak::wrap(text, width, measure);
+    WRAPPED.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() > 512 {
+            cache.clear();
+        }
+        cache.insert(key, wrapped.clone());
+    });
+    wrapped
+}
+
 pub(crate) fn paint_translation(
     painter: &egui::Painter,
     block: &TextBlock,
@@ -3154,6 +3483,11 @@ pub(crate) fn paint_translation(
     let Some(text) = block.translated_text.as_deref() else {
         return;
     };
+    // A translation that keeps the text as it is, such as OCR noise read from
+    // icons, would only cover the original with a copy of itself.
+    if text.trim().to_lowercase() == block.source_text.trim().to_lowercase() {
+        return;
+    }
     let style = block.style.clone().unwrap_or_default();
     let corners = match style.background {
         Background::Auto => Some(
@@ -3191,12 +3525,20 @@ pub(crate) fn paint_translation(
         egui::vec2(block.bounds.width as f32, block.bounds.height as f32),
     );
     let layout = |size: f32, wrap_width: f32| {
-        painter.layout(
-            text.to_owned(),
-            egui::FontId::proportional(size),
-            text_color,
-            wrap_width,
-        )
+        let font = egui::FontId::proportional(size);
+        // egui breaks lines only at spaces; Thai has none between words,
+        // so its lines are broken between words here.
+        let text = if crate::linebreak::needs_breaking(text) {
+            wrapped_text(text, size, wrap_width, |piece| {
+                painter
+                    .layout_no_wrap(piece.to_owned(), font.clone(), text_color)
+                    .size()
+                    .x
+            })
+        } else {
+            text.to_owned()
+        };
+        painter.layout(text, font, text_color, wrap_width)
     };
     // Size by lines, not by fitting each box, so text of one size gets one
     // font size.
@@ -3214,9 +3556,16 @@ pub(crate) fn paint_translation(
     // Longer translations wrap and the box grows instead.
     let galley = match style.font_size {
         Some(size) => layout(size, source.width().max(60.0)),
-        // One line: a longer translation may run a little past the original
-        // before it wraps.
-        None if lines <= 1.0 => layout(target, source.width().max(60.0) * 1.4),
+        // One line: a title or label reads better as one longer line than
+        // wrapped, so it may run well past the original (up to the screen
+        // edge) before it wraps; Thai and other languages are often longer.
+        None if lines <= 1.0 => {
+            let room = painter.clip_rect().right() - source.left() - PADDING * 2.0;
+            layout(
+                target,
+                (source.width().max(60.0) * 3.0).min(room.max(source.width())),
+            )
+        }
         None => layout(target, source.width().max(60.0)),
     };
     // Cover the source text completely, growing only if the translation
@@ -3242,7 +3591,14 @@ pub(crate) fn paint_translation(
         TextAlign::Left => PADDING,
         TextAlign::Center => ((rect.width() - galley.size().x) / 2.0).max(PADDING),
     };
-    let vertical = PADDING + ((rect.height() - PADDING * 2.0 - galley.size().y) / 2.0).max(0.0);
+    // A paragraph starts where the original's first line was, as the game
+    // lays it out; a translation with fewer lines would otherwise float in
+    // the middle. A single line stays centred on the original's.
+    let vertical = if lines > 1.0 {
+        PADDING
+    } else {
+        PADDING + ((rect.height() - PADDING * 2.0 - galley.size().y) / 2.0).max(0.0)
+    };
     let position = rect.min + egui::vec2(horizontal, vertical);
     if let Some(outline) = outline {
         for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
@@ -3585,10 +3941,24 @@ fn verdict_color(verdict: Verdict) -> Color32 {
         Verdict::Noise => DANGER,
         Verdict::OwnWindow => Color32::from_rgb(120, 140, 160),
         Verdict::OverlayEcho => Color32::from_gray(150),
+        Verdict::Hidden => Color32::from_gray(110),
     }
 }
 
-fn live_ui(ui: &mut egui::Ui, snapshot: PipelineSnapshot, pack: Option<&str>) {
+/// What the player asked for in the list of live translations.
+enum LiveAction {
+    Hide(String),
+    Retranslate(String),
+}
+
+/// Shows the running overlay, and what the player asked for.
+fn live_ui(
+    ui: &mut egui::Ui,
+    snapshot: PipelineSnapshot,
+    pack: Option<&str>,
+    ai_usage: Option<&crate::ai_cache::AiUsage>,
+) -> Option<LiveAction> {
+    let mut action = None;
     if let Some(error) = &snapshot.last_error {
         banner(ui, error, false);
     }
@@ -3611,7 +3981,37 @@ fn live_ui(ui: &mut egui::Ui, snapshot: PipelineSnapshot, pack: Option<&str>) {
             .response
             .on_hover_text("Text is only read again when new text appears");
         stat(ui, "Text blocks", &snapshot.blocks.len().to_string());
+        if let Some(usage) = ai_usage {
+            use std::sync::atomic::Ordering::Relaxed;
+            ui.scope(|ui| stat(ui, "AI requests", &usage.requests.load(Relaxed).to_string()))
+                .response
+                .on_hover_text(format!(
+                    "{} texts sent to the AI this session",
+                    usage.texts_sent.load(Relaxed)
+                ));
+            ui.scope(|ui| {
+                stat(
+                    ui,
+                    "Saved hits",
+                    &usage.cache_hits.load(Relaxed).to_string(),
+                )
+            })
+            .response
+            .on_hover_text("Texts translated in an earlier session, reused at no cost");
+        }
     });
+    if let Some(usage) = ai_usage
+        && usage
+            .limit_reached
+            .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        ui.colored_label(
+            WARNING,
+            "The AI request limit for this session was reached, so new text isn't \
+             translated. Saved translations still show. Raise the limit in Settings → \
+             Translation, then restart the overlay.",
+        );
+    }
     ui.add_space(8.0);
     ui.heading("Live translations");
     let mode = match pack {
@@ -3628,7 +4028,7 @@ fn live_ui(ui: &mut egui::Ui, snapshot: PipelineSnapshot, pack: Option<&str>) {
             )
             .weak(),
         );
-        return;
+        return None;
     }
     egui::ScrollArea::vertical()
         .auto_shrink(false)
@@ -3648,6 +4048,27 @@ fn live_ui(ui: &mut egui::Ui, snapshot: PipelineSnapshot, pack: Option<&str>) {
                     };
                     ui.label(RichText::new(&block.source_text).weak());
                     ui.horizontal(|ui| {
+                        if ui
+                            .small_button("Hide")
+                            .on_hover_text(
+                                "Never translate this text again, e.g. when icons are read \
+                                 as words. Settings → Translation shows it again.",
+                            )
+                            .clicked()
+                        {
+                            action = Some(LiveAction::Hide(block.source_text.clone()));
+                        }
+                        // Machine translations only; a pack's are the
+                        // creator's own.
+                        if block.translated_text.is_some()
+                            && block.style.is_none()
+                            && ui
+                                .small_button("Translate again")
+                                .on_hover_text("Forget this translation and translate it again")
+                                .clicked()
+                        {
+                            action = Some(LiveAction::Retranslate(block.source_text.clone()));
+                        }
                         let color = if block.confidence >= 0.75 {
                             SUCCESS
                         } else if block.confidence >= 0.5 {
@@ -3671,6 +4092,7 @@ fn live_ui(ui: &mut egui::Ui, snapshot: PipelineSnapshot, pack: Option<&str>) {
                 ui.add_space(6.0);
             }
         });
+    action
 }
 
 fn card(ui: &egui::Ui) -> egui::Frame {

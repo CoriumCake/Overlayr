@@ -15,6 +15,7 @@ native-production = ["native-capture", "native-ocr"]
 aes-gcm = "0.10.3"
 base64 = "0.22.1"
 eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+icu_segmenter = "2"
 image = { version = "0.25.10", default-features = false, features = ["png", "pnm"] }
 leptess = { version = "0.14.0", optional = true }
 # Loaded at run time, so Overlayr starts (with Tesseract) when the ONNX

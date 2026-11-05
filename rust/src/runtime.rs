@@ -41,6 +41,8 @@ pub enum Verdict {
     OwnWindow,
     /// Discarded by OCR as icons, bars or fragments.
     Noise,
+    /// Hidden by the player.
+    Hidden,
 }
 
 impl Verdict {
@@ -53,6 +55,7 @@ impl Verdict {
             Self::OverlayEcho => "Overlay echo",
             Self::OwnWindow => "Overlayr window",
             Self::Noise => "Noise",
+            Self::Hidden => "Hidden by you",
         }
     }
 }
@@ -85,6 +88,8 @@ pub struct DebugInfo {
 }
 
 const DEBUG_LOG_LENGTH: usize = 200;
+/// How often a hidden window is checked for coming back.
+const HIDDEN_POLL: Duration = Duration::from_millis(250);
 /// Texts whose pack match is cached during playback.
 const MAX_PACK_LOOKUPS: usize = 4_096;
 
@@ -96,6 +101,11 @@ struct SharedState {
     /// Screen areas whose text is never translated: Overlayr's own windows,
     /// which appear in captures of a whole screen.
     excluded: Mutex<Vec<Rect>>,
+    /// Texts the player hid, normalized; `None` once the pipeline took an
+    /// update.
+    hidden_update: Mutex<Option<std::collections::HashSet<String>>>,
+    /// Texts whose translation the player wants redone.
+    retranslate: Mutex<Vec<String>>,
     /// Duration of the latest capture, in microseconds, for debug mode.
     capture_micros: std::sync::atomic::AtomicU64,
     /// Translations are on screen, so capture checks more often whether
@@ -135,10 +145,6 @@ const SETTLE_TIME: Duration = Duration::from_millis(90);
 /// Content that keeps changing (animation) is read after this long anyway.
 const MAX_SETTLE_WAIT: Duration = Duration::from_millis(700);
 
-/// Longest time translations are held back waiting for the rest of the
-/// screen, so one slow text doesn't keep everything hidden.
-const HOLD_LIMIT: Duration = Duration::from_secs(4);
-
 pub struct PipelineWorker {
     state: Arc<SharedState>,
     frames: Arc<LatestFrame<Frame>>,
@@ -159,12 +165,13 @@ impl PipelineWorker {
         O: OcrBackend + 'static,
         T: TranslationBackend + 'static,
     {
-        Self::start_with_pack(config, source, capture, ocr, translator, None)
+        Self::start_with_pack(config, source, capture, ocr, translator, None, false)
     }
 
     /// Like [`PipelineWorker::start`], but with a translation pack: text is
-    /// translated only by the pack's entries, in their style, and text the
-    /// pack doesn't cover is left in the original language.
+    /// translated by the pack's entries, in their style. Text the pack
+    /// doesn't cover is translated by `translator` when `fill_pack_gaps` is
+    /// set, and otherwise left in the original language.
     pub fn start_with_pack<C, O, T>(
         config: AppConfig,
         source: Source,
@@ -172,6 +179,7 @@ impl PipelineWorker {
         mut ocr: O,
         translator: T,
         pack: Option<Pack>,
+        fill_pack_gaps: bool,
     ) -> Self
     where
         C: CaptureBackend + 'static,
@@ -188,6 +196,8 @@ impl PipelineWorker {
             stop: AtomicBool::new(false),
             pack_update: Mutex::new(None),
             excluded: Mutex::new(Vec::new()),
+            hidden_update: Mutex::new(None),
+            retranslate: Mutex::new(Vec::new()),
             capture_micros: std::sync::atomic::AtomicU64::new(0),
             showing_text: AtomicBool::new(false),
             waker: Mutex::new(None),
@@ -215,6 +225,7 @@ impl PipelineWorker {
                 &mut ocr,
                 translator,
                 pack,
+                fill_pack_gaps,
                 pipeline_frames,
                 pipeline_state,
             );
@@ -231,6 +242,22 @@ impl PipelineWorker {
     pub fn set_excluded(&self, areas: Vec<Rect>) {
         if let Ok(mut excluded) = self.state.excluded.lock() {
             *excluded = areas;
+        }
+    }
+
+    /// Hides texts (as [`normalize`] gives them) from now on; text already
+    /// on screen is read again.
+    pub fn set_hidden(&self, texts: &[String]) {
+        if let Ok(mut update) = self.state.hidden_update.lock() {
+            *update = Some(texts.iter().map(|text| normalize(text)).collect());
+        }
+    }
+
+    /// Forgets the machine translation of `text`, saved ones included, and
+    /// translates it again.
+    pub fn retranslate(&self, text: String) {
+        if let Ok(mut texts) = self.state.retranslate.lock() {
+            texts.push(text);
         }
     }
 
@@ -328,10 +355,12 @@ fn run_capture<C>(
             if let Ok(mut snapshot) = state.snapshot.lock() {
                 snapshot.source_active = active;
             }
-            // Keep translating in the background when the window can be
-            // captured while hidden; the overlay is only hidden meanwhile.
-            if !active && !capture.can_capture_hidden(&source) {
-                thread::sleep(interval);
+            // A window on no monitor (another workspace, minimised) shows
+            // no translations, so nothing is captured, read or translated
+            // until it's back. Its text is still tracked then, so its
+            // translations return at once.
+            if !active {
+                thread::sleep(interval.max(HIDDEN_POLL));
                 continue;
             }
         }
@@ -368,6 +397,7 @@ fn run_pipeline<O, T>(
     ocr: &mut O,
     translator: T,
     mut pack: Option<Pack>,
+    fill_pack_gaps: bool,
     frames: Arc<LatestFrame<Frame>>,
     state: Arc<SharedState>,
 ) where
@@ -398,6 +428,20 @@ fn run_pipeline<O, T>(
     }
     let mut pack_lookups: std::collections::HashMap<String, Option<Translated>> =
         std::collections::HashMap::new();
+    // Colours and backdrop of each text on screen, with a fingerprint of
+    // the pixels they came from.
+    type Look = (
+        u64,
+        [[u8; 4]; 4],
+        Option<[u8; 4]>,
+        Option<Arc<crate::types::Backdrop>>,
+    );
+    let mut backdrops: std::collections::HashMap<Rect, Look> = std::collections::HashMap::new();
+    let mut hidden: std::collections::HashSet<String> = config
+        .hidden_texts
+        .iter()
+        .map(|text| normalize(text))
+        .collect();
     let started = Instant::now();
     let mut debug = config.debug.then(DebugInfo::default);
     let log = |debug: &mut Option<DebugInfo>, message: String| {
@@ -414,9 +458,14 @@ fn run_pipeline<O, T>(
         &mut debug,
         match &pack {
             Some(pack) => format!(
-                "Started with the pack \"{}\" ({} entries)",
+                "Started with the pack \"{}\" ({} entries){}",
                 pack.name,
-                pack.entries.len()
+                pack.entries.len(),
+                if fill_pack_gaps {
+                    "; AI translates what it doesn't cover"
+                } else {
+                    ""
+                }
             ),
             None => "Started with machine translation".into(),
         },
@@ -433,9 +482,7 @@ fn run_pipeline<O, T>(
     let mut rest_until: Option<Instant> = None;
     // When the screen first needed reading since the last read started.
     let mut pending_since: Option<Instant> = None;
-    // Translations held back until the rest of the screen is translated.
-    let mut held: Vec<(String, Translated)> = Vec::new();
-    let mut held_since: Option<Instant> = None;
+    let mut limit_logged = false;
     // OCR reads on its own thread, so tracking (and clearing text that
     // vanished) never waits for it. One read runs at a time.
     let (jobs, read_requests) = std::sync::mpsc::channel::<Frame>();
@@ -443,7 +490,8 @@ fn run_pipeline<O, T>(
     let mut job: Option<ReadJob> = None;
     let read_language = source_lang.clone();
     thread::scope(|scope| {
-        scope.spawn(move || {
+        let reader = thread::Builder::new().name("ocr".into());
+        let _reader = reader.spawn_scoped(scope, move || {
             while let Ok(area) = read_requests.recv() {
                 let started = Instant::now();
                 let result = ocr.recognize(&area, &read_language);
@@ -490,6 +538,44 @@ fn run_pipeline<O, T>(
                 pack = Some(updated);
                 pack_lookups.clear();
             }
+            if let Some(updated) = state
+                .hidden_update
+                .lock()
+                .ok()
+                .and_then(|mut update| update.take())
+            {
+                // Start over so hidden text on screen disappears.
+                log(
+                    &mut debug,
+                    format!("{} hidden text(s); reading the screen again", updated.len()),
+                );
+                tracker = Tracker::new(tracker_settings);
+                if let Some(pack) = &pack {
+                    tracker.set_anchors(pack.anchor_targets());
+                }
+                hidden = updated;
+            }
+            let retranslate = state
+                .retranslate
+                .lock()
+                .map(|mut texts| std::mem::take(&mut *texts))
+                .unwrap_or_default();
+            if !retranslate.is_empty() {
+                // Starting over drops the tracker's copy too; the texts are
+                // then read and, missing from every cache, translated again.
+                log(
+                    &mut debug,
+                    format!("Translating {} text(s) again", retranslate.len()),
+                );
+                for text in &retranslate {
+                    cache.remove(&pair, text);
+                }
+                background.forget(retranslate);
+                tracker = Tracker::new(tracker_settings);
+                if let Some(pack) = &pack {
+                    tracker.set_anchors(pack.anchor_targets());
+                }
+            }
             if !config.translate_only_when_changed {
                 tracker.request_detection();
             }
@@ -514,12 +600,16 @@ fn run_pipeline<O, T>(
             let read_now = finished.is_some();
             if let Some(outcome) = finished {
                 let job = job.take().expect("a read was running");
-                // Rest about as long as the read took before the next one. Games
-                // with constant animation otherwise keep OCR running back to
-                // back, taking several cores from the game.
-                if config.performance.rest_between_reads {
-                    rest_until = Some(Instant::now() + outcome.took.min(Duration::from_secs(1)));
-                }
+                // Rest about as long as the read took before the next one (half
+                // as long when set to react fastest). Games with constant
+                // animation otherwise keep OCR running back to back, taking
+                // several cores from the game and making it stutter.
+                let rest = if config.performance.rest_between_reads {
+                    outcome.took
+                } else {
+                    outcome.took / 2
+                };
+                rest_until = Some(Instant::now() + rest.min(Duration::from_secs(1)));
                 let region = job.detection.region;
                 let ocr_ms = outcome.took.as_secs_f32() * 1000.0;
                 result = (|| {
@@ -539,6 +629,8 @@ fn run_pipeline<O, T>(
                             Some(Verdict::LowConfidence)
                         } else if !is_valid_text(&block.source_text, &source_lang) {
                             Some(Verdict::InvalidText)
+                        } else if hidden.contains(&normalize(&block.source_text)) {
+                            Some(Verdict::Hidden)
                         } else if is_overlay_echo(&block, &job.rendered, &pair) {
                             Some(Verdict::OverlayEcho)
                         } else if excluded
@@ -550,7 +642,17 @@ fn run_pipeline<O, T>(
                             None
                         };
                         match verdict {
-                            Some(verdict) => dropped.push((block, verdict)),
+                            Some(verdict) => {
+                                if std::env::var_os("OVERLAYR_TRACE").is_some() {
+                                    eprintln!(
+                                        "trace: dropped {:?} at {:?}: {}",
+                                        block.source_text.chars().take(32).collect::<String>(),
+                                        block.bounds,
+                                        verdict.label()
+                                    );
+                                }
+                                dropped.push((block, verdict))
+                            }
                             None => blocks.push(block),
                         }
                     }
@@ -562,40 +664,60 @@ fn run_pipeline<O, T>(
                         match &pack {
                             // Matching against every entry is cached per text,
                             // including text the pack doesn't cover.
-                            Some(pack) => Ok(texts
-                                .iter()
-                                .map(|text| {
-                                    // OCR misreads and changing numbers make new
-                                    // texts all the time; don't keep them forever.
-                                    if pack_lookups.len() >= MAX_PACK_LOOKUPS {
-                                        pack_lookups.clear();
+                            Some(pack) => {
+                                let mut results = texts
+                                    .iter()
+                                    .map(|text| {
+                                        // OCR misreads and changing numbers make new
+                                        // texts all the time; don't keep them forever.
+                                        if pack_lookups.len() >= MAX_PACK_LOOKUPS {
+                                            pack_lookups.clear();
+                                        }
+                                        pack_lookups
+                                            .entry(normalize(text))
+                                            .or_insert_with(|| {
+                                                pack.find(text)
+                                                    .filter(|entry| {
+                                                        !entry.translation.trim().is_empty()
+                                                    })
+                                                    .map(|entry| Translated {
+                                                        text: entry.translation.clone(),
+                                                        style: Some(entry.style.clone()),
+                                                    })
+                                            })
+                                            .clone()
+                                    })
+                                    .collect::<Vec<_>>();
+                                // Text the pack doesn't cover goes to the AI.
+                                // Pack translations show at once; the AI's
+                                // are drawn when they arrive.
+                                if fill_pack_gaps {
+                                    let mut missing = Vec::new();
+                                    for (text, result) in texts.iter().zip(&mut results) {
+                                        if result.is_none() {
+                                            match cache.get(&pair, text) {
+                                                Some(cached) => {
+                                                    *result = Some(Translated::plain(cached));
+                                                }
+                                                None => missing.push(text.clone()),
+                                            }
+                                        }
                                     }
-                                    pack_lookups
-                                        .entry(normalize(text))
-                                        .or_insert_with(|| {
-                                            pack.find(text)
-                                                .filter(|entry| {
-                                                    !entry.translation.trim().is_empty()
-                                                })
-                                                .map(|entry| Translated {
-                                                    text: entry.translation.clone(),
-                                                    style: Some(entry.style.clone()),
-                                                })
-                                        })
-                                        .clone()
-                                })
-                                .collect()),
-                            // Texts not translated before are translated in the
-                            // background. The screen's translations are then
-                            // shown together, not one by one as they arrive.
+                                    if !missing.is_empty() {
+                                        background.request(missing);
+                                    }
+                                }
+                                Ok(results)
+                            }
+                            // Texts translated before show at once; the rest are
+                            // translated in the background and each is drawn as
+                            // soon as it arrives, so short labels don't wait for
+                            // a long paragraph.
                             None => {
                                 let results = texts
                                     .iter()
                                     .map(|text| cache.get(&pair, text).map(Translated::plain))
                                     .collect::<Vec<_>>();
-                                if results.iter().all(Option::is_some) {
-                                    return Ok(results);
-                                }
                                 background.request(
                                     texts
                                         .iter()
@@ -603,11 +725,7 @@ fn run_pipeline<O, T>(
                                         .filter(|(_, cached)| cached.is_none())
                                         .map(|(text, _)| text.clone()),
                                 );
-                                held_since.get_or_insert_with(Instant::now);
-                                held.extend(texts.iter().zip(&results).filter_map(
-                                    |(text, cached)| Some((text.clone(), cached.clone()?)),
-                                ));
-                                Ok(vec![None; texts.len()])
+                                Ok(results)
                             }
                         }
                     })?;
@@ -737,6 +855,13 @@ fn run_pipeline<O, T>(
                         cache.insert(&pair, text.clone(), translation.clone());
                         arrived.push((text, Translated::plain(translation)));
                     }
+                    // Retrying wouldn't help; new text is tried when it appears.
+                    Err(error) if error == crate::ai_cache::LIMIT_REACHED => {
+                        if !limit_logged {
+                            limit_logged = true;
+                            log(&mut debug, format!("Stopped translating: {error}"));
+                        }
+                    }
                     Err(error) => {
                         // Read the screen again later to retry.
                         tracker.request_detection();
@@ -746,20 +871,6 @@ fn run_pipeline<O, T>(
                         );
                     }
                 }
-            }
-            // Hold translations until the whole screen is translated, or a
-            // slow one has kept the rest waiting long enough.
-            if !arrived.is_empty() {
-                held_since.get_or_insert_with(Instant::now);
-                held.append(&mut arrived);
-            }
-            if !held.is_empty()
-                && (background.is_idle()
-                    || held_since.is_some_and(|since| since.elapsed() >= HOLD_LIMIT))
-            {
-                arrived = std::mem::take(&mut held);
-                // Still waiting for some: hold the next ones afresh.
-                held_since = (!background.is_idle()).then(Instant::now);
             }
             let translated_now = !arrived.is_empty() && tracker.apply_translations(&arrived);
             if let Some(info) = &mut debug {
@@ -802,18 +913,35 @@ fn run_pipeline<O, T>(
                     // again, so transient OCR or provider failures are retried
                     // even on an otherwise unchanged screen.
                     if changed {
+                        // Rebuilding a backdrop is the costliest part of a
+                        // redraw; one whose pixels didn't change is reused.
+                        let mut reused = std::collections::HashMap::new();
                         snapshot.blocks = tracker
                             .blocks(&frame)
                             .into_iter()
                             .map(|mut block| {
-                                let (background, foreground) = sample_colors(&frame, block.bounds);
-                                block.background = Some(background);
-                                block.foreground = foreground;
-                                block.backdrop =
-                                    rebuild_backdrop(&frame, block.bounds).map(Arc::new);
+                                let fingerprint = area_fingerprint(&frame, block.bounds);
+                                let look = match backdrops.get(&block.bounds) {
+                                    Some(look) if look.0 == fingerprint => look.clone(),
+                                    _ => {
+                                        let (background, foreground) =
+                                            sample_colors(&frame, block.bounds);
+                                        (
+                                            fingerprint,
+                                            background,
+                                            foreground,
+                                            rebuild_backdrop(&frame, block.bounds).map(Arc::new),
+                                        )
+                                    }
+                                };
+                                block.background = Some(look.1);
+                                block.foreground = look.2;
+                                block.backdrop = look.3.clone();
+                                reused.insert(block.bounds, look);
                                 block
                             })
                             .collect();
+                        backdrops = reused;
                         state
                             .showing_text
                             .store(!snapshot.blocks.is_empty(), Ordering::Relaxed);
@@ -865,8 +993,13 @@ struct ReadOutcome {
 /// Translates texts on its own thread and hands results back one by one as
 /// they finish. Shorter texts start first, so labels and buttons are
 /// translated in a fraction of a second even while a paragraph takes longer.
+enum BackgroundJob {
+    Translate(Vec<String>),
+    Forget(Vec<String>),
+}
+
 struct BackgroundTranslator {
-    requests: Option<std::sync::mpsc::Sender<Vec<String>>>,
+    requests: Option<std::sync::mpsc::Sender<BackgroundJob>>,
     results: std::sync::mpsc::Receiver<(String, ServiceResult<String>)>,
     pending: std::collections::HashSet<String>,
     handle: Option<thread::JoinHandle<()>>,
@@ -874,13 +1007,24 @@ struct BackgroundTranslator {
 
 impl BackgroundTranslator {
     fn start<T: TranslationBackend + 'static>(mut provider: T, pair: LanguagePair) -> Self {
-        let (requests, incoming) = std::sync::mpsc::channel::<Vec<String>>();
+        let (requests, incoming) = std::sync::mpsc::channel::<BackgroundJob>();
         let (outgoing, results) = std::sync::mpsc::channel();
         let handle = spawn_named("translate", move || {
-            while let Ok(mut texts) = incoming.recv() {
-                // Merge requests that queued up meanwhile.
-                while let Ok(more) = incoming.try_recv() {
-                    texts.extend(more);
+            while let Ok(job) = incoming.recv() {
+                let mut texts = Vec::new();
+                // Merge requests that queued up meanwhile, in order.
+                for job in std::iter::once(job).chain(incoming.try_iter()) {
+                    match job {
+                        BackgroundJob::Translate(more) => texts.extend(more),
+                        BackgroundJob::Forget(forgotten) => {
+                            for text in &forgotten {
+                                provider.forget(&pair, text);
+                            }
+                        }
+                    }
+                }
+                if texts.is_empty() {
+                    continue;
                 }
                 texts.sort_by_key(String::len);
                 let mut closed = false;
@@ -909,16 +1053,18 @@ impl BackgroundTranslator {
         if !new.is_empty()
             && let Some(requests) = &self.requests
         {
-            let _ = requests.send(new);
+            let _ = requests.send(BackgroundJob::Translate(new));
+        }
+    }
+
+    /// Has the provider forget saved translations of `texts`.
+    fn forget(&mut self, texts: Vec<String>) {
+        if let Some(requests) = &self.requests {
+            let _ = requests.send(BackgroundJob::Forget(texts));
         }
     }
 
     /// Translations finished since the last call.
-    /// Nothing is waiting to be translated.
-    fn is_idle(&self) -> bool {
-        self.pending.is_empty()
-    }
-
     fn finished(&mut self) -> Vec<(String, ServiceResult<String>)> {
         let results = self.results.try_iter().collect::<Vec<_>>();
         for (text, _) in &results {
@@ -935,6 +1081,26 @@ impl Drop for BackgroundTranslator {
         self.requests = None;
         self.handle.take();
     }
+}
+
+/// A cheap fingerprint of the pixels under `bounds` (screen coordinates),
+/// sampled on a grid: equal when the area looks the same.
+fn area_fingerprint(frame: &Frame, bounds: Rect) -> u64 {
+    let area = frame.to_pixels(bounds);
+    let left = area.left.clamp(0, frame.width as i32) as u32;
+    let top = area.top.clamp(0, frame.height as i32) as u32;
+    let right = (area.right().max(0) as u32).min(frame.width);
+    let bottom = (area.bottom().max(0) as u32).min(frame.height);
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for y in (top..bottom).step_by(2) {
+        for x in (left..right).step_by(2) {
+            let index = ((y * frame.width + x) * 4) as usize;
+            for &byte in &frame.rgba[index..index + 3] {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+    hash
 }
 
 /// Whether most of `inner` lies within `outer`.
@@ -1423,6 +1589,83 @@ mod tests {
     }
 
     #[test]
+    fn hidden_text_leaves_the_screen_and_is_not_translated() {
+        let config = AppConfig {
+            capture_interval_ms: 16,
+            ..AppConfig::default()
+        };
+        let source = Source {
+            id: "test".into(),
+            name: "Test source".into(),
+            kind: SourceKind::Screen,
+            bounds: Rect::new(0, 0, 10, 10),
+            detail: String::new(),
+        };
+        let worker = PipelineWorker::start(config, source, FakeCapture, FakeOcr, FakeTranslation);
+        let wait_for = |done: &dyn Fn(&PipelineSnapshot) -> bool| {
+            (0..100).any(|_| {
+                std::thread::sleep(Duration::from_millis(10));
+                done(&worker.snapshot())
+            })
+        };
+        assert!(wait_for(&|snapshot| !snapshot.blocks.is_empty()));
+        worker.set_hidden(&["猫です".to_string()]);
+        assert!(
+            wait_for(&|snapshot| snapshot.blocks.is_empty()),
+            "hidden text stayed on screen"
+        );
+    }
+
+    struct Numbered(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl TranslationBackend for Numbered {
+        fn translate(&mut self, _pair: &LanguagePair, _text: &str) -> ServiceResult<String> {
+            Ok(format!(
+                "try {}",
+                self.0.fetch_add(1, Ordering::Relaxed) + 1
+            ))
+        }
+    }
+
+    #[test]
+    fn translating_again_replaces_the_translation_on_screen() {
+        let config = AppConfig {
+            capture_interval_ms: 16,
+            ..AppConfig::default()
+        };
+        let source = Source {
+            id: "test".into(),
+            name: "Test source".into(),
+            kind: SourceKind::Screen,
+            bounds: Rect::new(0, 0, 10, 10),
+            detail: String::new(),
+        };
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker = PipelineWorker::start(
+            config,
+            source,
+            FakeCapture,
+            FakeOcr,
+            Numbered(Arc::clone(&calls)),
+        );
+        let shows = |expected: &str| {
+            (0..100).any(|_| {
+                std::thread::sleep(Duration::from_millis(10));
+                worker
+                    .snapshot()
+                    .blocks
+                    .first()
+                    .and_then(|block| block.translated_text.clone())
+                    .as_deref()
+                    == Some(expected)
+            })
+        };
+        assert!(shows("try 1"));
+        worker.retranslate("猫です".into());
+        assert!(shows("try 2"), "the old translation stayed");
+    }
+
+    #[test]
     fn worker_retries_an_unchanged_frame_after_provider_failure() {
         let config = AppConfig {
             capture_interval_ms: 16,
@@ -1494,6 +1737,7 @@ mod tests {
             FakeOcr,
             FakeTranslation,
             Some(pack("first")),
+            false,
         );
         let shows = |text: &str| {
             (0..100).any(|_| {
@@ -1516,6 +1760,60 @@ mod tests {
             "an unchanged screen picks up the edited pack"
         );
         drop(worker);
+    }
+
+    #[test]
+    fn ai_translates_text_the_pack_does_not_cover() {
+        use crate::pack::{Pack, PackEntry};
+        let pack = Pack {
+            entries: vec![PackEntry {
+                source_text: "something else".into(),
+                translation: "อย่างอื่น".into(),
+                ..PackEntry::default()
+            }],
+            ..Pack::default()
+        };
+        let config = AppConfig {
+            capture_interval_ms: 16,
+            ..AppConfig::default()
+        };
+        let source = Source {
+            id: "test".into(),
+            name: "Test source".into(),
+            kind: SourceKind::Screen,
+            bounds: Rect::new(0, 0, 10, 10),
+            detail: String::new(),
+        };
+        let start = |fill: bool| {
+            PipelineWorker::start_with_pack(
+                config.clone(),
+                source.clone(),
+                FakeCapture,
+                FakeOcr,
+                FakeTranslation,
+                Some(pack.clone()),
+                fill,
+            )
+        };
+        let translation = |worker: &PipelineWorker| {
+            (0..100).find_map(|_| {
+                let found = worker
+                    .snapshot()
+                    .blocks
+                    .first()
+                    .and_then(|block| block.translated_text.clone());
+                if found.is_none() {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                found
+            })
+        };
+        let filled = start(true);
+        assert_eq!(translation(&filled).as_deref(), Some("แมว"));
+        drop(filled);
+        let unfilled = start(false);
+        assert_eq!(translation(&unfilled), None);
+        drop(unfilled);
     }
 
     #[test]
@@ -1582,7 +1880,7 @@ mod tests {
     }
 
     #[test]
-    fn a_screen_s_translations_appear_together() {
+    fn short_translations_do_not_wait_for_long_ones() {
         let config = AppConfig {
             capture_interval_ms: 16,
             ..AppConfig::default()
@@ -1615,11 +1913,11 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        // "Tasks" is translated at once but waits for the paragraph.
+        // "Tasks" shows while the paragraph is still being translated.
         assert_eq!(translation(&snapshot, "Tasks").as_deref(), Some("<Tasks>"));
         assert!(
-            translation(&snapshot, "A long paragraph that takes a while").is_some(),
-            "both appear in the same update"
+            translation(&snapshot, "A long paragraph that takes a while").is_none(),
+            "the paragraph arrives later"
         );
         drop(worker);
     }
@@ -1645,7 +1943,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_translating_a_hidden_window_in_the_background() {
+    fn does_no_work_while_the_window_is_hidden() {
         let config = AppConfig {
             capture_interval_ms: 16,
             ..AppConfig::default()
@@ -1658,27 +1956,11 @@ mod tests {
             detail: String::new(),
         };
         let worker = PipelineWorker::start(config, source, HiddenCapture, FakeOcr, FakeTranslation);
-        let mut snapshot = worker.snapshot();
-        for _ in 0..100 {
-            snapshot = worker.snapshot();
-            if snapshot
-                .blocks
-                .first()
-                .is_some_and(|block| block.translated_text.is_some())
-            {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        std::thread::sleep(Duration::from_millis(400));
+        let snapshot = worker.snapshot();
         assert!(!snapshot.source_active, "the window is reported as hidden");
-        assert_eq!(
-            snapshot
-                .blocks
-                .first()
-                .and_then(|block| block.translated_text.as_deref()),
-            Some("แมว"),
-            "translation continues while hidden"
-        );
+        assert_eq!(snapshot.frames_processed, 0, "nothing is captured");
+        assert!(snapshot.blocks.is_empty());
         drop(worker);
     }
 

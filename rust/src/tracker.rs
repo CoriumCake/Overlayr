@@ -16,6 +16,23 @@
 
 use std::collections::{HashMap, VecDeque};
 
+/// `OVERLAYR_TRACE=1` prints each tracking decision to stderr, to find out
+/// why text was kept, dropped or read again.
+static TRACE: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("OVERLAYR_TRACE").is_some());
+
+macro_rules! trace {
+    ($($arg:tt)*) => {
+        if *TRACE {
+            eprintln!("trace: {}", format!($($arg)*));
+        }
+    };
+}
+
+fn short(text: &str) -> String {
+    text.chars().take(32).collect()
+}
+
 use crate::pack::TextStyle;
 use crate::services::ServiceResult;
 use crate::types::{Frame, Rect, TextBlock};
@@ -39,6 +56,17 @@ const MIN_INK_SAMPLES: usize = 8;
 const MAX_LOST_MISSES: u8 = 2;
 /// Similarity at which text in an animated area still counts as there.
 const ANIMATED_KEEP_SIMILARITY: f32 = 0.5;
+/// Fewest connected changed tiles that can be new text. Text appears as a
+/// compact patch; a moving game world changes tiles scattered here and
+/// there, and reading the screen for those cost most of the OCR time.
+const MIN_TEXT_TILES: usize = 3;
+/// Changed tiles that count as a big change (a menu or tooltip opening),
+/// read at once even right after reads that found nothing new.
+const BIG_CHANGE_TILES: usize = 24;
+/// Longest wait between reads while reads keep finding nothing new.
+const MAX_QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often text kept by a loose pixel match is read again to confirm it.
+const ANIMATED_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);
 /// Share of a text's strokes (and of the gaps between them) that must still
 /// be in place for restyled text to count as the same text.
 const RESTYLED_KEEP_SIMILARITY: f32 = 0.8;
@@ -153,6 +181,16 @@ pub struct Tracker {
     /// missed it. These areas aren't mistaken for animation right away: a
     /// lost text often just needs reading again.
     lost_areas: Vec<(Rect, u8)>,
+    /// Where text kept by a loose pixel match (in an animated area, or
+    /// restyled) was last checked with OCR. Pixels alone can mistake another
+    /// screen for that text (a closed quest's paragraph over an inventory),
+    /// so OCR confirms it.
+    checked: Vec<(Rect, std::time::Instant)>,
+    /// Reads in a row that found nothing new, and the earliest time the
+    /// next small change may be read: animation that isn't text then costs
+    /// a read every few seconds instead of on every frame.
+    quiet_reads: u32,
+    next_read: Option<std::time::Instant>,
     anchors: Vec<Anchor>,
 }
 
@@ -220,6 +258,9 @@ impl Tracker {
             region: None,
             recall: VecDeque::new(),
             lost_areas: Vec::new(),
+            checked: Vec::new(),
+            quiet_reads: 0,
+            next_read: None,
             anchors: Vec::new(),
         }
     }
@@ -382,6 +423,7 @@ impl Tracker {
         let mut explained = Vec::new();
         let mut lost = Vec::new();
         let mut offsets = Vec::new();
+        let mut unconfirmed = Vec::new();
         let settings = self.settings;
         let coarse = current.downscale(COARSE);
         let now = std::time::Instant::now();
@@ -401,6 +443,12 @@ impl Tracker {
             }
             match locate(current, &coarse, item, &offsets, settings) {
                 Some(found) => {
+                    trace!(
+                        "located {:?} at {:?} (was {:?})",
+                        short(&item.block.source_text),
+                        found,
+                        item.pixels
+                    );
                     explained.push(found);
                     if found != item.pixels {
                         offsets.push((found.left - item.pixels.left, found.top - item.pixels.top));
@@ -429,7 +477,13 @@ impl Tracker {
                         item.pixels.top,
                     ) >= ANIMATED_KEEP_SIMILARITY =>
                 {
+                    trace!(
+                        "kept in an animated area {:?} at {:?}",
+                        short(&item.block.source_text),
+                        item.pixels
+                    );
                     explained.push(item.pixels);
+                    unconfirmed.push(item.pixels);
                     true
                 }
                 // The same text restyled where it is, e.g. a menu row
@@ -443,12 +497,25 @@ impl Tracker {
                     item.pixels.top,
                 ) >= RESTYLED_KEEP_SIMILARITY =>
                 {
+                    trace!(
+                        "kept as restyled {:?} at {:?}",
+                        short(&item.block.source_text),
+                        item.pixels
+                    );
                     explained.push(item.pixels);
+                    // Pixels alone can mistake other text in the same place
+                    // for it; OCR confirms it soon.
+                    unconfirmed.push(item.pixels);
                     // Redraw it, so its background follows the new colours.
                     moved |= settings.follow_highlights;
                     true
                 }
                 None => {
+                    trace!(
+                        "lost {:?} at {:?}",
+                        short(&item.block.source_text),
+                        item.pixels
+                    );
                     moved = true;
                     lost.push(item.clone());
                     false
@@ -464,6 +531,11 @@ impl Tracker {
                 && patch_similarity(current, &item.patch, item.pixels.left, item.pixels.top)
                     >= settings.follow_threshold;
             if returned {
+                trace!(
+                    "recalled {:?} at {:?}",
+                    short(&item.block.source_text),
+                    item.pixels
+                );
                 recalled.push(item.clone());
             }
             !returned
@@ -513,13 +585,44 @@ impl Tracker {
                 !scroll.is_some_and(|offset| moved_with(&previous, current, *tile, offset))
             })
             .collect::<Vec<_>>();
+        // Only compact patches of change can be new text; where tracked text
+        // was just lost, any change counts.
+        let unexplained = text_like_tiles(unexplained, |tile| lost_here(tile));
+        let big_change = unexplained.len() >= BIG_CHANGE_TILES;
+        let resting = !big_change && self.next_read.is_some_and(|next| now < next);
+        // Where tracked text was just lost (restyled under the pointer, or
+        // changed) it is read at once all the same.
+        let unexplained = if resting {
+            unexplained
+                .into_iter()
+                .filter(|tile| lost_here(tile))
+                .collect()
+        } else {
+            unexplained
+        };
         let unexplained_area = unexplained
             .iter()
             .map(|tile| u64::from(tile.width) * u64::from(tile.height))
             .sum::<u64>();
         let frame_area = (current.width * current.height).max(1) as f64;
-        if unexplained_area > 0
-            && unexplained_area as f64 / frame_area >= f64::from(settings.detect_threshold)
+        // Text kept by a loose pixel match is read again now and then; if
+        // OCR no longer finds it there, it's dropped.
+        self.checked
+            .retain(|(_, at)| at.elapsed() < ANIMATED_CHECK_INTERVAL);
+        let to_check = unconfirmed
+            .into_iter()
+            .filter(|area| {
+                !self
+                    .checked
+                    .iter()
+                    .any(|(checked, _)| overlaps(*checked, *area))
+            })
+            .collect::<Vec<_>>();
+        self.checked
+            .extend(to_check.iter().map(|area| (*area, now)));
+        if !to_check.is_empty()
+            || (unexplained_area > 0
+                && unexplained_area as f64 / frame_area >= f64::from(settings.detect_threshold))
         {
             self.pending_detection = true;
             self.last_new_content = Some(std::time::Instant::now());
@@ -529,7 +632,18 @@ impl Tracker {
                 .map(|item| item.pixels)
                 .chain(self.lost_areas.iter().map(|(area, _)| *area))
                 .collect::<Vec<_>>();
-            let region = detection_region(&unexplained, &text, current.width, current.height);
+            let wanted = unexplained
+                .iter()
+                .copied()
+                .chain(to_check.iter().map(|area| expand(*area, 4)))
+                .collect::<Vec<_>>();
+            let region = detection_region(&wanted, &text, current.width, current.height);
+            trace!(
+                "read: {} unexplained tiles, {} to confirm, region {:?}",
+                unexplained.len(),
+                to_check.len(),
+                region
+            );
             if was_pending {
                 // `None` reads the whole frame, which covers both.
                 self.region = self.region.zip(region).map(|(old, new)| union(old, new));
@@ -680,6 +794,15 @@ impl Tracker {
             .map(|item| expand(item.pixels, 4))
             .collect::<Vec<_>>();
         let now = std::time::Instant::now();
+        // Reads that keep finding nothing new wait longer and longer.
+        if fresh.is_empty() {
+            self.quiet_reads = (self.quiet_reads + 1).min(8);
+            let wait = std::time::Duration::from_millis(125 << self.quiet_reads);
+            self.next_read = Some(now + wait.min(MAX_QUIET_WAIT));
+        } else {
+            self.quiet_reads = 0;
+            self.next_read = None;
+        }
         let until = now + ANIMATED_TIME;
         self.animated.retain(|_, expiry| *expiry >= now);
         for tile in std::mem::take(&mut self.trigger) {
@@ -716,6 +839,21 @@ impl Tracker {
                             .iter()
                             .any(|new: &TrackedText| overlaps(new.pixels, old.pixels)))
             });
+        trace!(
+            "reconciled region {:?}: read {:?}; kept {:?}; replaced {:?}",
+            self.region,
+            items
+                .iter()
+                .map(|item| (short(&item.block.source_text), item.pixels))
+                .collect::<Vec<_>>(),
+            kept.iter()
+                .map(|item| short(&item.block.source_text))
+                .collect::<Vec<_>>(),
+            replaced
+                .iter()
+                .map(|item| short(&item.block.source_text))
+                .collect::<Vec<_>>()
+        );
         let replaced = replaced
             .into_iter()
             .filter(|old| {
@@ -1333,6 +1471,45 @@ fn moved_with(previous: &GrayImage, current: &GrayImage, tile: Rect, offset: (i3
     count > 0 && difference <= TILE_CHANGE_LEVEL * count
 }
 
+/// The tiles in connected groups of at least [`MIN_TEXT_TILES`], plus any
+/// tile `keep` accepts.
+fn text_like_tiles(tiles: Vec<Rect>, keep: impl Fn(&Rect) -> bool) -> Vec<Rect> {
+    let keys = tiles
+        .iter()
+        .map(|tile| tile_key(*tile))
+        .collect::<std::collections::HashSet<_>>();
+    let mut group_size = HashMap::<(i32, i32), usize>::new();
+    for start in &keys {
+        if group_size.contains_key(start) {
+            continue;
+        }
+        let mut group = vec![*start];
+        let mut index = 0;
+        group_size.insert(*start, 0);
+        while let Some(&(column, row)) = group.get(index) {
+            index += 1;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let next = (column + dx, row + dy);
+                    if keys.contains(&next) && !group_size.contains_key(&next) {
+                        group_size.insert(next, 0);
+                        group.push(next);
+                    }
+                }
+            }
+        }
+        for key in &group {
+            group_size.insert(*key, group.len());
+        }
+    }
+    tiles
+        .into_iter()
+        .filter(|tile| {
+            keep(tile) || group_size.get(&tile_key(*tile)).copied().unwrap_or(0) >= MIN_TEXT_TILES
+        })
+        .collect()
+}
+
 fn tile_key(tile: Rect) -> (i32, i32) {
     (tile.left / TILE as i32, tile.top / TILE as i32)
 }
@@ -1663,6 +1840,80 @@ mod tests {
             })
             .expect("translation succeeds");
         tracker
+    }
+
+    #[test]
+    fn text_kept_in_an_animated_area_is_read_again_to_confirm_it() {
+        let mut tracker = tracking(&[(20, 20, 1)], vec![block(20, 20, "Tasks")]);
+        // An animation overlaps the end of the text, so the text no longer
+        // matches exactly but is kept; OCR is asked to confirm it, and finds
+        // something else there (another screen that looks a bit alike).
+        for seed in [6, 7, 8, 9] {
+            let animated = frame(&[
+                (20, 20, 1),
+                (52, 20, seed),
+                (56, 4, seed + 1),
+                (56, 36, seed + 2),
+            ]);
+            if tracker.update(&animated) == Update::Detect {
+                tracker
+                    .reconcile_region(&animated, Vec::new(), |_| Ok(Vec::new()))
+                    .expect("reconcile");
+                assert!(
+                    !tracker
+                        .blocks(&animated)
+                        .iter()
+                        .any(|b| b.source_text == "Tasks"),
+                    "text OCR no longer finds must go"
+                );
+                return;
+            }
+        }
+        panic!("the kept text was never read again");
+    }
+
+    #[test]
+    fn scattered_changes_are_not_read() {
+        let mut tracker = tracking(&[(20, 20, 1)], vec![block(20, 20, "Tasks")]);
+        // A moving game world: single tiles change here and there.
+        let mut world = frame(&[(20, 20, 1)]);
+        for (x, y) in [(100_u32, 4_u32), (150, 60), (180, 30)] {
+            let offset = ((y * WIDTH + x) * 4) as usize;
+            for pixel in world.rgba[offset..offset + 16].as_chunks_mut::<4>().0 {
+                pixel[..3].copy_from_slice(&[255, 255, 255]);
+            }
+        }
+        assert_ne!(tracker.update(&world), Update::Detect);
+    }
+
+    #[test]
+    fn reads_that_find_nothing_new_wait_before_the_next() {
+        let mut tracker = tracking(&[(20, 20, 1)], vec![block(20, 20, "Tasks")]);
+        // Something that isn't text animates and is read once, finding
+        // nothing.
+        let first = frame(&[(20, 20, 1), (120, 40, 3)]);
+        assert_eq!(tracker.update(&first), Update::Detect);
+        tracker
+            .reconcile_region(&first, vec![block(20, 20, "Tasks")], |_| {
+                panic!("nothing new to translate")
+            })
+            .expect("reconcile");
+        // It moves on at once: not read again yet.
+        let next = frame(&[(20, 20, 1), (120, 56, 4)]);
+        assert_ne!(tracker.update(&next), Update::Detect);
+        // A menu opening is read at once all the same.
+        let menu = frame(&[
+            (20, 20, 1),
+            (10, 120, 5),
+            (60, 120, 6),
+            (110, 120, 7),
+            (10, 150, 8),
+            (60, 150, 9),
+            (110, 150, 10),
+            (10, 180, 11),
+            (60, 180, 12),
+        ]);
+        assert_eq!(tracker.update(&menu), Update::Detect);
     }
 
     #[test]

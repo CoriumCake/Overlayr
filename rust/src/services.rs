@@ -79,6 +79,10 @@ impl OcrBackend for Box<dyn OcrBackend> {
 pub trait TranslationBackend: Send {
     fn translate(&mut self, pair: &LanguagePair, text: &str) -> ServiceResult<String>;
 
+    /// Drops a saved translation of `text`, so the next request translates
+    /// it again. Providers that save nothing ignore it.
+    fn forget(&mut self, _pair: &LanguagePair, _text: &str) {}
+
     /// Translates several texts. Providers that can handle requests
     /// concurrently should, since new screens often show many texts at once.
     fn translate_many(
@@ -111,6 +115,10 @@ pub trait TranslationBackend: Send {
 impl TranslationBackend for Box<dyn TranslationBackend> {
     fn translate(&mut self, pair: &LanguagePair, text: &str) -> ServiceResult<String> {
         (**self).translate(pair, text)
+    }
+
+    fn forget(&mut self, pair: &LanguagePair, text: &str) {
+        (**self).forget(pair, text);
     }
 
     fn translate_many(

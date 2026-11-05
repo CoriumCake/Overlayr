@@ -203,8 +203,9 @@ fn send_with_retry(
     }
 }
 
-/// Drafts translations for a batch of texts.
-pub trait DraftTranslator: Send {
+/// Drafts translations for a batch of texts. Shared between threads, so
+/// one screen's texts can go out as several requests at once.
+pub trait DraftTranslator: Send + Sync {
     fn translate(
         &self,
         pair: &LanguagePair,
@@ -231,9 +232,10 @@ pub fn translator(provider: Provider, model: &str) -> ServiceResult<Box<dyn Draf
         other => Box::new(ChatTranslator::new(other, key, model)?),
     })
 }
-/// Machine translation by an AI service while the overlay runs, for screens
-/// with no pack. Each batch of new text goes out as one request, so a screen
-/// costs one round trip instead of one per line.
+/// Machine translation by an AI service while the overlay runs. A screen's
+/// new texts go out as a few requests at once, each reported as soon as it
+/// arrives: a model writes one reply's translations one after another, so
+/// one request for the whole screen would make every text wait for all.
 pub struct LiveTranslator {
     translator: Box<dyn DraftTranslator>,
     /// The window being translated, so translations fit the game.
@@ -261,19 +263,14 @@ impl crate::services::TranslationBackend for LiveTranslator {
         pair: &LanguagePair,
         texts: &[String],
     ) -> ServiceResult<Vec<String>> {
-        if pair.source == pair.target {
-            return Ok(texts.to_vec());
-        }
-        let context = Context {
-            application: &self.application,
-            glossary: &[],
-            notes: "",
-        };
-        let mut results = Vec::with_capacity(texts.len());
-        for batch in texts.chunks(BATCH_SIZE) {
-            results.extend(self.translator.translate(pair, &context, batch)?);
-        }
-        Ok(results)
+        let mut results = vec![None; texts.len()];
+        self.translate_each(pair, texts, &mut |index, result| {
+            results[index] = Some(result);
+        });
+        results
+            .into_iter()
+            .map(|result| result.unwrap_or_else(|| Err("no translation".into())))
+            .collect()
     }
 
     fn translate_each(
@@ -282,21 +279,71 @@ impl crate::services::TranslationBackend for LiveTranslator {
         texts: &[String],
         done: &mut dyn FnMut(usize, ServiceResult<String>),
     ) {
-        for (start, batch) in (0..).step_by(BATCH_SIZE).zip(texts.chunks(BATCH_SIZE)) {
-            match self.translate_many(pair, batch) {
-                Ok(translations) => {
-                    for (offset, translation) in translations.into_iter().enumerate() {
-                        done(start + offset, Ok(translation));
+        if pair.source == pair.target {
+            for (index, text) in texts.iter().enumerate() {
+                done(index, Ok(text.clone()));
+            }
+            return;
+        }
+        let context = Context {
+            application: &self.application,
+            glossary: &[],
+            notes: "",
+        };
+        let translator = &*self.translator;
+        std::thread::scope(|scope| {
+            let (sender, results) = std::sync::mpsc::channel();
+            for indices in parallel_requests(texts.len()) {
+                let sender = sender.clone();
+                let context = &context;
+                scope.spawn(move || {
+                    let batch = indices
+                        .iter()
+                        .map(|&index| texts[index].clone())
+                        .collect::<Vec<_>>();
+                    let _ = sender.send((indices, translator.translate(pair, context, &batch)));
+                });
+            }
+            drop(sender);
+            // In the order the requests finish.
+            for (indices, result) in results {
+                match result {
+                    Ok(translations) if translations.len() == indices.len() => {
+                        for (index, translation) in indices.into_iter().zip(translations) {
+                            done(index, Ok(translation));
+                        }
                     }
-                }
-                Err(error) => {
-                    for offset in 0..batch.len() {
-                        done(start + offset, Err(error.clone()));
+                    Ok(_) => {
+                        for index in indices {
+                            done(
+                                index,
+                                Err("the AI returned the wrong number of translations".into()),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        for index in indices {
+                            done(index, Err(error.clone()));
+                        }
                     }
                 }
             }
-        }
+        });
     }
+}
+
+/// Requests sent at once for one screen.
+pub const PARALLEL_REQUESTS: usize = 4;
+
+/// Splits `count` texts into requests sent at once: up to
+/// [`PARALLEL_REQUESTS`], more only to keep each within [`BATCH_SIZE`].
+/// Texts are dealt out in turn, so each request gets a share of the short
+/// ones, which then arrive early.
+fn parallel_requests(count: usize) -> Vec<Vec<usize>> {
+    let requests = count.div_ceil(BATCH_SIZE).max(count.min(PARALLEL_REQUESTS));
+    (0..requests)
+        .map(|first| (first..count).step_by(requests).collect())
+        .collect()
 }
 
 /// Texts per request; larger screens are split.
@@ -304,7 +351,7 @@ pub const BATCH_SIZE: usize = 40;
 /// Glossary entries sent with each request.
 const MAX_GLOSSARY: usize = 150;
 
-fn config_dir() -> Option<PathBuf> {
+pub(crate) fn config_dir() -> Option<PathBuf> {
     // Windows has no HOME; settings live in %APPDATA%\Overlayr.
     if cfg!(windows) {
         return std::env::var_os("APPDATA")
@@ -422,14 +469,19 @@ impl DraftTranslator for ClaudeTranslator {
         }
         let body = request_body(&self.model, pair, context, texts);
         let response = send_with_retry("Claude", || {
-            self.client
+            let request = self
+                .client
                 .post(API_URL)
                 .header("x-api-key", &self.api_key)
-                .header("anthropic-version", "2023-06-01")
-                // If the model declines, Anthropic's recommended fallback
-                // model answers instead.
-                .header("anthropic-beta", "server-side-fallback-2026-07-01")
-                .json(&body)
+                .header("anthropic-version", "2023-06-01");
+            // If the model declines, Anthropic's recommended fallback model
+            // answers instead.
+            let request = if body.get("fallbacks").is_some() {
+                request.header("anthropic-beta", "server-side-fallback-2026-07-01")
+            } else {
+                request
+            };
+            request.json(&body)
         })?;
         let status = response.status();
         let body: Value = response
@@ -470,7 +522,8 @@ fn prompt(pair: &LanguagePair, context: &Context<'_>, texts: &[String]) -> (Stri
          Leave brand and mod names that players know in the original form unless the glossary \
          translates them.\n\
          - The text was read by OCR and may contain small misreadings; translate what was \
-         clearly meant.\n\
+         clearly meant. OCR also reads icons and decorations as letters: return text that isn't \
+         real words (such as \"toct\" or \"COUOO\") unchanged, never guess a meaning for it.\n\
          - Keep numbers, symbols and formatting such as \"(440)\" or \"&\".",
         application = if context.application.is_empty() {
             "the game"
@@ -498,6 +551,38 @@ fn prompt(pair: &LanguagePair, context: &Context<'_>, texts: &[String]) -> (Stri
     (system, user)
 }
 
+/// Whether `model` takes `output_config.effort`; older models, Haiku 4.5
+/// among them, reject the whole request when it's sent.
+fn supports_effort(model: &str) -> bool {
+    [
+        "claude-fable-",
+        "claude-mythos-",
+        "claude-opus-5",
+        "claude-opus-4-5",
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-haiku-5",
+    ]
+    .iter()
+    .any(|prefix| model.starts_with(prefix))
+}
+
+/// Whether `model` takes `fallbacks: "default"`, which lets another model
+/// answer when it declines; others reject the request when it's sent.
+fn supports_fallbacks(model: &str) -> bool {
+    [
+        "claude-fable-5-1",
+        "claude-mythos-5-1",
+        "claude-opus-5",
+        "claude-sonnet-5-5",
+    ]
+    .iter()
+    .any(|prefix| model.starts_with(prefix))
+}
+
 fn request_body(
     model: &str,
     pair: &LanguagePair,
@@ -505,14 +590,12 @@ fn request_body(
     texts: &[String],
 ) -> Value {
     let (system, user) = prompt(pair, context, texts);
-    json!({
+    let mut body = json!({
         "model": model,
         "max_tokens": 16000,
-        "fallbacks": "default",
         "system": system,
         "messages": [{ "role": "user", "content": user }],
         "output_config": {
-            "effort": "medium",
             "format": {
                 "type": "json_schema",
                 "schema": {
@@ -536,7 +619,14 @@ fn request_body(
                 }
             }
         }
-    })
+    });
+    if supports_effort(model) {
+        body["output_config"]["effort"] = json!("medium");
+    }
+    if supports_fallbacks(model) {
+        body["fallbacks"] = json!("default");
+    }
+    body
 }
 
 /// Reads the translations out of a Messages API response, in input order.
@@ -713,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn live_translation_sends_one_request_per_batch_and_reports_every_text() {
+    fn live_translation_sends_a_few_requests_at_once_and_reports_every_text() {
         let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut live = LiveTranslator::new(Box::new(Shouting(requests.clone())), "StoneBlock");
         let texts = (0..BATCH_SIZE + 3)
@@ -727,9 +817,54 @@ mod tests {
                 reported[index] = Some(result.unwrap());
             },
         );
-        assert_eq!(requests.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(
+            requests.load(std::sync::atomic::Ordering::Relaxed),
+            PARALLEL_REQUESTS
+        );
         assert_eq!(reported[BATCH_SIZE + 2].as_deref(), Some("LINE 42"));
         assert!(reported.iter().all(Option::is_some));
+    }
+
+    #[test]
+    fn splits_a_screen_into_requests_within_the_batch_size() {
+        assert!(parallel_requests(0).is_empty());
+        assert_eq!(parallel_requests(2), vec![vec![0], vec![1]]);
+        assert_eq!(
+            parallel_requests(6),
+            vec![vec![0, 4], vec![1, 5], vec![2], vec![3]]
+        );
+        let large = parallel_requests(BATCH_SIZE * 5 + 1);
+        assert_eq!(large.len(), 6);
+        assert!(large.iter().all(|request| request.len() <= BATCH_SIZE));
+        assert_eq!(
+            large.iter().map(Vec::len).sum::<usize>(),
+            BATCH_SIZE * 5 + 1
+        );
+    }
+
+    /// Takes a while per request, like a real service.
+    struct Slow;
+
+    impl DraftTranslator for Slow {
+        fn translate(
+            &self,
+            _pair: &LanguagePair,
+            _context: &Context<'_>,
+            texts: &[String],
+        ) -> ServiceResult<Vec<String>> {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            Ok(texts.to_vec())
+        }
+    }
+
+    #[test]
+    fn requests_for_one_screen_run_at_the_same_time() {
+        let mut live = LiveTranslator::new(Box::new(Slow), "StoneBlock");
+        let texts = (0..4).map(|index| index.to_string()).collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        live.translate_many(&LanguagePair::new("en", "th"), &texts)
+            .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_millis(900));
     }
 
     #[test]
@@ -753,6 +888,26 @@ mod tests {
         let user = body["messages"][0]["content"].as_str().unwrap();
         assert!(user.contains("เมนูเกม") && user.contains("\"Rewards\""));
         assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+    }
+
+    #[test]
+    fn older_models_get_only_the_options_they_accept() {
+        let pair = LanguagePair::new("en", "th");
+        let context = Context {
+            application: "",
+            glossary: &[],
+            notes: "",
+        };
+        let texts = ["Cobblestone".to_string()];
+        let haiku = request_body("claude-haiku-4-5-20251001", &pair, &context, &texts);
+        assert!(haiku["output_config"].get("effort").is_none());
+        assert!(haiku.get("fallbacks").is_none());
+        let new_haiku = request_body("claude-haiku-5-5", &pair, &context, &texts);
+        assert_eq!(new_haiku["output_config"]["effort"], "medium");
+        assert!(new_haiku.get("fallbacks").is_none());
+        let opus = request_body("claude-opus-5-5", &pair, &context, &texts);
+        assert_eq!(opus["output_config"]["effort"], "medium");
+        assert_eq!(opus["fallbacks"], "default");
     }
 
     #[test]
