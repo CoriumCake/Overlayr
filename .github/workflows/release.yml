@@ -112,7 +112,9 @@ jobs:
           # The static runtime needs no FUSE 2; this runs it the normal way.
           sudo apt-get install --no-install-recommends -y fuse3
           "$appimage" --version | tee version.txt
-          grep -q "$VERSION" version.txt
+          # Test builds are versioned "0.1.2-test.<commit>"; the program
+          # reports its own version, 0.1.2.
+          grep -q "${VERSION%%-test*}" version.txt
       - uses: actions/upload-artifact@v4
         with:
           name: linux
