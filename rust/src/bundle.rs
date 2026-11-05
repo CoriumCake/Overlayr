@@ -22,6 +22,26 @@
 
 use std::path::PathBuf;
 
+/// The AppImage Overlayr runs from, if it runs from one. Its programs run
+/// from a temporary mount, so anything that starts Overlayr again (the
+/// `overlayr://` handler, keybinds, updates) uses this file instead.
+pub fn appimage() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let path = PathBuf::from(std::env::var_os("APPIMAGE")?);
+    // Set by the AppImage runtime; a program started from inside one (a
+    // terminal opened by it) inherits it, so check it's the one running us.
+    let mount = PathBuf::from(std::env::var_os("APPDIR")?);
+    let executable = std::env::current_exe().ok()?;
+    (executable.starts_with(&mount) && path.is_file()).then_some(path)
+}
+
+/// The program to run to start Overlayr: the AppImage when there is one.
+pub fn program() -> std::io::Result<PathBuf> {
+    appimage().map_or_else(std::env::current_exe, Ok)
+}
+
 /// Whether this is an Intel Mac, which gets its own programs.
 fn intel_mac() -> bool {
     cfg!(target_os = "macos") && std::env::consts::ARCH == "x86_64"

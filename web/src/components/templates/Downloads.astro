@@ -14,7 +14,7 @@ const t = useTranslations(lang);
 const platforms = [
     { id: "windows", name: "Windows", detail: t("downloads.windows") },
     { id: "macos", name: "macOS", detail: t("downloads.macos") },
-    { id: "linux", name: "Linux", detail: t("downloads.linux") },
+    { id: "appimage", name: "Linux", detail: t("downloads.linux") },
 ];
 ---
 
@@ -79,7 +79,9 @@ const platforms = [
             document.getElementById("release-date").textContent = `${released} ${release.date}`;
             document.getElementById("release-badge").classList.remove("hidden");
             for (const row of document.querySelectorAll(".platform")) {
-                const file = release.files[row.dataset.platform];
+                const file = row.dataset.platform === "appimage"
+                    ? (release.files.appimage ?? release.files.linux)
+                    : release.files[row.dataset.platform];
                 const button = row.querySelector(".platform-button");
                 const label = row.querySelector(".platform-file");
                 if (file) {

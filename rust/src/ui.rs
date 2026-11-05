@@ -2015,7 +2015,7 @@ impl OverlayrApp {
                     let _ = crate::hyprland::unbind(keys);
                 }
             }
-            let program = std::env::current_exe()
+            let program = crate::bundle::program()
                 .map(|path| path.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| "overlayr".into());
             let mut errors = Vec::new();

@@ -9,6 +9,7 @@ name: Release
 # The installers go to the overlayr-releases R2 bucket under v<version>/, and
 # latest.json there makes overlayr.app/download serve them. Needs the
 # CLOUDFLARE_API_TOKEN (with R2 edit access) and CLOUDFLARE_ACCOUNT_ID secrets.
+# AUR_SSH_PRIVATE_KEY publishes the overlayr-bin AUR package (see the aur job).
 #
 # Signing runs once its secrets are added; until then the installers are
 # unsigned, and Windows and macOS warn before opening them.
@@ -101,10 +102,23 @@ jobs:
           cp rust/target/release/overlayr packaging/overlayr.desktop packaging/overlayr.svg \
             packaging/linux/install.sh "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
+      # What the site offers Linux players; the tarball stays for the AUR
+      # package and older installs that update from it.
+      - name: Build the AppImage
+        run: packaging/linux/build-appimage.sh rust/target/release/overlayr "$VERSION" dist
+      - name: Start the AppImage like a player would
+        run: |
+          appimage="dist/Overlayr-$VERSION-linux-x86_64.AppImage"
+          # The static runtime needs no FUSE 2; this runs it the normal way.
+          sudo apt-get install --no-install-recommends -y fuse3
+          "$appimage" --version | tee version.txt
+          grep -q "$VERSION" version.txt
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.AppImage
           if-no-files-found: error
 
   windows:
@@ -381,7 +395,9 @@ jobs:
           files = {}
           for path in sorted(pathlib.Path("dist").iterdir()):
               platform = ("windows" if path.name.endswith(".exe")
-                          else "macos" if path.name.endswith(".dmg") else "linux")
+                          else "macos" if path.name.endswith(".dmg")
+                          else "appimage" if path.name.endswith(".AppImage")
+                          else "linux")
               files[platform] = {
                   "name": path.name,
                   "size": path.stat().st_size,
@@ -430,3 +446,40 @@ jobs:
           done <carried.txt
           npx --yes wrangler@4 r2 object put overlayr-releases/latest.json \
             --file latest.json --content-type application/json --remote
+
+  # The AUR package overlayr-bin (packaging/arch/PKGBUILD), so Arch players
+  # install with `yay -S overlayr-bin` and update with their system. Runs
+  # once the AUR_SSH_PRIVATE_KEY secret holds a key added to the AUR account
+  # that maintains the package; skipped until then.
+  aur:
+    needs: [version, publish]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+      - uses: actions/download-artifact@v4
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        with:
+          name: linux
+          path: dist
+      - name: Point the PKGBUILD at this release
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        run: |
+          sum=$(sha256sum "dist/Overlayr-$VERSION-linux-x86_64.tar.gz" | cut -d' ' -f1)
+          sed -i -e "s/^pkgver=.*/pkgver=$VERSION/" -e "s/^pkgrel=.*/pkgrel=1/" \
+            -e "s/^sha256sums=.*/sha256sums=('$sum')/" packaging/arch/PKGBUILD
+          cat packaging/arch/PKGBUILD
+      - uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        with:
+          pkgname: overlayr-bin
+          pkgbuild: packaging/arch/PKGBUILD
+          commit_username: coriumcake
+          commit_email: catcode.business@gmail.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ env.VERSION }}"
+          test: true

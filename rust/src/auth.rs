@@ -241,7 +241,7 @@ pub fn register_protocol() -> io::Result<()> {
 /// no app to open it). Only touches the system when the entry changes.
 #[cfg(target_os = "linux")]
 pub fn register_protocol() -> io::Result<()> {
-    let executable = std::env::current_exe()?;
+    let executable = crate::bundle::program()?;
     let Some(entry) = handler_entry(&executable.to_string_lossy()) else {
         return Ok(());
     };

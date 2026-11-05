@@ -10,7 +10,8 @@
 //!   it and starts it again.
 //! - macOS: copies Overlayr.app out of the disk image and swaps it in once
 //!   Overlayr has quit.
-//! - Linux: replaces the program with the one from the archive.
+//! - Linux: replaces the AppImage with the new one, or, for an install from
+//!   the tarball, the program with the one from the archive.
 //!
 //! Only release builds update themselves (CI sets `OVERLAYR_RELEASE`); a
 //! build from source would otherwise be replaced by the release.
@@ -30,7 +31,16 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Whether this build updates itself.
 pub fn enabled() -> bool {
-    option_env!("OVERLAYR_RELEASE").is_some() && std::env::var_os("OVERLAYR_NO_UPDATE").is_none()
+    option_env!("OVERLAYR_RELEASE").is_some()
+        && std::env::var_os("OVERLAYR_NO_UPDATE").is_none()
+        && !package_managed()
+}
+
+/// Installed by a package manager (the AUR's overlayr-bin puts it in
+/// /usr/bin), which updates it instead; the program isn't ours to replace.
+fn package_managed() -> bool {
+    cfg!(target_os = "linux")
+        && std::env::current_exe().is_ok_and(|executable| executable.starts_with("/usr"))
 }
 
 /// This computer's name in `latest.json`.
@@ -40,7 +50,11 @@ fn platform() -> Option<&'static str> {
     } else if cfg!(target_os = "macos") {
         Some("macos")
     } else if cfg!(target_os = "linux") && std::env::consts::ARCH == "x86_64" {
-        Some("linux")
+        if crate::bundle::appimage().is_some() {
+            Some("appimage")
+        } else {
+            Some("linux")
+        }
     } else {
         None
     }
@@ -410,7 +424,9 @@ fn install(disk_image: &Path) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn install(archive: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
+    if let Some(appimage) = crate::bundle::appimage() {
+        return replace_program(archive, &appimage);
+    }
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let unpacked = archive.with_extension("unpacked");
     let _ = std::fs::remove_dir_all(&unpacked);
@@ -431,18 +447,26 @@ fn install(archive: &Path) -> Result<(), String> {
         .map(|entry| entry.path().join("overlayr"))
         .find(|path| path.is_file())
         .ok_or("the update has no overlayr program")?;
+    let replaced = replace_program(&program, &executable);
+    let _ = std::fs::remove_dir_all(&unpacked);
+    replaced
+}
+
+/// Puts `new` in place of `program` and starts it once Overlayr exits.
+#[cfg(target_os = "linux")]
+fn replace_program(new: &Path, program: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
     // Next to the running program, so the rename that replaces it stays on
     // one file system; Linux keeps the running copy until it exits.
-    let staged = executable.with_extension("new");
-    std::fs::copy(&program, &staged)
+    let staged = program.with_extension("new");
+    std::fs::copy(new, &staged)
         .and_then(|_| std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)))
-        .and_then(|()| std::fs::rename(&staged, &executable))
+        .and_then(|()| std::fs::rename(&staged, program))
         .map_err(|error| {
             let _ = std::fs::remove_file(&staged);
-            format!("could not replace {}: {error}", executable.display())
+            format!("could not replace {}: {error}", program.display())
         })?;
-    let _ = std::fs::remove_dir_all(&unpacked);
-    swap_after_exit(r#"exec "$1""#, &[&executable])
+    swap_after_exit(r#"exec "$1""#, &[program])
 }
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
@@ -496,6 +520,10 @@ mod tests {
         assert_eq!(file_version("Overlayr-0.1.0-macos.dmg"), Some("0.1.0"));
         assert_eq!(
             file_version("Overlayr-0.2.0-linux-x86_64.tar.gz"),
+            Some("0.2.0")
+        );
+        assert_eq!(
+            file_version("Overlayr-0.2.0-linux-x86_64.AppImage"),
             Some("0.2.0")
         );
         assert_eq!(file_version("setup.exe"), None);

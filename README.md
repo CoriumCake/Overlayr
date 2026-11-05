@@ -114,7 +114,17 @@ Overlayr still starts and uses Tesseract.
 
 ## Install
 
-**Linux:**
+**Arch Linux** (the AUR package `overlayr-bin`, `packaging/arch/PKGBUILD`;
+pacman updates it, so the in-app updater stays off):
+
+```bash
+yay -S overlayr-bin    # or paru -S overlayr-bin
+```
+
+**Any Linux distribution:** download the AppImage from overlayr.app, then
+`chmod +x Overlayr-*.AppImage` and run it. It updates itself in place.
+
+**Linux, from source:**
 
 ```bash
 packaging/install-linux.sh                          # in-process OCR build
@@ -162,7 +172,8 @@ git push origin v0.2.0
 | --- | --- | --- |
 | Windows | `Overlayr-<version>-windows-x64-setup.exe` | Inno Setup (`packaging/windows/overlayr.iss`): per-user install, Start menu, `overlayr://`, uninstaller |
 | macOS | `Overlayr-<version>-macos.dmg` | `packaging/macos/build-app.sh` |
-| Linux | `Overlayr-<version>-linux-x86_64.tar.gz` | the portable build, with `install.sh` |
+| Linux | `Overlayr-<version>-linux-x86_64.AppImage` | `packaging/linux/build-appimage.sh`: one file for any distribution, what the site offers |
+| Linux | `Overlayr-<version>-linux-x86_64.tar.gz` | the portable build, with `install.sh`; used by the AUR package and older installs |
 
 It uploads them to the `overlayr-releases` R2 bucket, then updates
 `latest.json` there, which the site reads. It needs the
